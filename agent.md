@@ -15,6 +15,7 @@ case report PDFs. It is designed for **published research PDFs** with variable l
 (1–2 columns, sometimes 3 in abstracts), tables, and figures.
 
 The system guarantees:
+
 - Deterministic, auditable PDF ingestion
 - Independent dual-model RUCAM scoring
 - Expert arbitration of disagreements
@@ -24,7 +25,9 @@ This agent is **decision-support only**, not a medical diagnosis tool.
 
 ---
 
-## 2. High-Level Architecture
+## 2. Software Architecture
+
+### 2.1 High-Level Architecture
 
 ```
 PDF
@@ -50,6 +53,36 @@ PDF
  Final RUCAM report + JSON
 ```
 
+### 2.2 Repository Layout (recommended)
+
+```
+├─ src/
+│  ├─ ingestion/
+│  │  ├─ case_bundle.py            # dataclasses + schema helpers
+│  │  ├─ unstructured_ingest.py    # partition_pdf wrapper
+│  │  ├─ pdfplumber_tables.py      # table extraction + cleaning
+│  │  ├─ pymupdf_fallback.py       # adaptive 1/2/3-col extractor
+│  │  └─ build_bundle.py           # orchestration + quality scoring
+│  ├─ prompts/
+│  │  └─ rucam_analysis_production.md       # the full production prompt
+│  ├─ crew/
+│  │  ├─ agents.py                 # Agent definitions (GPT, Gemini, Arbiter)
+│  │  ├─ tasks.py                  # Task definitions referencing prompt
+│  │  └─ crew.py                   # build_crew()
+│  ├─ pipeline.py                  # run_end_to_end(pdf_path)
+│  └─ validators/
+│     └─ rucam_json.py             # strict JSON schema validation
+├─ tests/
+│  ├─ fixtures/
+│  │  └─ example_case.pdf
+│  ├─ test_ingestion.py
+│  ├─ test_bundle_schema.py
+│  └─ test_rucam_json_validator.py
+├─ .env
+├─ README.md
+└─ agent.md
+```
+
 ---
 
 ## 3. Deterministic Ingestion Layer (MANDATORY)
@@ -66,6 +99,7 @@ PDF
 ### 3.2 Why deterministic ingestion is required
 
 RUCAM scoring depends on:
+
 - exact lab values + ULNs
 - precise timing (start, onset, stop, resolution)
 - negative workup documentation
@@ -185,6 +219,7 @@ The arbiter MUST output:
 ## 7. Required Output Format (ALL LLM AGENTS)
 
 ### SECTION A — Human-Readable Report
+
 - Case summary
 - Timeline
 - Injury pattern determination
@@ -193,7 +228,7 @@ The arbiter MUST output:
 ### SECTION B — RUCAM Scoring Table
 
 | RUCAM Item | Score | Evidence |
-|-----------|-------|----------|
+| ---------- | ----- | -------- |
 
 ### SECTION C — JSON (STRICT)
 
@@ -220,17 +255,21 @@ The arbiter MUST output:
 ## 8. Engineering Standards
 
 ### 8.1 Determinism
+
 - Ingestion is deterministic
 - Prompt versions are pinned
 - Models run with temperature=0
 
 ### 8.2 Safety
+
 - No hallucination of labs, dates, ULNs
 - Conservative arbitration
 - Explicit “Not reported” handling
 
 ### 8.3 Auditability
+
 Persist:
+
 - `case_bundle.json`
 - GPT output
 - Gemini output
@@ -264,6 +303,7 @@ A run is valid if:
 ## 11. Intended Use
 
 This system is intended for:
+
 - pharmacovigilance research
 - DILI case review
 - RUCAM reproducibility studies
