@@ -1,6 +1,47 @@
-# dili-rucam-agents
+# DILI RUCAM Agents
 
 Production-grade CrewAI implementation for dual-model RUCAM causality assessment of drug-induced liver injury (DILI) case report PDFs.
+
+## Purpose
+
+This agent system performs **production-grade RUCAM causality assessment** from clinical
+case report PDFs. It is designed for **published research PDFs** with variable layout
+(1–2 columns, sometimes 3 in abstracts), tables, and figures.
+
+The system guarantees:
+
+- Deterministic, auditable PDF ingestion
+- Independent dual-model RUCAM scoring
+- Expert arbitration of disagreements
+- Strict structured JSON outputs suitable for automation
+
+This agent is **decision-support only**, not a medical diagnosis tool.
+
+## High-Level Architecture
+
+```
+PDF
+ └─ Ingestion (deterministic, no LLM)
+     ├─ unstructured (layout-aware blocks)
+     ├─ pdfplumber (tables)
+     └─ PyMuPDF fallback (adaptive 1/2/3-column)
+          ↓
+     case_bundle (canonical JSON)
+          ↓
+ ┌───────────────────────────┐
+ │ GPT-5.2 RUCAM Analyst     │
+ └───────────────────────────┘
+          ↓
+ ┌───────────────────────────┐
+ │ Gemini 3.0 RUCAM Analyst  │
+ └───────────────────────────┘
+          ↓
+ ┌───────────────────────────┐
+ │ Arbiter (Expert)          │
+ └───────────────────────────┘
+          ↓
+ Final RUCAM report + JSON
+```
 
 ## Repository Layout
 
