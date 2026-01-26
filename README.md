@@ -19,7 +19,11 @@ uv sync
 export OPENAI_API_KEY=...
 export GOOGLE_API_KEY=...
 uv run python -m dili_rucam_agents.pipeline examples/3568943.pdf
+# save individual analyst/arbiter reports as markdown (gpt-5.2, gemini-3.0, arbiter)
+uv run python -m dili_rucam_agents.pipeline examples/3568943.pdf --output-dir examples/latest_reports
 ```
+
+When `--output-dir` is supplied, the pipeline stores `gpt-5.2_report.md`, `gemini-3.0_report.md`, and `arbiter_report.md` inside the target folder after each run, making it easy to inspect or diff the analyst outputs.
 
 ## Test The Ingestion Tools
 
