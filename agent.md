@@ -1,7 +1,7 @@
 # agent.md — Production Agent Specification (Codex)
 
 **Project:** Dual-Model RUCAM Causality Assessment  
-**Models:** GPT-5.1 (OpenAI), Gemini 3.0 (Google)  
+**Models:** GPT-5.2 (OpenAI), Gemini 3.0 (Google)  
 **Domain:** Drug-Induced Liver Injury (DILI), RUCAM  
 **Input:** Clinical case report PDF (2–5 pages, 1–3 columns, tables, figures)
 **Python Package Manager:** uv
@@ -39,7 +39,7 @@ PDF
      case_bundle (canonical JSON)
           ↓
  ┌───────────────────────────┐
- │ GPT-5.1 RUCAM Analyst     │
+ │ GPT-5.2 RUCAM Analyst     │
  └───────────────────────────┘
           ↓
  ┌───────────────────────────┐
@@ -153,7 +153,7 @@ All LLM agents MUST consume a single JSON object named `case_bundle_json`.
 
 ---
 
-## 5. RUCAM Analyst Agents (GPT-5.1 and Gemini 3.0)
+## 5. RUCAM Analyst Agents (GPT-5.2 and Gemini 3.0)
 
 ### 5.1 Role
 
@@ -195,7 +195,7 @@ Each analyst must:
 
 The arbiter:
 
-- Compares GPT-5.1 vs Gemini analyses
+- Compares GPT-5.2 vs Gemini analyses
 - Identifies disagreements in:
   - extracted facts
   - R-ratio
@@ -282,7 +282,7 @@ Persist:
 ```bash
 OPENAI_API_KEY=...
 GOOGLE_API_KEY=...
-OPENAI_MODEL=gpt-5.1
+OPENAI_MODEL=gpt-5.2
 GEMINI_MODEL=gemini-3.0-pro
 ```
 
