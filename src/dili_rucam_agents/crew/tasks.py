@@ -7,11 +7,21 @@ from typing import Optional
 from crewai import Agent, Task
 
 
-DEFAULT_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "rucam_analysis_production.md"
+DEFAULT_RUCAM_PROMPT_PATH = (
+    Path(__file__).resolve().parents[1] / "prompts" / "rucam_analysis_production.md"
+)
+DEFAULT_ARBITER_PROMPT_PATH = (
+    Path(__file__).resolve().parents[1] / "prompts" / "arbiter_production.md"
+)
 
 
 def load_rucam_prompt(prompt_path: Optional[Path] = None) -> str:
-    path = prompt_path or DEFAULT_PROMPT_PATH
+    path = prompt_path or DEFAULT_RUCAM_PROMPT_PATH
+    return path.read_text(encoding="utf-8")
+
+
+def load_arbiter_prompt(prompt_path: Optional[Path] = None) -> str:
+    path = prompt_path or DEFAULT_ARBITER_PROMPT_PATH
     return path.read_text(encoding="utf-8")
 
 
@@ -73,13 +83,19 @@ def create_arbiter_task(
     gpt_task: Task,
     gemini_task: Task,
     arbiter_label: str,
+    prompt_text: str,
 ) -> Task:
     description = dedent(
-        """
-        Review the GPT-5.2 and Gemini 3.0 reports. Identify disagreements in extracted facts, R-ratio,
-        injury pattern, and each RUCAM item. Resolve conflicts strictly according to the case_bundle evidence.
-        Produce a final report in the same SECTION A/B/C format plus SECTION D — Arbiter Justification explaining
-        why you selected each final score whenever discrepancies existed.
+        f"""
+        You are {arbiter_label}, the senior hepatology arbiter. Consume the shared case_bundle_json as well as the
+        GPT-5.2 and Gemini 3.0 analyst reports. Resolve all disagreements strictly according to the source evidence.
+        Follow every instruction in arbiter_production.md verbatim.
+
+        --- BEGIN ARBITER PROMPT ---
+        {prompt_text}
+        --- END ARBITER PROMPT ---
+
+        Temperature must remain 0.
         """
     ).strip()
 
@@ -97,8 +113,10 @@ def create_arbiter_task(
 
 
 __all__ = [
-    "DEFAULT_PROMPT_PATH",
+    "DEFAULT_RUCAM_PROMPT_PATH",
+    "DEFAULT_ARBITER_PROMPT_PATH",
     "load_rucam_prompt",
+    "load_arbiter_prompt",
     "create_case_bundle_task",
     "create_analysis_task",
     "create_arbiter_task",
