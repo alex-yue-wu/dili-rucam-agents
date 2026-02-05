@@ -32,6 +32,86 @@ You must:
 
 ---
 
+# RUCAM RULES VERSION (MUST USE)
+
+rules_version: **RUCAM_DananBenichou1993_modified_sheet_v1**
+
+## RUCAM RULES (version: Danan & Bénichou 1993, modified sheet v1)
+
+**Injury pattern (choose table by R-ratio)**  
+Compute: **R = (ALT/ULN_ALT) ÷ (Alk P/ULN_AlkP)**.
+
+- Hepatocellular: R > 5.0
+- Cholestatic: R < 2.0
+- Mixed: R = 2.0–5.0
+
+**1) Time to onset (score one)**  
+From beginning of drug:
+
+- Hepatocellular – Initial tx: 5–90d +2; <5d or >90d +1
+- Hepatocellular – Subsequent tx: 1–15d +2; >15d +1
+- Cholestatic/Mixed – Initial tx: 5–90d +2; <5d or >90d +1
+- Cholestatic/Mixed – Subsequent tx: 1–90d +2; >90d +1  
+  From cessation of drug:
+- Hepatocellular: onset ≤15d +1
+- Cholestatic/Mixed: onset ≤30d +1  
+  Rule-out note: If reaction begins before drug start OR >15d after stopping (hepato) OR >30d after stopping (chol/mixed), consider unrelated and do not calculate RUCAM.
+
+**2) Course (score one; use pattern-appropriate column)**  
+After stopping the drug (if continued: 0):
+
+- Hepatocellular (ALT vs peak→ULN):
+  - Decrease ≥50% within 8d +3
+  - Decrease ≥50% within 30d +2
+  - No info OR decrease ≥50% after 30d 0
+  - Decrease <50% after 30d OR recurrent increase −2
+- Cholestatic/Mixed (Alk P or total bilirubin vs peak→ULN):
+  - Decrease ≥50% within 180d +2
+  - Decrease <50% within 180d +1
+  - Persistence/increase OR no info 0  
+    If drug continued: 0.
+
+**3) Risk factors (sum applicable)**
+
+- Alcohol or Pregnancy: presence +1, absence 0
+- Age: ≥55y +1, <55y 0
+
+**4) Concomitant drugs (score one)**
+
+- None / no info / incompatible time-to-onset 0
+- Concomitant drug with suggestive or compatible time-to-onset −1
+- Concomitant drug known hepatotoxic with suggestive time-to-onset −2
+- Concomitant drug with clear evidence for its role (e.g., positive rechallenge / typical signature) −3
+
+**5) Exclusion of other causes (score one)**  
+Group I (6 causes): HAV, HBV, HCV, biliary obstruction by imaging, alcoholism (excess intake + AST/ALT ≥2), recent hypotension/shock/ischemia within 2 weeks.  
+Group II (2 categories): complications of underlying diseases (e.g., autoimmune hepatitis, sepsis, chronic hep B/C, PBC/PSC) OR acute CMV/EBV/HSV evidence.  
+Scoring:
+
+- All Group I + II ruled out +2
+- All 6 Group I ruled out +1
+- 5 or 4 Group I ruled out 0
+- <4 Group I ruled out −2
+- Non-drug cause highly probable −3
+
+**6) Known hepatotoxicity (score one)**
+
+- Reaction labeled in product characteristics +2
+- Reaction published but unlabeled +1
+- Reaction unknown 0
+
+**7) Response to readministration / rechallenge (score one)**
+
+- Positive: doubling of ALT (hepato) OR doubling of Alk P/total bilirubin (chol/mixed) with drug alone +3
+- Compatible: doubling with suspect drug plus another drug given at initial onset +1
+- Negative: increase but <ULN with drug alone (ALT or Alk P/total bili) −2
+- Not done / not interpretable / other situations 0
+
+**Final category**  
+≤0 Excluded; 1–2 Unlikely; 3–5 Possible; 6–8 Probable; >8 Highly probable
+
+---
+
 # REQUIRED ANALYSIS WORKFLOW
 
 ## 1. **Extract Key Clinical Data**
