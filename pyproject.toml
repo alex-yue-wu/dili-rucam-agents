@@ -18,6 +18,7 @@ dependencies = [
     "unstructured[local-inference]>=0.15.11",
     "python-dotenv>=1.1.1",
     "pytest>=8.3.3",
+    "litellm>=1.52.0",
 ]
 
 [tool.setuptools]

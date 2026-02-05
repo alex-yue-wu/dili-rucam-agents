@@ -67,7 +67,13 @@ def create_analysis_task(
     )
 
 
-def create_arbiter_task(*, agent: Agent, gpt_task: Task, gemini_task: Task) -> Task:
+def create_arbiter_task(
+    *,
+    agent: Agent,
+    gpt_task: Task,
+    gemini_task: Task,
+    arbiter_label: str,
+) -> Task:
     description = dedent(
         """
         Review the GPT-5.2 and Gemini 3.0 reports. Identify disagreements in extracted facts, R-ratio,
@@ -77,8 +83,10 @@ def create_arbiter_task(*, agent: Agent, gpt_task: Task, gemini_task: Task) -> T
         """
     ).strip()
 
+    safe_label = arbiter_label.lower().replace(" ", "_")
+
     return Task(
-        name="senior_hepatology_arbitration",
+        name=f"{safe_label}_senior_hepatology_arbitration",
         description=description,
         expected_output=(
             "Final SECTION A/B/C report with consolidated scores plus SECTION D — Arbiter Justification."

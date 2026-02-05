@@ -16,7 +16,13 @@ from .tasks import (
 TaskMap = Dict[str, Task]
 
 
-def build_crew(pdf_path: str, prompt_path: Optional[Path] = None) -> Tuple[Crew, TaskMap]:
+def build_crew(
+    pdf_path: str,
+    prompt_path: Optional[Path] = None,
+    *,
+    use_arbiter_beta: bool = False,
+    use_arbiter_gamma: bool = False,
+) -> Tuple[Crew, TaskMap]:
     prompt_text = load_rucam_prompt(prompt_path)
 
     ingestion_agent = build_ingestion_agent()
@@ -32,7 +38,35 @@ def build_crew(pdf_path: str, prompt_path: Optional[Path] = None) -> Tuple[Crew,
         default_model="gemini-3-pro-preview",
         vendor_note="Google Gemini 3.0 dual-encoder causal reasoning model.",
     )
-    arbiter_agent = build_arbiter_agent()
+    arbiter_configs = [
+        {
+            "label": "Arbiter Alpha",
+            "model_env": "ARBITER_ALPHA_MODEL",
+            "enabled": True,
+            "default_model": "deepseek-reasoner",
+        },
+        {
+            "label": "Arbiter Beta",
+            "model_env": "ARBITER_BETA_MODEL",
+            "enabled": use_arbiter_beta,
+            "default_model": "gpt-5.2",
+        },
+        {
+            "label": "Arbiter Gamma",
+            "model_env": "ARBITER_GAMMA_MODEL",
+            "enabled": use_arbiter_gamma,
+            "default_model": "gpt-5.2",
+        },
+    ]
+
+    for config in arbiter_configs:
+        if not config["enabled"]:
+            continue
+        config["agent"] = build_arbiter_agent(
+            label=config["label"],
+            model_env=config["model_env"],
+            default_model=config.get("default_model", "gpt-5.2"),
+        )
 
     case_bundle_task = create_case_bundle_task(pdf_path=pdf_path, agent=ingestion_agent)
     gpt_task = create_analysis_task(
@@ -49,11 +83,25 @@ def build_crew(pdf_path: str, prompt_path: Optional[Path] = None) -> Tuple[Crew,
         prompt_text=prompt_text,
         model_reference="GEMINI_MODEL",
     )
-    arbiter_task = create_arbiter_task(agent=arbiter_agent, gpt_task=gpt_task, gemini_task=gemini_task)
+    arbiter_tasks = []
+    for config in arbiter_configs:
+        agent = config.get("agent")
+        if not agent:
+            continue
+        task = create_arbiter_task(
+            agent=agent,
+            gpt_task=gpt_task,
+            gemini_task=gemini_task,
+            arbiter_label=config["label"],
+        )
+        config["task"] = task
+        arbiter_tasks.append(task)
+
+    arbiter_agents = [config["agent"] for config in arbiter_configs if config.get("agent")]
 
     crew = Crew(
-        agents=[ingestion_agent, gpt_agent, gemini_agent, arbiter_agent],
-        tasks=[case_bundle_task, gpt_task, gemini_task, arbiter_task],
+        agents=[ingestion_agent, gpt_agent, gemini_agent, *arbiter_agents],
+        tasks=[case_bundle_task, gpt_task, gemini_task, *arbiter_tasks],
         process=Process.sequential,
         verbose=True,
     )
@@ -62,8 +110,14 @@ def build_crew(pdf_path: str, prompt_path: Optional[Path] = None) -> Tuple[Crew,
         "case_bundle": case_bundle_task,
         "gpt_52": gpt_task,
         "gemini_30": gemini_task,
-        "arbiter": arbiter_task,
     }
+
+    for config in arbiter_configs:
+        task = config.get("task")
+        if not task:
+            continue
+        label_key = f"arbiter_{config['label'].lower().replace(' ', '_')}"
+        task_map[label_key] = task
 
     return crew, task_map
 
@@ -73,9 +127,16 @@ def run_crew(
     prompt_path: Optional[Path] = None,
     *,
     capture_reports: bool = False,
+    use_arbiter_beta: bool = False,
+    use_arbiter_gamma: bool = False,
     **kwargs,
 ) -> str | Tuple[str, Dict[str, Optional[str]]]:
-    crew, task_map = build_crew(pdf_path=pdf_path, prompt_path=prompt_path)
+    crew, task_map = build_crew(
+        pdf_path=pdf_path,
+        prompt_path=prompt_path,
+        use_arbiter_beta=use_arbiter_beta,
+        use_arbiter_gamma=use_arbiter_gamma,
+    )
     final_output = crew.kickoff(inputs={"pdf_path": pdf_path, **kwargs})
 
     if not capture_reports:
@@ -84,8 +145,13 @@ def run_crew(
     reports = {
         "gpt_52": _task_output_text(task_map["gpt_52"]),
         "gemini_30": _task_output_text(task_map["gemini_30"]),
-        "arbiter": _task_output_text(task_map["arbiter"]),
     }
+
+    for key, task in task_map.items():
+        if not key.startswith("arbiter_"):
+            continue
+        reports[key] = _task_output_text(task)
+
     return final_output, reports
 
 
