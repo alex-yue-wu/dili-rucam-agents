@@ -10,6 +10,7 @@ from .tasks import (
     create_analysis_task,
     create_arbiter_task,
     create_case_bundle_task,
+    load_arbiter_prompt,
     load_rucam_prompt,
 )
 
@@ -24,6 +25,7 @@ def build_crew(
     use_arbiter_gamma: bool = False,
 ) -> Tuple[Crew, TaskMap]:
     prompt_text = load_rucam_prompt(prompt_path)
+    arbiter_prompt_text = load_arbiter_prompt()
 
     ingestion_agent = build_ingestion_agent()
     gpt_agent = build_rucam_agent(
@@ -93,6 +95,7 @@ def build_crew(
             gpt_task=gpt_task,
             gemini_task=gemini_task,
             arbiter_label=config["label"],
+            prompt_text=arbiter_prompt_text,
         )
         config["task"] = task
         arbiter_tasks.append(task)

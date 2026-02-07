@@ -67,3 +67,23 @@ def test_deepseek_model_sets_provider(monkeypatch):
     assert params["model"] == "deepseek/deepseek-chat"
     assert params["base_url"] == "https://api.deepseek.com"
     assert params["custom_llm_provider"] == "deepseek"
+
+
+def test_anthropic_models_skip_openrouter(monkeypatch):
+    monkeypatch.setenv("ARBITER_GAMMA_MODEL", "claude-sonnet-4-5-20250929")
+    monkeypatch.delenv("ARBITER_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    captured = []
+    _install_fake_completion(monkeypatch, captured)
+
+    agent = build_arbiter_agent(
+        label="Arbiter Gamma",
+        model_env="ARBITER_GAMMA_MODEL",
+        default_model="anthropic/claude-sonnet-4.5",
+    )
+
+    params = agent.llm
+    assert params.model == "claude-sonnet-4-5-20250929"
+    assert params.base_url == "https://api.anthropic.com"
+    assert params.additional_params["custom_llm_provider"] == "anthropic"

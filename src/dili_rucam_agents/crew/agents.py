@@ -68,21 +68,23 @@ def build_arbiter_agent(
 
     normalized_model = arbiter_model.lower()
     normalized_model_name = normalized_model.split("/")[-1].split(":")[-1]
+    is_anthropic_model = "anthropic" in normalized_model or "claude" in normalized_model_name
 
     base_url = None
     custom_llm_provider = None
-    if label.lower() == "arbiter alpha" and "deepseek" in normalized_model:
+    if is_anthropic_model:
+        base_url = "https://api.anthropic.com"
+        custom_llm_provider = "anthropic"
+    elif label.lower() == "arbiter alpha" and "deepseek" in normalized_model:
         base_url = "https://api.deepseek.com"
         custom_llm_provider = "deepseek"
     else:
         openrouter_models = {
             "kimi-k2-thinking",
             "glm-4.7",
-            "claude-opus-4.5",
-            "claude-sonnet-4.5",
             "qwen-max",
         }
-        if normalized_model_name in openrouter_models:
+        if normalized_model_name in openrouter_models and not is_anthropic_model:
             base_url = "https://openrouter.ai/api/v1"
             custom_llm_provider = "openrouter"
 
