@@ -37,7 +37,7 @@ PDF
  └───────────────────────────┘
           ↓
  ┌───────────────────────────┐
- │ Arbiter (Expert)          │
+ │ Arbiter(s) (Expert)       │
  └───────────────────────────┘
           ↓
  Final RUCAM report + JSON
@@ -59,12 +59,52 @@ PDF
 uv sync
 export OPENAI_API_KEY=...
 export GOOGLE_API_KEY=...
+
+# default dual-analyst + Arbiter Alpha flow
 uv run python -m dili_rucam_agents.pipeline examples/3568943.pdf
-# save individual analyst/arbiter reports as markdown (gpt-5.2, gemini-3.0, arbiter)
-uv run python -m dili_rucam_agents.pipeline examples/3568943.pdf --output-dir examples/latest_reports
+
+# persist analyst + arbiter markdown and enable the optional Beta/Gamma arbiters
+uv run python -m dili_rucam_agents.pipeline \
+    examples/3568943.pdf \
+    --output-dir examples/latest_reports \
+    --arbiter-beta \
+    --arbiter-gamma
 ```
 
-When `--output-dir` is supplied, the pipeline stores `gpt-5.2_report.md`, `gemini-3.0_report.md`, and `arbiter_report.md` inside the target folder after each run, making it easy to inspect or diff the analyst outputs.
+- `--arbiter-beta` turns on a second arbiter (defaults to GPT-5.2 unless `ARBITER_BETA_MODEL` is set, recommend Kimi-K2).
+- `--arbiter-gamma` turns on a third arbiter (defaults to GPT-5.2 unless `ARBITER_GAMMA_MODEL` is set, recommend Anthropic Claude Sonnet 4.5).
+- The base flow always runs GPT-5.2 + Gemini 3.0 analysts and Arbiter Alpha; additional arbiters let you compare multiple rulings for sensitive cases.
+
+When `--output-dir` is supplied, the pipeline stores:
+
+- `gpt-5.2_report.md` and `gemini-3.0_report.md` — analyst-facing Section A/B/C reports.
+- `arbiter-arbiter-alpha_report.md` (and `arbiter-arbiter-beta_report.md`, `arbiter-arbiter-gamma_report.md` when enabled) — arbiter outputs containing Sections A–D.
+
+Use these markdown files for regression review or to diff arbitrations across model configurations.
+
+## Arbiter Ensemble + Section D
+
+- **Arbiter Alpha** (DeepSeek Reasoner by default) runs every time and resolves GPT vs Gemini disagreements.
+- **Optional Arbiters** provide additional hepatology opinions:
+  - `--arbiter-beta` defaults to GPT-5.2 but can be retargeted.
+  - `--arbiter-gamma` defaults to GPT-5.2 but can be retargeted.
+- Every arbiter now emits a **SECTION D — Arbiter Justification**, a discrepancy table explaining why each RUCAM item score was accepted or rejected. Sections A–C mirror the analyst format so downstream automation can parse a consistent structure.
+
+## Configuration
+
+Environment variables let you pin each model deterministically:
+
+| Variable                         | Purpose                                                                                         | Default Fallback       |
+| -------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------- |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | GPT-5.2 analyst + general fallback                                                              | `gpt-5.2`              |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | Gemini 3.0 analyst                                                                              | `gemini-3-pro-preview` |
+| `INGESTION_MODEL`                | Override the deterministic ingestion helper (defaults to `OPENAI_MODEL` or `gpt-4o-mini`).      |
+| `ARBITER_ALPHA_MODEL`            | Primary arbiter (DeepSeek by default). Falls back to `ARBITER_MODEL` → `OPENAI_MODEL`.          |
+| `ARBITER_BETA_MODEL`             | Secondary arbiter when `--arbiter-beta` is set. Falls back to `ARBITER_MODEL` → `OPENAI_MODEL`. |
+| `ARBITER_GAMMA_MODEL`            | Tertiary arbiter when `--arbiter-gamma` is set. Falls back to `ARBITER_MODEL`                   |
+| `ARBITER_MODEL`                  | Shared fallback for any arbiter without its own override.                                       |
+
+Set only the variables you need; the factories automatically select the correct API base (OpenAI, Anthropic, DeepSeek, or OpenRouter) and temperature=0 for determinism.
 
 ## Test The Ingestion Tools
 
@@ -75,3 +115,11 @@ uv run pytest tests/test_ingestion.py
 ```
 
 Pytest ships with the project dependencies (see `pyproject.toml`), so `uv sync` installs it automatically. This suite exercises `build_case_bundle` and the `CaseBundleExtractionTool`, ensuring missing-PDF errors surface early and that the tool emits well-formed `case_bundle_json`. The ingestion stack automatically falls back to the unstructured `fast` strategy if Poppler/pdf2image (required for `hi_res`) is not installed, so these tests still pass on lightweight environments. Execute them whenever you touch the ingestion layer or before delivering bundles to the analyst agents.
+
+To cover the latest arbiter model-routing logic and schema validation, also run:
+
+```bash
+uv run pytest tests/test_agents.py tests/test_bundle_schema.py tests/test_rucam_json_validator.py
+```
+
+`tests/test_agents.py` ensures we send the correct `base_url` / `custom_llm_provider` for DeepSeek, OpenRouter, and Anthropic arbiters, guarding against silent routing regressions when you add new models.
