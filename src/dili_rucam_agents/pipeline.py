@@ -54,7 +54,7 @@ def _main() -> None:
     parser.add_argument(
         "--output-dir",
         dest="output_dir",
-        help="Directory to store markdown reports for GPT-5.2, Gemini 3.0, and enabled arbiters.",
+        help="Directory to store markdown reports for Analyst Alpha/Beta and enabled arbiters.",
     )
     parser.add_argument(
         "--arbiter-beta",
@@ -82,6 +82,8 @@ def _main() -> None:
 
 def _persist_reports(reports: dict[str, Optional[str]], output_dir: Path) -> None:
     filename_map = {
+        "analyst_alpha": "analyst-alpha_report.md",
+        "analyst_beta": "analyst-beta_report.md",
         "gpt_52": "gpt-5.2_report.md",
         "gemini_30": "gemini-3.0_report.md",
     }

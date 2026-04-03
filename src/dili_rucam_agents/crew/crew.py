@@ -28,18 +28,29 @@ def build_crew(
     arbiter_prompt_text = load_arbiter_prompt()
 
     ingestion_agent = build_ingestion_agent()
-    gpt_agent = build_rucam_agent(
-        label="GPT-5.2",
-        model_env="OPENAI_MODEL",
-        default_model="gpt-5.2",
-        vendor_note="OpenAI GPT-5.2 deterministic reasoning model.",
-    )
-    gemini_agent = build_rucam_agent(
-        label="Gemini 3.0",
-        model_env="GEMINI_MODEL",
-        default_model="gemini-3-pro-preview",
-        vendor_note="Google Gemini 3.0 dual-encoder causal reasoning model.",
-    )
+    analyst_configs = [
+        {
+            "key": "analyst_alpha",
+            "label": "Analyst Alpha",
+            "model_env": "ANALYST_ALPHA_MODEL",
+            "fallback_envs": ("OPENAI_MODEL",),
+            "default_model": "gpt-5.2",
+        },
+        {
+            "key": "analyst_beta",
+            "label": "Analyst Beta",
+            "model_env": "ANALYST_BETA_MODEL",
+            "fallback_envs": ("GEMINI_MODEL", "OPENAI_MODEL"),
+            "default_model": "gemini-3-pro-preview",
+        },
+    ]
+    for config in analyst_configs:
+        config["agent"] = build_rucam_agent(
+            label=config["label"],
+            model_env=config["model_env"],
+            fallback_envs=config["fallback_envs"],
+            default_model=config["default_model"],
+        )
     arbiter_configs = [
         {
             "label": "Arbiter Alpha",
@@ -71,19 +82,21 @@ def build_crew(
         )
 
     case_bundle_task = create_case_bundle_task(pdf_path=pdf_path, agent=ingestion_agent)
-    gpt_task = create_analysis_task(
-        agent=gpt_agent,
+    analyst_alpha_config = analyst_configs[0]
+    analyst_beta_config = analyst_configs[1]
+    analyst_alpha_task = create_analysis_task(
+        agent=analyst_alpha_config["agent"],
         case_bundle_task=case_bundle_task,
-        analyst_label="GPT-5.2",
+        analyst_label=analyst_alpha_config["label"],
         prompt_text=prompt_text,
-        model_reference="OPENAI_MODEL",
+        model_name=analyst_alpha_config["agent"].llm.model,
     )
-    gemini_task = create_analysis_task(
-        agent=gemini_agent,
+    analyst_beta_task = create_analysis_task(
+        agent=analyst_beta_config["agent"],
         case_bundle_task=case_bundle_task,
-        analyst_label="Gemini 3.0",
+        analyst_label=analyst_beta_config["label"],
         prompt_text=prompt_text,
-        model_reference="GEMINI_MODEL",
+        model_name=analyst_beta_config["agent"].llm.model,
     )
     arbiter_tasks = []
     for config in arbiter_configs:
@@ -92,8 +105,10 @@ def build_crew(
             continue
         task = create_arbiter_task(
             agent=agent,
-            gpt_task=gpt_task,
-            gemini_task=gemini_task,
+            analyst_alpha_task=analyst_alpha_task,
+            analyst_beta_task=analyst_beta_task,
+            analyst_alpha_label=analyst_alpha_config["label"],
+            analyst_beta_label=analyst_beta_config["label"],
             arbiter_label=config["label"],
             prompt_text=arbiter_prompt_text,
         )
@@ -102,17 +117,21 @@ def build_crew(
 
     arbiter_agents = [config["agent"] for config in arbiter_configs if config.get("agent")]
 
+    analyst_agents = [config["agent"] for config in analyst_configs]
     crew = Crew(
-        agents=[ingestion_agent, gpt_agent, gemini_agent, *arbiter_agents],
-        tasks=[case_bundle_task, gpt_task, gemini_task, *arbiter_tasks],
+        agents=[ingestion_agent, *analyst_agents, *arbiter_agents],
+        tasks=[case_bundle_task, analyst_alpha_task, analyst_beta_task, *arbiter_tasks],
         process=Process.sequential,
         verbose=True,
     )
 
     task_map: TaskMap = {
         "case_bundle": case_bundle_task,
-        "gpt_52": gpt_task,
-        "gemini_30": gemini_task,
+        "analyst_alpha": analyst_alpha_task,
+        "analyst_beta": analyst_beta_task,
+        # Backward compatibility for downstream consumers still using legacy keys.
+        "gpt_52": analyst_alpha_task,
+        "gemini_30": analyst_beta_task,
     }
 
     for config in arbiter_configs:
@@ -146,8 +165,8 @@ def run_crew(
         return final_output
 
     reports = {
-        "gpt_52": _task_output_text(task_map["gpt_52"]),
-        "gemini_30": _task_output_text(task_map["gemini_30"]),
+        "analyst_alpha": _task_output_text(task_map["analyst_alpha"]),
+        "analyst_beta": _task_output_text(task_map["analyst_beta"]),
     }
 
     for key, task in task_map.items():

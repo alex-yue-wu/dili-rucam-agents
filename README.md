@@ -29,11 +29,11 @@ PDF
      case_bundle (canonical JSON)
           ↓
  ┌───────────────────────────┐
- │ GPT-5.2 RUCAM Analyst     │
+ │ Analyst Alpha             │
  └───────────────────────────┘
           ↓
  ┌───────────────────────────┐
- │ Gemini 3.0 RUCAM Analyst  │
+ │ Analyst Beta              │
  └───────────────────────────┘
           ↓
  ┌───────────────────────────┐
@@ -79,18 +79,18 @@ uv run python -m dili_rucam_agents.pipeline \
 
 - `--arbiter-beta` turns on a second arbiter (defaults to GPT-5.2 unless `ARBITER_BETA_MODEL` is set, recommend Kimi-K2).
 - `--arbiter-gamma` turns on a third arbiter (defaults to GPT-5.2 unless `ARBITER_GAMMA_MODEL` is set, recommend Anthropic Claude Sonnet 4.5).
-- The base flow always runs GPT-5.2 + Gemini 3.0 analysts and Arbiter Alpha; additional arbiters let you compare multiple rulings for sensitive cases.
+- The base flow always runs Analyst Alpha + Analyst Beta and Arbiter Alpha; additional arbiters let you compare multiple rulings for sensitive cases.
 
 When `--output-dir` is supplied, the pipeline stores:
 
-- `gpt-5.2_report.md` and `gemini-3.0_report.md` — analyst-facing Section A/B/C reports.
+- `analyst-alpha_report.md` and `analyst-beta_report.md` — analyst-facing Section A/B/C reports.
 - `arbiter-arbiter-alpha_report.md` (and `arbiter-arbiter-beta_report.md`, `arbiter-arbiter-gamma_report.md` when enabled) — arbiter outputs containing Sections A–D.
 
 Use these markdown files for regression review or to diff arbitrations across model configurations.
 
 ## Arbiter Ensemble + Section D
 
-- **Arbiter Alpha** (DeepSeek Reasoner by default) runs every time and resolves GPT vs Gemini disagreements.
+- **Arbiter Alpha** (DeepSeek Reasoner by default) runs every time and resolves Analyst Alpha vs Analyst Beta disagreements.
 - **Optional Arbiters** provide additional hepatology opinions:
   - `--arbiter-beta` defaults to GPT-5.2 but can be retargeted.
   - `--arbiter-gamma` defaults to GPT-5.2 but can be retargeted.
@@ -102,8 +102,11 @@ Environment variables let you pin each model deterministically:
 
 | Variable                         | Purpose                                                                                         | Default Fallback       |
 | -------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------- |
-| `OPENAI_API_KEY`, `OPENAI_MODEL` | GPT-5.2 analyst + general fallback                                                              | `gpt-5.2`              |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | Gemini 3.0 analyst                                                                              | `gemini-3-pro-preview` |
+| `ANALYST_ALPHA_MODEL`            | Analyst Alpha model override. Falls back to `ANALYST_MODEL` → `OPENAI_MODEL`                   | `gpt-5.2`              |
+| `ANALYST_BETA_MODEL`             | Analyst Beta model override. Falls back to `ANALYST_MODEL` → `GEMINI_MODEL` → `OPENAI_MODEL`  | `gemini-3-pro-preview` |
+| `ANALYST_MODEL`                  | Shared fallback for any analyst without its own override.                                       |                        |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI credentials and legacy analyst fallback (also used by ingestion unless overridden).      |                        |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | Gemini credentials and legacy Analyst Beta fallback.                                            |                        |
 | `INGESTION_MODEL`                | Override the deterministic ingestion helper (defaults to `OPENAI_MODEL` or `gpt-4o-mini`).      |
 | `ARBITER_ALPHA_MODEL`            | Primary arbiter (DeepSeek by default). Falls back to `ARBITER_MODEL` → `OPENAI_MODEL`.          |
 | `ARBITER_BETA_MODEL`             | Secondary arbiter when `--arbiter-beta` is set. Falls back to `ARBITER_MODEL` → `OPENAI_MODEL`. |

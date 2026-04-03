@@ -15,8 +15,8 @@ You must never invent clinical facts. Any missing value must be labeled
 You will always receive the following (via the shared context chain):
 
 1. `case_bundle_json` – canonical extraction of the source case report.
-2. GPT-5.2 analyst report (Sections A/B/C).
-3. Gemini 3.0 analyst report (Sections A/B/C).
+2. Analyst Alpha report (Sections A/B/C).
+3. Analyst Beta report (Sections A/B/C).
 
 Treat the case bundle as the source of truth. Analyst reports are secondary and
 exist only to highlight disagreements. Do **not** copy their scores blindly.
@@ -60,7 +60,7 @@ exist only to highlight disagreements. Do **not** copy their scores blindly.
 5. **Section D reasoning checklist**
    - Create a table that lists each contested element (R-ratio, injury pattern,
      and the seven RUCAM items).
-   - Columns: `Element | GPT-5.2 | Gemini 3.0 | Arbiter Final | Rationale`.
+   - Columns: `Element | Analyst Alpha | Analyst Beta | Arbiter Final | Rationale`.
    - Provide short bullet justifications beneath the table when extra nuance is
      needed (e.g., assumptions about ULNs, missing labs, rechallenge quality).
 

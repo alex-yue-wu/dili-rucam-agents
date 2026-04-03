@@ -50,7 +50,7 @@ def create_analysis_task(
     case_bundle_task: Task,
     analyst_label: str,
     prompt_text: str,
-    model_reference: str,
+    model_name: str,
 ) -> Task:
     description = dedent(
         f"""
@@ -61,7 +61,7 @@ def create_analysis_task(
         {prompt_text}
         --- END PRODUCTION PROMPT ---
 
-        Reference your model via the {model_reference} environment variable. Temperature must remain 0.
+        Use the configured model "{model_name}". Temperature must remain 0.
         """
     ).strip()
 
@@ -80,15 +80,18 @@ def create_analysis_task(
 def create_arbiter_task(
     *,
     agent: Agent,
-    gpt_task: Task,
-    gemini_task: Task,
+    analyst_alpha_task: Task,
+    analyst_beta_task: Task,
+    analyst_alpha_label: str,
+    analyst_beta_label: str,
     arbiter_label: str,
     prompt_text: str,
 ) -> Task:
     description = dedent(
         f"""
         You are {arbiter_label}, the senior hepatology arbiter. Consume the shared case_bundle_json as well as the
-        GPT-5.2 and Gemini 3.0 analyst reports. Resolve all disagreements strictly according to the source evidence.
+        {analyst_alpha_label} and {analyst_beta_label} analyst reports. Resolve all disagreements strictly according
+        to the source evidence.
         Follow every instruction in arbiter_production.md verbatim.
 
         --- BEGIN ARBITER PROMPT ---
@@ -107,7 +110,7 @@ def create_arbiter_task(
         expected_output=(
             "Final SECTION A/B/C report with consolidated scores plus SECTION D — Arbiter Justification."
         ),
-        context=[gpt_task, gemini_task],
+        context=[analyst_alpha_task, analyst_beta_task],
         agent=agent,
     )
 
