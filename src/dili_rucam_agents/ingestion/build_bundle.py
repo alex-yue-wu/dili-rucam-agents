@@ -7,6 +7,7 @@ from typing import List
 from crewai.tools import BaseTool
 
 from .case_bundle import CaseBundle, CaseBundleBlock, CaseBundleTable, QualityMetrics, merge_blocks
+from .docling_ingest import extract_docling_blocks_and_tables
 from .pdfplumber_tables import extract_tables
 from .pymupdf_fallback import extract_fallback_blocks
 from .unstructured_ingest import run_unstructured_ingest
@@ -40,7 +41,15 @@ def build_case_bundle(pdf_path: Path) -> CaseBundle:
     tables, table_notes = extract_tables(pdf_path)
     notes.extend(table_notes)
 
-    deduped_blocks = merge_blocks(blocks, fallback_blocks)
+    docling_blocks: List[CaseBundleBlock] = []
+    docling_tables: List[CaseBundleTable] = []
+    if not blocks and not tables:
+        docling_blocks, docling_tables, docling_notes = extract_docling_blocks_and_tables(pdf_path)
+        blocks.extend(docling_blocks)
+        tables.extend(docling_tables)
+        notes.extend(docling_notes)
+
+    deduped_blocks = merge_blocks(blocks, fallback_blocks, docling_blocks)
     normalized_text = "\n".join(block.text for block in deduped_blocks if block.text).strip()
 
     quality = QualityMetrics(

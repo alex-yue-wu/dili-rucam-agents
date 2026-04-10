@@ -6,6 +6,11 @@ from typing import Optional
 from crewai import Agent, LLM
 
 from dili_rucam_agents.ingestion.build_bundle import CaseBundleExtractionTool
+from dili_rucam_agents.litellm_runtime import configure_litellm_runtime
+from dili_rucam_agents.masking import ScoreMaskingTool
+
+
+configure_litellm_runtime()
 
 
 def _read_int_env(*names: str) -> int | None:
@@ -22,15 +27,20 @@ def _read_int_env(*names: str) -> int | None:
     return None
 
 
+def _resolve_analyst_max_output_tokens(max_tokens_env: str) -> int | None:
+    return _read_int_env(max_tokens_env, "ANALYST_MAX_TOKENS", "LLM_MAX_TOKENS") or 12000
+
+
 def _build_routed_llm_kwargs(
     *,
     model: str,
     max_output_tokens: int | None = None,
 ) -> dict:
     normalized_model = model.lower()
-    normalized_model_name = normalized_model.split("/")[-1].split(":")[-1]
+    normalized_model_name = normalized_model.split("/")[-1].split(":")[0]
     is_anthropic_model = "anthropic" in normalized_model or "claude" in normalized_model_name
     is_deepseek_model = "deepseek" in normalized_model
+    is_openai_reasoning_model = normalized_model.startswith(("gpt-5", "o1", "o3", "o4"))
     is_gemini_model = (
         "gemini" in normalized_model_name
         or normalized_model.startswith("gemini")
@@ -43,14 +53,26 @@ def _build_routed_llm_kwargs(
     if is_anthropic_model:
         if "/" not in model:
             routed_model = f"anthropic/{model}"
+    elif is_gemini_model:
+        if "/" not in model:
+            routed_model = f"gemini/{model}"
     elif is_deepseek_model:
-        base_url = "https://api.deepseek.com"
-        custom_llm_provider = "deepseek"
+        if "/" not in model:
+            routed_model = f"deepseek/{model}"
+        else:
+            base_url = "https://api.deepseek.com"
+            custom_llm_provider = "deepseek"
     else:
         openrouter_models = {
+            "glm-5",
             "kimi-k2-thinking",
+            "kimi-k2.5",
             "glm-4.7",
+            "glm-5",
             "qwen-max",
+            "qwen3.5-plus-02-15",
+            "qwen3.6-plus",
+            "qwen3.6-plus:free"
         }
         if normalized_model_name in openrouter_models and not is_anthropic_model:
             base_url = "https://openrouter.ai/api/v1"
@@ -66,6 +88,8 @@ def _build_routed_llm_kwargs(
     if max_output_tokens:
         if is_gemini_model:
             llm_kwargs["max_output_tokens"] = max_output_tokens
+        elif is_openai_reasoning_model:
+            llm_kwargs["max_completion_tokens"] = max_output_tokens
         else:
             llm_kwargs["max_tokens"] = max_output_tokens
 
@@ -76,7 +100,7 @@ def build_ingestion_agent(model: Optional[str] = None) -> Agent:
     """Agent responsible for deterministic PDF ingestion."""
 
     tool = CaseBundleExtractionTool()
-    ingestion_model = model or os.getenv("INGESTION_MODEL") or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    ingestion_model = model or os.getenv("INGESTION_MODEL") or os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 
     return Agent(
         role="Deterministic PDF Ingestion Specialist",
@@ -96,24 +120,20 @@ def build_rucam_agent(
     *,
     label: str,
     model_env: str,
+    max_tokens_env: str,
     fallback_envs: tuple[str, ...] = (),
     default_model: str,
 ) -> Agent:
     """Factory for configurable RUCAM analysts."""
 
-    analyst_model = os.getenv(model_env)
-    if not analyst_model:
-        analyst_model = os.getenv("ANALYST_MODEL")
-    if not analyst_model:
-        for env_name in fallback_envs:
-            analyst_model = os.getenv(env_name)
-            if analyst_model:
-                break
-    if not analyst_model:
-        analyst_model = default_model
+    analyst_model = resolve_rucam_model(
+        model_env=model_env,
+        fallback_envs=fallback_envs,
+        default_model=default_model,
+    )
     llm_kwargs = _build_routed_llm_kwargs(
         model=analyst_model,
-        max_output_tokens=_read_int_env("ANALYST_MAX_TOKENS", "LLM_MAX_TOKENS"),
+        max_output_tokens=_resolve_analyst_max_output_tokens(max_tokens_env),
     )
 
     return Agent(
@@ -130,35 +150,62 @@ def build_rucam_agent(
     )
 
 
-def build_arbiter_agent(
+def resolve_rucam_model(
     *,
-    label: str,
     model_env: str,
+    fallback_envs: tuple[str, ...] = (),
     default_model: str,
-) -> Agent:
-    """Factory for the ensemble of hepatology arbiters."""
+) -> str:
+    analyst_model = os.getenv(model_env)
+    if not analyst_model:
+        analyst_model = os.getenv("ANALYST_MODEL")
+    if not analyst_model:
+        for env_name in fallback_envs:
+            analyst_model = os.getenv(env_name)
+            if analyst_model:
+                break
+    return analyst_model or default_model
 
-    arbiter_model = (
-        os.getenv(model_env)
-        or os.getenv("ARBITER_MODEL")
-        or os.getenv("OPENAI_MODEL")
-        or default_model
-    )
 
+def build_score_masking_agent(model: Optional[str] = None) -> Agent:
+    """Agent responsible for masking prior RUCAM scores before analysis."""
+
+    tool = ScoreMaskingTool()
+    masking_model = model or os.getenv("MASKING_MODEL") or os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
     llm_kwargs = _build_routed_llm_kwargs(
-        model=arbiter_model,
-        max_output_tokens=_read_int_env("ARBITER_MAX_TOKENS", "LLM_MAX_TOKENS"),
+        model=masking_model,
+        max_output_tokens=_read_int_env("MASKING_MAX_TOKENS", "LLM_MAX_TOKENS"),
     )
 
     return Agent(
-        role=f"{label} Senior Hepatology Arbiter",
+        role="RUCAM Score Masking Specialist",
         goal=(
-            "Compare Analyst Alpha and Analyst Beta reports, resolve every discrepancy, and emit a single final "
-            "RUCAM decision plus justification."
+            "Remove prior RUCAM scores and score-derived conclusions from extracted case bundles before analysts run."
         ),
         backstory=(
-            "You chaired international RUCAM harmonization panels and only side with evidence backed by the "
-            "case bundle and scoring rules."
+            "You use deterministic redaction rules to hide prior RUCAM judgments while preserving the raw clinical evidence."
+        ),
+        allow_delegation=False,
+        tools=[tool],
+        verbose=True,
+        llm=LLM(**llm_kwargs),
+    )
+
+
+def build_ground_truth_rucam_score_finder_agent(model: Optional[str] = None) -> Agent:
+    """Agent responsible for identifying the author-reported RUCAM outcome in the raw PDF extraction."""
+
+    finder_model = model or os.getenv("GROUND_TRUTH_SCORE_FINDER_MODEL") or os.getenv("OPENAI_MODEL", "gpt-5.4")
+    llm_kwargs = _build_routed_llm_kwargs(
+        model=finder_model,
+        max_output_tokens=_read_int_env("GROUND_TRUTH_SCORE_FINDER_MAX_TOKENS", "LLM_MAX_TOKENS"),
+    )
+
+    return Agent(
+        role="Ground Truth RUCAM Score Finder",
+        goal="Identify the single best author-reported RUCAM score and category from the raw case bundle.",
+        backstory=(
+            "You focus only on author-reported RUCAM outcomes in the source PDF extraction and return a fixed-format markdown report."
         ),
         allow_delegation=False,
         verbose=True,
@@ -167,7 +214,9 @@ def build_arbiter_agent(
 
 
 __all__ = [
+    "build_ground_truth_rucam_score_finder_agent",
     "build_ingestion_agent",
     "build_rucam_agent",
-    "build_arbiter_agent",
+    "build_score_masking_agent",
+    "resolve_rucam_model",
 ]

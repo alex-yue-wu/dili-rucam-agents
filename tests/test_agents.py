@@ -1,6 +1,13 @@
 import litellm
+from litellm.litellm_core_utils import litellm_logging
 
-from dili_rucam_agents.crew.agents import build_arbiter_agent, build_rucam_agent
+from dili_rucam_agents.crew.agents import (
+    _build_routed_llm_kwargs,
+    _resolve_analyst_max_output_tokens,
+    build_ground_truth_rucam_score_finder_agent,
+    build_rucam_agent,
+    build_score_masking_agent,
+)
 
 
 def _install_fake_completion(monkeypatch, captured_params):
@@ -25,89 +32,29 @@ def _install_fake_completion(monkeypatch, captured_params):
     monkeypatch.setattr(litellm, "completion", fake_completion)
 
 
-def test_openrouter_model_includes_custom_provider(monkeypatch):
-    monkeypatch.delenv("ARBITER_BETA_MODEL", raising=False)
-    monkeypatch.setenv("ARBITER_MODEL", "moonshotai/kimi-k2-thinking")
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+def test_masking_agent_uses_tool_and_default_routing(monkeypatch):
+    monkeypatch.setenv("MASKING_MODEL", "gpt-5.2")
 
-    captured = []
-    _install_fake_completion(monkeypatch, captured)
+    agent = build_score_masking_agent()
 
-    agent = build_arbiter_agent(
-        label="Arbiter Beta",
-        model_env="ARBITER_BETA_MODEL",
-        default_model="moonshotai/kimi-k2-thinking",
-    )
-
-    result = agent.llm.call("ping")
-
-    assert result == "stub-response"
-    params = captured[0]
-    assert params["model"] == "moonshotai/kimi-k2-thinking"
-    assert params["base_url"] == "https://openrouter.ai/api/v1"
-    assert params["custom_llm_provider"] == "openrouter"
+    assert agent.llm.model == "gpt-5.2"
+    assert agent.tools[0].name == "score_masker"
 
 
-def test_deepseek_model_sets_provider(monkeypatch):
-    monkeypatch.setenv("ARBITER_ALPHA_MODEL", "deepseek/deepseek-chat")
+def test_ground_truth_score_finder_agent_uses_tool_and_default_routing(monkeypatch):
+    monkeypatch.setenv("GROUND_TRUTH_SCORE_FINDER_MODEL", "gpt-5.4")
 
-    captured = []
-    _install_fake_completion(monkeypatch, captured)
+    agent = build_ground_truth_rucam_score_finder_agent()
 
-    agent = build_arbiter_agent(
-        label="Arbiter Alpha",
-        model_env="ARBITER_ALPHA_MODEL",
-        default_model="deepseek/deepseek-chat",
-    )
-
-    result = agent.llm.call("hello")
-
-    assert result == "stub-response"
-    params = captured[0]
-    assert params["model"] == "deepseek/deepseek-chat"
-    assert params["base_url"] == "https://api.deepseek.com"
-    assert params["custom_llm_provider"] == "deepseek"
+    assert agent.llm.model == "gpt-5.4"
+    assert agent.tools == []
 
 
-def test_deepseek_model_sets_provider_for_non_alpha_arbiter(monkeypatch):
-    monkeypatch.setenv("ARBITER_BETA_MODEL", "deepseek/deepseek-chat")
-
-    captured = []
-    _install_fake_completion(monkeypatch, captured)
-
-    agent = build_arbiter_agent(
-        label="Arbiter Beta",
-        model_env="ARBITER_BETA_MODEL",
-        default_model="gpt-5.2",
-    )
-
-    result = agent.llm.call("hello")
-
-    assert result == "stub-response"
-    params = captured[0]
-    assert params["model"] == "deepseek/deepseek-chat"
-    assert params["base_url"] == "https://api.deepseek.com"
-    assert params["custom_llm_provider"] == "deepseek"
-
-
-def test_anthropic_models_skip_openrouter(monkeypatch):
-    monkeypatch.setenv("ARBITER_GAMMA_MODEL", "claude-sonnet-4-5-20250929")
-    monkeypatch.delenv("ARBITER_MODEL", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-
-    captured = []
-    _install_fake_completion(monkeypatch, captured)
-
-    agent = build_arbiter_agent(
-        label="Arbiter Gamma",
-        model_env="ARBITER_GAMMA_MODEL",
-        default_model="anthropic/claude-sonnet-4.5",
-    )
-
-    params = agent.llm
-    assert "claude" in params.model
-    assert params.base_url is None
-    assert "custom_llm_provider" not in params.additional_params
+def test_litellm_runtime_disables_standard_logging_payload():
+    assert litellm_logging.get_standard_logging_object_payload(None, None, None, None, None, "success") is None
+    assert litellm.service_callback == []
+    assert litellm.success_callback == []
+    assert litellm.failure_callback == []
 
 
 def test_analyst_model_prefers_specific_env(monkeypatch):
@@ -118,6 +65,7 @@ def test_analyst_model_prefers_specific_env(monkeypatch):
     agent = build_rucam_agent(
         label="Analyst Alpha",
         model_env="ANALYST_ALPHA_MODEL",
+        max_tokens_env="ANALYST_ALPHA_MAX_TOKENS",
         fallback_envs=("OPENAI_MODEL",),
         default_model="gpt-5.2",
     )
@@ -133,6 +81,7 @@ def test_analyst_model_prefers_shared_env_over_legacy_fallback(monkeypatch):
     agent = build_rucam_agent(
         label="Analyst Beta",
         model_env="ANALYST_BETA_MODEL",
+        max_tokens_env="ANALYST_BETA_MAX_TOKENS",
         fallback_envs=("GEMINI_MODEL",),
         default_model="gemini-3-pro-preview",
     )
@@ -148,6 +97,7 @@ def test_analyst_model_uses_legacy_fallback_when_no_new_env(monkeypatch):
     agent = build_rucam_agent(
         label="Analyst Beta",
         model_env="ANALYST_BETA_MODEL",
+        max_tokens_env="ANALYST_BETA_MAX_TOKENS",
         fallback_envs=("GEMINI_MODEL",),
         default_model="gemini-3-pro-preview",
     )
@@ -156,7 +106,7 @@ def test_analyst_model_uses_legacy_fallback_when_no_new_env(monkeypatch):
 
 
 def test_analyst_openrouter_model_includes_custom_provider(monkeypatch):
-    monkeypatch.setenv("ANALYST_ALPHA_MODEL", "moonshotai/kimi-k2-thinking")
+    monkeypatch.setenv("ANALYST_ALPHA_MODEL", "moonshotai/kimi-k2.5")
 
     captured = []
     _install_fake_completion(monkeypatch, captured)
@@ -164,49 +114,45 @@ def test_analyst_openrouter_model_includes_custom_provider(monkeypatch):
     agent = build_rucam_agent(
         label="Analyst Alpha",
         model_env="ANALYST_ALPHA_MODEL",
+        max_tokens_env="ANALYST_ALPHA_MAX_TOKENS",
         fallback_envs=("OPENAI_MODEL",),
-        default_model="gpt-5.2",
+        default_model="gpt-5.4",
     )
 
     result = agent.llm.call("ping")
 
     assert result == "stub-response"
     params = captured[0]
-    assert params["model"] == "moonshotai/kimi-k2-thinking"
+    assert params["model"] == "moonshotai/kimi-k2.5"
     assert params["base_url"] == "https://openrouter.ai/api/v1"
     assert params["custom_llm_provider"] == "openrouter"
 
 
 def test_analyst_deepseek_model_sets_provider(monkeypatch):
-    monkeypatch.setenv("ANALYST_BETA_MODEL", "deepseek/deepseek-chat")
-
-    captured = []
-    _install_fake_completion(monkeypatch, captured)
+    monkeypatch.setenv("ANALYST_DELTA_MODEL", "deepseek-reasoner")
 
     agent = build_rucam_agent(
-        label="Analyst Beta",
-        model_env="ANALYST_BETA_MODEL",
-        fallback_envs=("GEMINI_MODEL",),
-        default_model="gemini-3-pro-preview",
+        label="Analyst Delta",
+        model_env="ANALYST_DELTA_MODEL",
+        max_tokens_env="ANALYST_DELTA_MAX_TOKENS",
+        fallback_envs=("OPENAI_MODEL",),
+        default_model="deepseek-reasoner",
     )
 
-    result = agent.llm.call("ping")
-
-    assert result == "stub-response"
-    params = captured[0]
-    assert params["model"] == "deepseek/deepseek-chat"
-    assert params["base_url"] == "https://api.deepseek.com"
-    assert params["custom_llm_provider"] == "deepseek"
+    assert agent.llm.model == "deepseek/deepseek-reasoner"
+    assert agent.llm.base_url is None
+    assert "custom_llm_provider" not in agent.llm.additional_params
 
 
 def test_analyst_anthropic_model_sets_provider(monkeypatch):
-    monkeypatch.setenv("ANALYST_ALPHA_MODEL", "claude-sonnet-4-5-20250929")
+    monkeypatch.setenv("ANALYST_GAMMA_MODEL", "claude-sonnet-4-5-20250929")
 
     agent = build_rucam_agent(
-        label="Analyst Alpha",
-        model_env="ANALYST_ALPHA_MODEL",
+        label="Analyst Gamma",
+        model_env="ANALYST_GAMMA_MODEL",
+        max_tokens_env="ANALYST_GAMMA_MAX_TOKENS",
         fallback_envs=("OPENAI_MODEL",),
-        default_model="gpt-5.2",
+        default_model="anthropic/claude-sonnet-4.5",
     )
 
     assert "claude" in agent.llm.model
@@ -215,12 +161,14 @@ def test_analyst_anthropic_model_sets_provider(monkeypatch):
 
 
 def test_bare_claude_model_uses_default_anthropic_routing(monkeypatch):
-    monkeypatch.setenv("ARBITER_ALPHA_MODEL", "claude-opus-4-6")
+    monkeypatch.setenv("ANALYST_GAMMA_MODEL", "claude-opus-4-6")
 
-    agent = build_arbiter_agent(
-        label="Arbiter Alpha",
-        model_env="ARBITER_ALPHA_MODEL",
-        default_model="gpt-5.2",
+    agent = build_rucam_agent(
+        label="Analyst Gamma",
+        model_env="ANALYST_GAMMA_MODEL",
+        max_tokens_env="ANALYST_GAMMA_MAX_TOKENS",
+        fallback_envs=("OPENAI_MODEL",),
+        default_model="anthropic/claude-sonnet-4.5",
     )
 
     assert "claude" in agent.llm.model
@@ -234,6 +182,7 @@ def test_analyst_gpt_model_uses_default_provider_routing(monkeypatch):
     agent = build_rucam_agent(
         label="Analyst Alpha",
         model_env="ANALYST_ALPHA_MODEL",
+        max_tokens_env="ANALYST_ALPHA_MAX_TOKENS",
         fallback_envs=("OPENAI_MODEL",),
         default_model="gpt-5.2",
     )
@@ -243,43 +192,103 @@ def test_analyst_gpt_model_uses_default_provider_routing(monkeypatch):
     assert "custom_llm_provider" not in agent.llm.additional_params
 
 
+def test_openai_gpt5_models_use_max_completion_tokens():
+    params = _build_routed_llm_kwargs(model="gpt-5.4", max_output_tokens=12000)
+
+    assert params["model"] == "gpt-5.4"
+    assert params["max_completion_tokens"] == 12000
+    assert "max_tokens" not in params
+
+
 def test_analyst_gemini_model_uses_default_provider_routing(monkeypatch):
     monkeypatch.setenv("ANALYST_BETA_MODEL", "gemini-3-pro-preview")
 
+    params = _build_routed_llm_kwargs(model="gemini-3-pro-preview")
+
+    assert params["model"] == "gemini/gemini-3-pro-preview"
+    assert "base_url" not in params
+    assert "custom_llm_provider" not in params
+
+
+def test_resolve_analyst_max_output_tokens_prefers_specific_env(monkeypatch):
+    monkeypatch.setenv("ANALYST_GAMMA_MAX_TOKENS", "16000")
+    monkeypatch.setenv("ANALYST_MAX_TOKENS", "8000")
+
+    assert _resolve_analyst_max_output_tokens("ANALYST_GAMMA_MAX_TOKENS") == 16000
+
+
+def test_resolve_analyst_max_output_tokens_defaults_to_12000(monkeypatch):
+    monkeypatch.delenv("ANALYST_GAMMA_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("ANALYST_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
+
+    assert _resolve_analyst_max_output_tokens("ANALYST_GAMMA_MAX_TOKENS") == 12000
+
+
+def test_openrouter_model_with_free_suffix_is_normalized_correctly(monkeypatch):
+    monkeypatch.setenv("ANALYST_EPSILON_MODEL", "qwen/qwen3.6-plus:free")
+
+    captured = []
+    _install_fake_completion(monkeypatch, captured)
+
     agent = build_rucam_agent(
-        label="Analyst Beta",
-        model_env="ANALYST_BETA_MODEL",
-        fallback_envs=("GEMINI_MODEL",),
-        default_model="gemini-3-pro-preview",
+        label="Analyst Epsilon",
+        model_env="ANALYST_EPSILON_MODEL",
+        max_tokens_env="ANALYST_EPSILON_MAX_TOKENS",
+        fallback_envs=("OPENAI_MODEL",),
+        default_model="qwen/qwen3.5-plus-02-15",
     )
 
-    assert agent.llm.model == "gemini-3-pro-preview"
-    assert agent.llm.base_url is None
-    assert "custom_llm_provider" not in agent.llm.additional_params
+    result = agent.llm.call("ping")
+
+    assert result == "stub-response"
+    params = captured[0]
+    assert params["model"] == "qwen/qwen3.6-plus:free"
+    assert params["base_url"] == "https://openrouter.ai/api/v1"
+    assert params["custom_llm_provider"] == "openrouter"
 
 
-def test_arbiter_max_tokens_env_overrides_default(monkeypatch):
-    monkeypatch.setenv("ARBITER_ALPHA_MODEL", "claude-opus-4-6")
-    monkeypatch.setenv("ARBITER_MAX_TOKENS", "12000")
+def test_qwen_35_openrouter_model_is_routed_correctly(monkeypatch):
+    monkeypatch.setenv("ANALYST_EPSILON_MODEL", "qwen/qwen3.5-plus-02-15")
 
-    agent = build_arbiter_agent(
-        label="Arbiter Alpha",
-        model_env="ARBITER_ALPHA_MODEL",
-        default_model="gpt-5.2",
-    )
-
-    assert agent.llm.max_tokens == 12000
-
-
-def test_gemini_analyst_uses_max_output_tokens_env(monkeypatch):
-    monkeypatch.setenv("ANALYST_BETA_MODEL", "gemini-3-pro-preview")
-    monkeypatch.setenv("ANALYST_MAX_TOKENS", "9000")
+    captured = []
+    _install_fake_completion(monkeypatch, captured)
 
     agent = build_rucam_agent(
-        label="Analyst Beta",
-        model_env="ANALYST_BETA_MODEL",
-        fallback_envs=("GEMINI_MODEL",),
-        default_model="gemini-3-pro-preview",
+        label="Analyst Epsilon",
+        model_env="ANALYST_EPSILON_MODEL",
+        max_tokens_env="ANALYST_EPSILON_MAX_TOKENS",
+        fallback_envs=("OPENAI_MODEL",),
+        default_model="qwen/qwen3.5-plus-02-15",
     )
 
-    assert agent.llm.max_output_tokens == 9000
+    result = agent.llm.call("ping")
+
+    assert result == "stub-response"
+    params = captured[0]
+    assert params["model"] == "qwen/qwen3.5-plus-02-15"
+    assert params["base_url"] == "https://openrouter.ai/api/v1"
+    assert params["custom_llm_provider"] == "openrouter"
+
+
+def test_glm_openrouter_model_is_routed_correctly(monkeypatch):
+    monkeypatch.setenv("ANALYST_ETA_MODEL", "z-ai/glm-5")
+
+    captured = []
+    _install_fake_completion(monkeypatch, captured)
+
+    agent = build_rucam_agent(
+        label="Analyst Eta",
+        model_env="ANALYST_ETA_MODEL",
+        max_tokens_env="ANALYST_ETA_MAX_TOKENS",
+        fallback_envs=("OPENAI_MODEL",),
+        default_model="z-ai/glm-5",
+    )
+
+    result = agent.llm.call("ping")
+
+    assert result == "stub-response"
+    params = captured[0]
+    assert params["model"] == "z-ai/glm-5"
+    assert params["base_url"] == "https://openrouter.ai/api/v1"
+    assert params["custom_llm_provider"] == "openrouter"

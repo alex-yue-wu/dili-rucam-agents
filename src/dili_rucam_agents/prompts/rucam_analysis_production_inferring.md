@@ -60,16 +60,70 @@ From beginning of drug:
 **2) Course (score one; use pattern-appropriate column)**  
 After stopping the drug (if continued: 0):
 
-- Hepatocellular (ALT vs peak→ULN):
-  - Decrease ≥50% within 8d +3
-  - Decrease ≥50% within 30d +2
-  - No info OR decrease ≥50% after 30d 0
-  - Decrease <50% after 30d OR recurrent increase −2
-- Cholestatic/Mixed (Alk P or total bilirubin vs peak→ULN):
-  - Decrease ≥50% within 180d +2
-  - Decrease <50% within 180d +1
-  - Persistence/increase OR no info 0  
-    If drug continued: 0.
+### Standard definitions
+
+#### Hepatocellular (ALT vs peak→ULN):
+
+- Decrease ≥50% within 8d → **+3**
+- Decrease ≥50% within 30d → **+2**
+- No info OR decrease ≥50% after 30d → **0**
+- Decrease <50% after 30d OR recurrent increase → **−2**
+
+#### Cholestatic/Mixed (Alk P or total bilirubin vs peak→ULN):
+
+- Decrease ≥50% within 180d → **+2**
+- Decrease <50% within 180d → **+1**
+- Persistence/increase OR no info → **0**
+
+If drug continued → **0**
+
+### Inference rules (for incomplete descriptions)
+
+When exact lab trajectories are not reported, limited inference is allowed using qualitative descriptions.
+
+#### Hepatocellular inference
+
+You MAY infer improvement ONLY if BOTH conditions are met:
+
+- Drug discontinuation is explicitly stated
+- Clear improvement language is present (e.g., “rapid improvement”, “marked decline”, “enzymes normalized”)
+
+Then:
+
+- If described as:
+  - “rapid improvement”, “prompt normalization”, “marked decline within days”
+    → infer **≥50% decrease within 30 days → +2**
+
+- If described as:
+  - “gradual improvement”, “slow decline”, “improved over follow-up”
+    → infer **0** (do NOT assume ≥50% within 30 days)
+
+- If worsening or fluctuating course described:
+  → **−2**
+
+#### Cholestatic/Mixed inference
+
+- If described as:
+  - “resolved”, “normalized”, “significant improvement”
+    → infer **≥50% decrease within 180 days → +2**
+
+- If described as:
+  - “partial improvement”
+    → infer **+1**
+
+- If persistence or worsening:
+  → **0**
+
+### Constraints on inference
+
+- NEVER infer **+3 (rapid 8-day decline)** without explicit numeric evidence
+- NEVER assume timing precision unless explicitly stated
+- If ambiguity exists → choose the **lower score**
+- If no meaningful description → **0**
+
+### Required documentation
+
+If inference is applied, you MUST document in the report - "Course inferred from qualitative description (no numeric trajectory reported)"
 
 **3) Risk factors (sum applicable)**
 
@@ -102,10 +156,42 @@ Scoring:
 
 **7) Response to readministration / rechallenge (score one)**
 
-- Positive: doubling of ALT (hepato) OR doubling of Alk P/total bilirubin (chol/mixed) with drug alone +3
-- Compatible: doubling with suspect drug plus another drug given at initial onset +1
-- Negative: increase but <ULN with drug alone (ALT or Alk P/total bili) −2
-- Not done / not interpretable / other situations 0
+### Standard definitions
+
+- **Positive:**  
+  Doubling of ALT (hepatocellular) OR doubling of Alk P / total bilirubin (cholestatic/mixed)  
+  with the suspect drug alone → **+3**
+
+- **Compatible:**  
+  Doubling with the suspect drug PLUS another drug that had been given at initial onset → **+1**
+
+- **Negative:**  
+  Increase in ALT or Alk P / total bilirubin but remaining < ULN with drug alone → **−2**
+
+- **Not done / not interpretable / other situations** → **0**
+
+### Inference rule (for incomplete literature descriptions)
+
+In many case reports, rechallenge details are incompletely reported (e.g., no exact lab values).
+
+You MAY infer a **positive rechallenge** under the following strict condition:
+
+- Rechallenge is explicitly described AND
+- The rechallenge was **stopped due to liver enzyme elevation**
+
+Then:
+
+- If the suspect drug was administered **alone** → infer **Positive (+3)**
+- If the suspect drug was administered **with another drug** → infer **Compatible (+1)**
+
+### Constraints on inference
+
+- Do NOT infer positivity if:
+  - Only vague terms are used (e.g., “abnormal labs” without stopping drug)
+  - No clear link between rechallenge and enzyme elevation
+  - Elevation reason is unclear or confounded
+
+- Always document inference in the report - "Rechallenge inferred positive due to discontinuation from enzyme elevation"
 
 **Final category**  
 ≤0 Excluded; 1–2 Unlikely; 3–5 Possible; 6–8 Probable; >8 Highly probable
@@ -289,3 +375,172 @@ Produce a minimal, strictly structured JSON object:
   "category": "Excluded | Unlikely | Possible | Probable | Highly probable"
 }
 ```
+
+# APPENDIX — ULN (Upper Limit of Normal) CALCULATION RULES
+
+These rules MUST be applied before computing R-ratio or performing any RUCAM scoring.
+
+---
+
+## 1) Preferred ULN Source (Priority Order)
+
+Always determine ULN using the following hierarchy:
+
+1. **Explicit ULN reported in the case report**
+   - Example: “ALT normal <40 U/L”
+
+2. **Reference range provided**
+   - ULN = upper bound of the range
+
+3. **Laboratory panel context**
+   - Table headers or footnotes containing normal ranges
+
+4. **Closest temporal ULN**
+   - If multiple ULNs are reported, use the one closest to the lab measurement
+
+---
+
+## 2) Default ULN Values (ONLY when ULN is NOT reported)
+
+If ULN is not explicitly reported or inferable, use the following standardized values:
+
+### AST ULN
+
+- Male: **32 U/L**
+- Female: **26 U/L**
+- Sex unknown: **40 U/L** (LiverTox recommendation)
+
+### ALP ULN
+
+- **115 U/L** (LiverTox)
+
+### Total Bilirubin ULN
+
+- **1.2 mg/dL** (LiverTox)
+
+---
+
+## 3) Usage Constraints for Default ULN
+
+- These fallback values must ONLY be used when:
+  - No ULN is explicitly reported AND
+  - No reference range is available
+
+- If fallback ULN is used:
+  - It MUST be documented in output JSON:
+    ```json
+    "notes": ["ULN inferred using LiverTox defaults"]
+    ```
+
+- Never override explicit ULN values with defaults
+
+---
+
+## 4) Unit Consistency (CRITICAL)
+
+Before any calculation:
+
+- Ensure lab value and ULN use **identical units**
+- If units differ:
+  - Convert only if conversion is standard and unambiguous
+  - Otherwise → mark as **Not reported**
+
+Never mix units.
+
+---
+
+## 5) Calculating Multiples of ULN
+
+For each lab:
+
+```
+ALT_multiple = ALT_value / ULN_ALT
+ALP_multiple = ALP_value / ULN_ALP
+```
+
+Then compute:
+
+```
+R = ALT_multiple / ALP_multiple
+```
+
+---
+
+## 6) Selecting Correct Lab Values
+
+- Use **value at onset** (preferred for R-ratio)
+- If onset unclear:
+  - Use **earliest abnormal value**
+
+For course scoring:
+
+- Use **peak value → subsequent decline**
+
+---
+
+## 7) Handling Approximate or Qualitative Values
+
+- “ALT ~100” → usable (approximate)
+- “ALT >1000” → usable with caution (note uncertainty)
+- “ALT elevated” → **Not usable**
+
+---
+
+## 8) Missing or Conflicting Data
+
+If:
+
+- ULN missing AND fallback uncertain OR
+- conflicting lab values OR
+- unclear timing
+
+Then:
+
+- Flag in JSON:
+  ```json
+  "notes": ["ULN missing or uncertain"]
+  ```
+- Score conservatively
+
+---
+
+## 9) Prohibited Actions
+
+You MUST NOT:
+
+- Assume ULN silently
+- Default to ALT ULN = 40 U/L unless using defined fallback rule
+- Use external lab references beyond those defined here
+- Infer ULN from memory without documenting it
+
+---
+
+## 10) Summary Rule
+
+If ULN is uncertain:
+
+➡️ Use fallback values ONLY if allowed  
+➡️ Document clearly in JSON  
+➡️ Avoid over-precise R-ratio interpretation  
+➡️ Score conservatively
+
+---
+
+## 11) Rules Version Tag
+
+All outputs must include:
+
+```json
+"rules_version": "RUCAM_ULN_LiverTox_v1"
+```
+
+---
+
+## 12) Rationale
+
+This appendix ensures:
+
+- Consistent R-ratio computation across models
+- Reduced scoring variability
+- Explicit audit trail for inferred values
+- Compatibility with clinical literature standards (LiverTox)

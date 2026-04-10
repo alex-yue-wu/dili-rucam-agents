@@ -1,0 +1,166 @@
+# Masked Case Bundle Report
+
+## Summary
+- PDF Path: `/Users/alexwu/Documents/GitHub/dili-rucam-agents/results/pdf/10030780.pdf`
+- Mask Token: `[RUCAM_SCORE_MASKED]`
+- Blocks: `0`
+- Tables: `0`
+
+## Extraction Notes
+- E
+- x
+- t
+- r
+- a
+- c
+- t
+- i
+- o
+- n
+-  
+- c
+- o
+- u
+- l
+- d
+-  
+- n
+- o
+- t
+-  
+- b
+- e
+-  
+- c
+- o
+- m
+- p
+- l
+- e
+- t
+- e
+- d
+-  
+- b
+- e
+- c
+- a
+- u
+- s
+- e
+-  
+- t
+- h
+- e
+-  
+- t
+- o
+- o
+- l
+-  
+- r
+- e
+- s
+- u
+- l
+- t
+-  
+- w
+- a
+- s
+-  
+- n
+- o
+- t
+-  
+- r
+- e
+- t
+- u
+- r
+- n
+- e
+- d
+-  
+- i
+- n
+-  
+- t
+- h
+- i
+- s
+-  
+- s
+- e
+- s
+- s
+- i
+- o
+- n
+- .
+-  
+- N
+- o
+-  
+- P
+- D
+- F
+-  
+- c
+- o
+- n
+- t
+- e
+- n
+- t
+-  
+- w
+- a
+- s
+-  
+- a
+- v
+- a
+- i
+- l
+- a
+- b
+- l
+- e
+-  
+- t
+- o
+-  
+- i
+- n
+- g
+- e
+- s
+- t
+-  
+- d
+- e
+- t
+- e
+- r
+- m
+- i
+- n
+- i
+- s
+- t
+- i
+- c
+- a
+- l
+- l
+- y
+- .
+
+## Masked Normalized Text
+```text
+
+```
+
+## Masked Table Previews
+No tables extracted.
