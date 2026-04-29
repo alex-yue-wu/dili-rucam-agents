@@ -113,40 +113,86 @@ def run_crew(
         pdf_path=pdf_path,
         enable_score_masking=enable_score_masking,
     )
-    prepared_case_bundle_json = masked_case_bundle_json or raw_case_bundle_json
+    bundle_input_name = "masked_case_bundle_json" if masked_case_bundle_json else "raw_case_bundle_json"
+    selected_case_bundle_json = masked_case_bundle_json or raw_case_bundle_json
 
-    crew, task_map = build_crew(
-        pdf_path=pdf_path,
+    analyst_runs = _build_isolated_analyst_runs(
         prompt_path=prompt_path,
         strict_scoring=strict_scoring,
         use_analyst_delta=use_analyst_delta,
         use_analyst_epsilon=use_analyst_epsilon,
         use_analyst_zeta=use_analyst_zeta,
         use_analyst_eta=use_analyst_eta,
+        bundle_input_name=bundle_input_name,
     )
-    final_output = crew.kickoff(
-        inputs={
-            "pdf_path": pdf_path,
-            "prepared_case_bundle_json": prepared_case_bundle_json,
-            **kwargs,
-        }
-    )
+
+    final_output = ""
+    reports: Dict[str, Optional[str]] = {}
+    for key, crew, task in analyst_runs:
+        final_output = crew.kickoff(
+            inputs={
+                "pdf_path": pdf_path,
+                bundle_input_name: selected_case_bundle_json,
+                **kwargs,
+            }
+        )
+        if capture_reports:
+            reports[key] = _task_output_text(task)
 
     if not capture_reports:
         return final_output
 
-    reports: Dict[str, Optional[str]] = {}
     if masked_case_bundle_json:
         reports["raw_case_bundle"] = raw_case_bundle_json
         reports["masked_case_bundle"] = masked_case_bundle_json
         reports["ground_truth_rucam_score"] = _run_ground_truth_score_finder(raw_case_bundle_json)
 
-    for key, task in task_map.items():
-        if not key.startswith("analyst_"):
-            continue
-        reports[key] = _task_output_text(task)
-
     return final_output, reports
+
+
+def _build_isolated_analyst_runs(
+    *,
+    prompt_path: Optional[Path] = None,
+    strict_scoring: bool = False,
+    use_analyst_delta: bool = False,
+    use_analyst_epsilon: bool = False,
+    use_analyst_zeta: bool = False,
+    use_analyst_eta: bool = False,
+    bundle_input_name: str,
+) -> list[tuple[str, Crew, Task]]:
+    prompt_text = load_rucam_prompt(prompt_path, strict_scoring=strict_scoring)
+    analyst_configs = get_enabled_analyst_configs(
+        use_analyst_delta=use_analyst_delta,
+        use_analyst_epsilon=use_analyst_epsilon,
+        use_analyst_zeta=use_analyst_zeta,
+        use_analyst_eta=use_analyst_eta,
+    )
+    analyst_runs: list[tuple[str, Crew, Task]] = []
+
+    for config in analyst_configs:
+        agent = build_rucam_agent(
+            label=config["label"],
+            model_env=config["model_env"],
+            max_tokens_env=config["max_tokens_env"],
+            fallback_envs=config["fallback_envs"],
+            default_model=config["default_model"],
+        )
+        task = create_analysis_task(
+            agent=agent,
+            analyst_label=config["label"],
+            prompt_text=prompt_text,
+            model_name=agent.llm.model,
+            bundle_input_name=bundle_input_name,
+        )
+        crew = Crew(
+            agents=[agent],
+            tasks=[task],
+            process=Process.sequential,
+            verbose=True,
+        )
+        analyst_runs.append((config["key"], crew, task))
+
+    return analyst_runs
 
 
 def _task_output_text(task: Task) -> Optional[str]:

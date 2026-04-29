@@ -90,7 +90,7 @@ def test_prepare_case_bundle_json_masks_deterministically(monkeypatch):
 
 
 def test_run_crew_passes_masked_bundle_to_analysts(monkeypatch):
-    captured_inputs = {}
+    captured_inputs = []
     ground_truth_calls = []
 
     class DummyBundle:
@@ -106,14 +106,23 @@ def test_run_crew_passes_masked_bundle_to_analysts(monkeypatch):
             }
 
     class DummyCrew:
+        def __init__(self, label):
+            self.label = label
+
         def kickoff(self, inputs):
-            captured_inputs.update(inputs)
-            return "done"
+            captured_inputs.append({"label": self.label, **inputs})
+            return f"{self.label} done"
+
+    class DummyTask:
+        output = None
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew.build_crew",
-        lambda **kwargs: (DummyCrew(), {}),
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
+        lambda **kwargs: [
+            ("analyst_alpha", DummyCrew("alpha"), DummyTask()),
+            ("analyst_beta", DummyCrew("beta"), DummyTask()),
+        ],
     )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew._run_ground_truth_score_finder",
@@ -122,13 +131,16 @@ def test_run_crew_passes_masked_bundle_to_analysts(monkeypatch):
 
     run_crew("dummy.pdf", enable_score_masking=True)
 
-    assert "RUCAM score [RUCAM_SCORE_MASKED]" in captured_inputs["prepared_case_bundle_json"]
-    assert "raw_case_bundle_json" not in captured_inputs
+    assert len(captured_inputs) == 2
+    for captured in captured_inputs:
+        assert "RUCAM score [RUCAM_SCORE_MASKED]" in captured["masked_case_bundle_json"]
+        assert "raw_case_bundle_json" not in captured
+        assert "prepared_case_bundle_json" not in captured
     assert ground_truth_calls == []
 
 
 def test_run_crew_captures_ground_truth_report_outside_analyst_crew(monkeypatch):
-    captured_inputs = {}
+    captured_inputs = []
     ground_truth_calls = []
 
     class DummyBundle:
@@ -144,14 +156,20 @@ def test_run_crew_captures_ground_truth_report_outside_analyst_crew(monkeypatch)
             }
 
     class DummyCrew:
+        def __init__(self, label):
+            self.label = label
+
         def kickoff(self, inputs):
-            captured_inputs.update(inputs)
-            return "done"
+            captured_inputs.append({"label": self.label, **inputs})
+            return f"{self.label} done"
+
+    class DummyTask:
+        output = None
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew.build_crew",
-        lambda **kwargs: (DummyCrew(), {}),
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
+        lambda **kwargs: [("analyst_alpha", DummyCrew("alpha"), DummyTask())],
     )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew._run_ground_truth_score_finder",
@@ -160,14 +178,15 @@ def test_run_crew_captures_ground_truth_report_outside_analyst_crew(monkeypatch)
 
     _, reports = run_crew("dummy.pdf", enable_score_masking=True, capture_reports=True)
 
-    assert "raw_case_bundle_json" not in captured_inputs
+    assert len(captured_inputs) == 1
+    assert "raw_case_bundle_json" not in captured_inputs[0]
     assert len(ground_truth_calls) == 1
     assert "RUCAM score 8" in ground_truth_calls[0]
     assert reports["ground_truth_rucam_score"] == "ground truth report"
 
 
 def test_run_crew_without_masking_passes_raw_bundle_to_analysts(monkeypatch):
-    captured_inputs = {}
+    captured_inputs = []
 
     class DummyBundle:
         def to_dict(self):
@@ -182,20 +201,28 @@ def test_run_crew_without_masking_passes_raw_bundle_to_analysts(monkeypatch):
             }
 
     class DummyCrew:
+        def __init__(self, label):
+            self.label = label
+
         def kickoff(self, inputs):
-            captured_inputs.update(inputs)
-            return "done"
+            captured_inputs.append({"label": self.label, **inputs})
+            return f"{self.label} done"
+
+    class DummyTask:
+        output = None
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew.build_crew",
-        lambda **kwargs: (DummyCrew(), {}),
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
+        lambda **kwargs: [("analyst_alpha", DummyCrew("alpha"), DummyTask())],
     )
 
     run_crew("dummy.pdf", enable_score_masking=False)
 
-    assert "RUCAM score 8" in captured_inputs["prepared_case_bundle_json"]
-    assert "raw_case_bundle_json" not in captured_inputs
+    assert len(captured_inputs) == 1
+    assert "RUCAM score 8" in captured_inputs[0]["raw_case_bundle_json"]
+    assert "masked_case_bundle_json" not in captured_inputs[0]
+    assert "prepared_case_bundle_json" not in captured_inputs[0]
 
 
 def test_run_crew_leaves_analyst_reports_untouched_when_masking_enabled(monkeypatch):
@@ -229,8 +256,8 @@ def test_run_crew_leaves_analyst_reports_untouched_when_masking_enabled(monkeypa
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew.build_crew",
-        lambda **kwargs: (DummyCrew(), {"analyst_alpha": DummyTask()}),
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
+        lambda **kwargs: [("analyst_alpha", DummyCrew(), DummyTask())],
     )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew._run_ground_truth_score_finder",
