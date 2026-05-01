@@ -81,7 +81,7 @@ def _build_routed_llm_kwargs(
         # from the model string and API key environment variables.
 
     llm_kwargs = {"model": routed_model}
-    if not is_openai_reasoning_model:
+    if not (is_openai_reasoning_model or is_anthropic_model):
         llm_kwargs["temperature"] = 0
     if base_url:
         llm_kwargs["base_url"] = base_url

@@ -138,7 +138,7 @@ Environment variables let you pin each model deterministically:
 | `ANALYST_ALPHA_MODEL` | Analyst Alpha model override. Falls back to `ANALYST_MODEL` then `OPENAI_MODEL`. | `gpt-5.5` |
 | `ANALYST_BETA_MODEL` | Analyst Beta model override. Falls back to `ANALYST_MODEL`, `GEMINI_MODEL`, `OPENAI_MODEL`. | `gemini-3.1-pro-preview` |
 | `ANALYST_GAMMA_MODEL` | Analyst Gamma model override. Falls back to `ANALYST_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`. | `moonshotai/kimi-k2.5` |
-| `ANALYST_DELTA_MODEL` | Optional Analyst Delta model override. | `deepseek-reasoner` |
+| `ANALYST_DELTA_MODEL` | Optional Analyst Delta model override. | `deepseek-v4-pro` |
 | `ANALYST_EPSILON_MODEL` | Optional Analyst Epsilon model override. | `qwen/qwen3.5-plus-02-15` |
 | `ANALYST_ZETA_MODEL` | Optional Analyst Zeta model override. | `claude-opus-4-7` |
 | `ANALYST_ETA_MODEL` | Optional Analyst Eta model override. | `z-ai/glm-5` |

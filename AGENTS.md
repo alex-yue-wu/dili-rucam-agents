@@ -102,7 +102,7 @@ This step is heuristic and deterministic. It is intended to reduce leakage from 
 - `ANALYST_ALPHA_MODEL`: `gpt-5.5`
 - `ANALYST_BETA_MODEL`: `gemini-3.1-pro-preview`
 - `ANALYST_GAMMA_MODEL`: `moonshotai/kimi-k2.5`
-- `ANALYST_DELTA_MODEL`: `deepseek-reasoner`
+- `ANALYST_DELTA_MODEL`: `deepseek-v4-pro`
 - `ANALYST_EPSILON_MODEL`: `qwen/qwen3.5-plus-02-15`
 - `ANALYST_ZETA_MODEL`: `claude-opus-4-7`
 - `ANALYST_ETA_MODEL`: `z-ai/glm-5`

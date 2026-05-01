@@ -130,17 +130,17 @@ def test_analyst_openrouter_model_includes_custom_provider(monkeypatch):
 
 
 def test_analyst_deepseek_model_sets_provider(monkeypatch):
-    monkeypatch.setenv("ANALYST_DELTA_MODEL", "deepseek-reasoner")
+    monkeypatch.setenv("ANALYST_DELTA_MODEL", "deepseek-v4-pro")
 
     agent = build_rucam_agent(
         label="Analyst Delta",
         model_env="ANALYST_DELTA_MODEL",
         max_tokens_env="ANALYST_DELTA_MAX_TOKENS",
         fallback_envs=("OPENAI_MODEL",),
-        default_model="deepseek-reasoner",
+        default_model="deepseek-v4-pro",
     )
 
-    assert agent.llm.model == "deepseek/deepseek-reasoner"
+    assert agent.llm.model == "deepseek/deepseek-v4-pro"
     assert agent.llm.base_url is None
     assert "custom_llm_provider" not in agent.llm.additional_params
 
@@ -175,6 +175,14 @@ def test_bare_claude_model_uses_default_anthropic_routing(monkeypatch):
     assert "claude" in agent.llm.model
     assert agent.llm.base_url is None
     assert "custom_llm_provider" not in agent.llm.additional_params
+
+
+def test_anthropic_model_omits_deprecated_temperature():
+    params = _build_routed_llm_kwargs(model="claude-opus-4-7", max_output_tokens=12000)
+
+    assert params["model"] == "anthropic/claude-opus-4-7"
+    assert params["max_tokens"] == 12000
+    assert "temperature" not in params
 
 
 def test_analyst_zeta_default_model_is_latest_opus():
