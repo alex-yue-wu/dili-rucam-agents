@@ -144,7 +144,7 @@ Strict JSON with injury pattern, R-ratio, itemized scores, total score, and cate
 
 ## 7. Engineering Standards
 
-- Temperature remains 0 for all configured models.
+- Temperature remains 0 for all configured models when supported; models that reject explicit temperature use the provider-required default.
 - Ingestion and masking must be testable without live API calls.
 - Optional agents are activated only by explicit configuration.
 - Persist one report per enabled analyst when an output directory is supplied.

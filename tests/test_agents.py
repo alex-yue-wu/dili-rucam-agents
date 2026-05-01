@@ -208,6 +208,14 @@ def test_openai_gpt5_models_use_max_completion_tokens():
     assert "max_tokens" not in params
 
 
+def test_openai_gpt55_model_omits_unsupported_temperature():
+    params = _build_routed_llm_kwargs(model="gpt-5.5", max_output_tokens=12000)
+
+    assert params["model"] == "gpt-5.5"
+    assert params["max_completion_tokens"] == 12000
+    assert "temperature" not in params
+
+
 def test_analyst_gemini_model_uses_default_provider_routing(monkeypatch):
     monkeypatch.setenv("ANALYST_BETA_MODEL", "gemini-3-pro-preview")
 

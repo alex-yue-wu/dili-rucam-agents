@@ -80,7 +80,9 @@ def _build_routed_llm_kwargs(
         # OpenAI GPT and Google Gemini routes are resolved by LiteLLM/CrewAI
         # from the model string and API key environment variables.
 
-    llm_kwargs = {"model": routed_model, "temperature": 0}
+    llm_kwargs = {"model": routed_model}
+    if not is_openai_reasoning_model:
+        llm_kwargs["temperature"] = 0
     if base_url:
         llm_kwargs["base_url"] = base_url
     if custom_llm_provider:

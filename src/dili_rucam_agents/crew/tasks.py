@@ -71,7 +71,8 @@ def create_analysis_task(
         {prompt_text}
         --- END PRODUCTION PROMPT ---
 
-        Use the configured model "{model_name}". Temperature must remain 0.
+        Use the configured model "{model_name}". Temperature must remain 0 when supported;
+        otherwise use the provider-required default temperature.
         """
     ).strip()
 
@@ -124,7 +125,8 @@ def build_ground_truth_score_finder_prompt(*, raw_case_bundle_json: str, model_n
         {prompt_text}
         --- END GROUND TRUTH PROMPT ---
 
-        Use the configured model "{model_name}". Temperature must remain 0.
+        Use the configured model "{model_name}". Temperature must remain 0 when supported;
+        otherwise use the provider-required default temperature.
         Return only the markdown report requested by the prompt.
         """
     ).strip()
