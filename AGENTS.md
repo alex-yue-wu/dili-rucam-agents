@@ -99,7 +99,7 @@ This step is heuristic and deterministic. It is intended to reduce leakage from 
 
 ### Default model lineup
 
-- `ANALYST_ALPHA_MODEL`: `gpt-5.4`
+- `ANALYST_ALPHA_MODEL`: `gpt-5.5`
 - `ANALYST_BETA_MODEL`: `gemini-3.1-pro-preview`
 - `ANALYST_GAMMA_MODEL`: `moonshotai/kimi-k2.5`
 - `ANALYST_DELTA_MODEL`: `deepseek-reasoner`

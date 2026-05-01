@@ -292,6 +292,54 @@ def test_run_crew_uses_kickoff_output_when_task_output_is_missing(monkeypatch):
     assert reports["analyst_zeta"] == "## SECTION A\n\nReport"
 
 
+def test_run_crew_skips_existing_analyst_reports_on_retry(monkeypatch):
+    captured_labels = []
+
+    class DummyBundle:
+        def to_dict(self):
+            return {
+                "pdf_path": "example.pdf",
+                "extraction_notes": [],
+                "blocks": [],
+                "normalized_text": "ALT 650",
+                "tables": [],
+                "unknowns": [],
+                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+            }
+
+    class DummyCrew:
+        def __init__(self, label):
+            self.label = label
+
+        def kickoff(self, inputs):
+            captured_labels.append(self.label)
+            return f"## SECTION A\n\n{self.label}"
+
+    class DummyTask:
+        output = None
+
+    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
+        lambda **kwargs: [
+            ("analyst_alpha", DummyCrew("alpha"), DummyTask()),
+            ("analyst_beta", DummyCrew("beta"), DummyTask()),
+            ("analyst_gamma", DummyCrew("gamma"), DummyTask()),
+        ],
+    )
+
+    _, reports = run_crew(
+        "dummy.pdf",
+        capture_reports=True,
+        completed_reports={"analyst_alpha": "## SECTION A\n\nexisting alpha"},
+    )
+
+    assert captured_labels == ["beta", "gamma"]
+    assert reports["analyst_alpha"] == "## SECTION A\n\nexisting alpha"
+    assert reports["analyst_beta"] == "## SECTION A\n\nbeta"
+    assert reports["analyst_gamma"] == "## SECTION A\n\ngamma"
+
+
 def test_run_crew_leaves_analyst_reports_untouched_when_masking_enabled(monkeypatch):
     class DummyBundle:
         def to_dict(self):

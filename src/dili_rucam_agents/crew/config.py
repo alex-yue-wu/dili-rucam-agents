@@ -10,7 +10,7 @@ ANALYST_SPECS: tuple[dict[str, Any], ...] = (
         "model_env": "ANALYST_ALPHA_MODEL",
         "max_tokens_env": "ANALYST_ALPHA_MAX_TOKENS",
         "fallback_envs": ("OPENAI_MODEL",),
-        "default_model": "gpt-5.4",
+        "default_model": "gpt-5.5",
         "flag_name": None,
     },
     {

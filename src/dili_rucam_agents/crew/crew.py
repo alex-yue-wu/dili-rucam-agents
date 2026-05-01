@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 import json
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -107,6 +108,8 @@ def run_crew(
     use_analyst_epsilon: bool = False,
     use_analyst_zeta: bool = False,
     use_analyst_eta: bool = False,
+    completed_reports: Mapping[str, str] | None = None,
+    on_report: Callable[[str, str], None] | None = None,
     **kwargs,
 ) -> str | Tuple[str, Dict[str, Optional[str]]]:
     raw_case_bundle_json, masked_case_bundle_json = _prepare_case_bundle_json(
@@ -127,8 +130,12 @@ def run_crew(
     )
 
     final_output = ""
-    reports: Dict[str, Optional[str]] = {}
+    reports: Dict[str, Optional[str]] = dict(completed_reports or {})
+    if completed_reports:
+        final_output = next(reversed(reports.values()), "") or ""
     for key, crew, task in analyst_runs:
+        if key in reports:
+            continue
         final_output = crew.kickoff(
             inputs={
                 "pdf_path": pdf_path,
@@ -138,7 +145,10 @@ def run_crew(
         )
         fallback_output = _output_text(final_output)
         if capture_reports:
-            reports[key] = _require_non_empty_report(key, _task_output_text(task) or fallback_output)
+            report_text = _require_non_empty_report(key, _task_output_text(task) or fallback_output)
+            reports[key] = report_text
+            if on_report:
+                on_report(key, report_text)
         else:
             _require_non_empty_report(key, fallback_output)
 

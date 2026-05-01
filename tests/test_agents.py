@@ -117,7 +117,7 @@ def test_analyst_openrouter_model_includes_custom_provider(monkeypatch):
         model_env="ANALYST_ALPHA_MODEL",
         max_tokens_env="ANALYST_ALPHA_MAX_TOKENS",
         fallback_envs=("OPENAI_MODEL",),
-        default_model="gpt-5.4",
+        default_model="gpt-5.5",
     )
 
     result = agent.llm.call("ping")

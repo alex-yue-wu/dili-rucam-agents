@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 from pathlib import Path
 from typing import Optional
 
+from dili_rucam_agents.crew.config import get_enabled_analyst_configs
 from dili_rucam_agents.crew.crew import run_crew
 from dili_rucam_agents.masking import (
     MASK_TOKEN,
@@ -11,6 +14,21 @@ from dili_rucam_agents.masking import (
     is_patient_specific_outcome_line,
     parse_case_bundle_json,
 )
+
+_JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+_REPORT_FILENAME_MAP = {
+    "masked_case_bundle": "masked-case-bundle_report.md",
+    "ground_truth_rucam_score": "ground-truth-rucam-score_report.md",
+    "analyst_alpha": "analyst-alpha_report.md",
+    "analyst_beta": "analyst-beta_report.md",
+    "analyst_gamma": "analyst-gamma_report.md",
+    "analyst_delta": "analyst-delta_report.md",
+    "analyst_epsilon": "analyst-epsilon_report.md",
+    "analyst_zeta": "analyst-zeta_report.md",
+    "analyst_eta": "analyst-eta_report.md",
+    "gpt_52": "gpt-5.2_report.md",
+    "gemini_30": "gemini-3.0_report.md",
+}
 
 
 def run_end_to_end(
@@ -34,6 +52,18 @@ def run_end_to_end(
     if resolved_output_dir:
         resolved_output_dir.mkdir(parents=True, exist_ok=True)
 
+    completed_reports = (
+        _load_completed_analyst_reports(
+            resolved_output_dir,
+            use_analyst_delta=use_analyst_delta,
+            use_analyst_epsilon=use_analyst_epsilon,
+            use_analyst_zeta=use_analyst_zeta,
+            use_analyst_eta=use_analyst_eta,
+        )
+        if resolved_output_dir
+        else {}
+    )
+
     result = run_crew(
         resolved_pdf,
         resolved_prompt,
@@ -44,6 +74,12 @@ def run_end_to_end(
         use_analyst_epsilon=use_analyst_epsilon,
         use_analyst_zeta=use_analyst_zeta,
         use_analyst_eta=use_analyst_eta,
+        completed_reports=completed_reports,
+        on_report=(
+            (lambda key, content: _persist_reports({key: content}, resolved_output_dir))
+            if resolved_output_dir
+            else None
+        ),
     )
 
     if isinstance(result, tuple):
@@ -124,19 +160,6 @@ def _main() -> None:
 
 def _persist_reports(reports: dict[str, Optional[str]], output_dir: Path) -> None:
     has_masking_outputs = bool(reports.get("raw_case_bundle") and reports.get("masked_case_bundle"))
-    filename_map = {
-        "masked_case_bundle": "masked-case-bundle_report.md",
-        "ground_truth_rucam_score": "ground-truth-rucam-score_report.md",
-        "analyst_alpha": "analyst-alpha_report.md",
-        "analyst_beta": "analyst-beta_report.md",
-        "analyst_gamma": "analyst-gamma_report.md",
-        "analyst_delta": "analyst-delta_report.md",
-        "analyst_epsilon": "analyst-epsilon_report.md",
-        "analyst_zeta": "analyst-zeta_report.md",
-        "analyst_eta": "analyst-eta_report.md",
-        "gpt_52": "gpt-5.2_report.md",
-        "gemini_30": "gemini-3.0_report.md",
-    }
 
     for key, content in reports.items():
         if not content:
@@ -144,8 +167,8 @@ def _persist_reports(reports: dict[str, Optional[str]], output_dir: Path) -> Non
         if key in {"masked_case_bundle", "ground_truth_rucam_score"} and not has_masking_outputs:
             continue
 
-        if key in filename_map:
-            filename = filename_map[key]
+        if key in _REPORT_FILENAME_MAP:
+            filename = _REPORT_FILENAME_MAP[key]
         else:
             continue
 
@@ -155,6 +178,46 @@ def _persist_reports(reports: dict[str, Optional[str]], output_dir: Path) -> Non
                 masked_case_bundle_payload=content,
             )
         (output_dir / filename).write_text(content, encoding="utf-8")
+
+
+def _load_completed_analyst_reports(
+    output_dir: Path,
+    *,
+    use_analyst_delta: bool = False,
+    use_analyst_epsilon: bool = False,
+    use_analyst_zeta: bool = False,
+    use_analyst_eta: bool = False,
+) -> dict[str, str]:
+    reports: dict[str, str] = {}
+    analyst_configs = get_enabled_analyst_configs(
+        use_analyst_delta=use_analyst_delta,
+        use_analyst_epsilon=use_analyst_epsilon,
+        use_analyst_zeta=use_analyst_zeta,
+        use_analyst_eta=use_analyst_eta,
+    )
+    for config in analyst_configs:
+        key = config["key"]
+        filename = _REPORT_FILENAME_MAP.get(key)
+        if not filename:
+            continue
+        report_path = output_dir / filename
+        if not report_path.exists():
+            continue
+        report_text = report_path.read_text(encoding="utf-8")
+        if _has_parseable_section_c_json(report_text):
+            reports[key] = report_text
+    return reports
+
+
+def _has_parseable_section_c_json(report_text: str) -> bool:
+    for json_block in _JSON_BLOCK_RE.findall(report_text):
+        try:
+            payload = json.loads(json_block)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and "total_score" in payload:
+            return True
+    return False
 
 
 def _render_masked_case_bundle_report(

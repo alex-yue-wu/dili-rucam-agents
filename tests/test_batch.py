@@ -287,6 +287,55 @@ def test_run_end_to_end_forwards_strict_scoring(monkeypatch):
     assert captured_kwargs["strict_scoring"] is True
 
 
+def test_run_end_to_end_supplies_existing_analyst_reports_for_retry(tmp_path: Path, monkeypatch):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    output_dir.joinpath("analyst-alpha_report.md").write_text(
+        '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+        encoding="utf-8",
+    )
+    output_dir.joinpath("analyst-beta_report.md").write_text(
+        "See complete Sections A, B, and C above.\n",
+        encoding="utf-8",
+    )
+
+    captured_kwargs = {}
+
+    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "ok", {
+            **kwargs["completed_reports"],
+            "analyst_beta": '## SECTION C\n```json\n{"total_score": 6, "category": "Probable"}\n```\n',
+            "analyst_gamma": '## SECTION C\n```json\n{"total_score": 5, "category": "Possible"}\n```\n',
+        }
+
+    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
+
+    run_end_to_end("example.pdf", output_dir=str(output_dir))
+
+    assert set(captured_kwargs["completed_reports"]) == {"analyst_alpha"}
+    assert "total_score" in captured_kwargs["completed_reports"]["analyst_alpha"]
+    assert "analyst_beta" not in captured_kwargs["completed_reports"]
+
+
+def test_run_end_to_end_persists_each_successful_analyst_before_later_failure(tmp_path: Path, monkeypatch):
+    output_dir = tmp_path / "output"
+
+    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
+        kwargs["on_report"]("analyst_alpha", "alpha report")
+        raise RuntimeError("beta failed")
+
+    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
+
+    try:
+        run_end_to_end("example.pdf", output_dir=str(output_dir))
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "beta failed" in str(exc)
+
+    assert (output_dir / "analyst-alpha_report.md").read_text(encoding="utf-8") == "alpha report"
+
+
 def test_run_batch_folder_skips_completed_pdf(tmp_path: Path, monkeypatch):
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
