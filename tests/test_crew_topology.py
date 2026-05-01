@@ -26,12 +26,13 @@ def test_build_crew_defaults_to_three_analysts_without_masking():
         "analyst_beta_analysis",
         "analyst_gamma_analysis",
     ]
-    assert "analyst_alpha" in task_map
-    assert "analyst_beta" in task_map
-    assert "analyst_gamma" in task_map
-    assert "analyst_delta" not in task_map
-    assert "gpt_52" in task_map
-    assert "gemini_30" in task_map
+    assert set(task_map) == {
+        "case_bundle_raw",
+        "case_bundle",
+        "analyst_alpha",
+        "analyst_beta",
+        "analyst_gamma",
+    }
     assert "Never quote, restate, compare against, or discuss any author-reported" in crew.tasks[1].description
     assert "Return a complete SECTION A, SECTION B, and fenced SECTION C JSON." in crew.tasks[2].description
     assert "fenced SECTION C JSON" in crew.tasks[2].expected_output

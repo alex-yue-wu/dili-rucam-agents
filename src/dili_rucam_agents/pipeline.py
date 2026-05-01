@@ -26,8 +26,6 @@ _REPORT_FILENAME_MAP = {
     "analyst_epsilon": "analyst-epsilon_report.md",
     "analyst_zeta": "analyst-zeta_report.md",
     "analyst_eta": "analyst-eta_report.md",
-    "gpt_52": "gpt-5.2_report.md",
-    "gemini_30": "gemini-3.0_report.md",
 }
 
 

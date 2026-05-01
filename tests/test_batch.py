@@ -218,7 +218,7 @@ def test_run_batch_folder_writes_summary_workbook(tmp_path: Path, monkeypatch):
     assert summary_path.name == "batch_summary.xlsx"
     assert headers == [
         "pdf_filename",
-        "gpt-5.4",
+        "gpt-5.5",
         "gemini-3.1-pro-preview",
         "moonshotai/kimi-k2.5",
         "masked_rucam_score",
@@ -227,7 +227,7 @@ def test_run_batch_folder_writes_summary_workbook(tmp_path: Path, monkeypatch):
     assert row_map["pdf_filename"] == "case-a.pdf"
     assert row_map["masked_rucam_score"] == 8
     assert row_map["masked_rucam_category"] == "Probable"
-    assert row_map["gpt-5.4"] == 7
+    assert row_map["gpt-5.5"] == 7
     assert row_map["gemini-3.1-pro-preview"] == 7
     assert row_map["moonshotai/kimi-k2.5"] == 7
     assert not log_path.exists()

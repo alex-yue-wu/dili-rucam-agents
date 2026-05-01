@@ -89,11 +89,6 @@ def build_crew(
             continue
         task_map[config["key"]] = task
 
-    if "analyst_alpha" in task_map:
-        task_map["gpt_52"] = task_map["analyst_alpha"]
-    if "analyst_beta" in task_map:
-        task_map["gemini_30"] = task_map["analyst_beta"]
-
     return crew, task_map
 
 
