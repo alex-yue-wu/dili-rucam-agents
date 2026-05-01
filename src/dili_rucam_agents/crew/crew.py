@@ -136,8 +136,11 @@ def run_crew(
                 **kwargs,
             }
         )
+        fallback_output = _output_text(final_output)
         if capture_reports:
-            reports[key] = _task_output_text(task)
+            reports[key] = _require_non_empty_report(key, _task_output_text(task) or fallback_output)
+        else:
+            _require_non_empty_report(key, fallback_output)
 
     if not capture_reports:
         return final_output
@@ -197,6 +200,10 @@ def _build_isolated_analyst_runs(
 
 def _task_output_text(task: Task) -> Optional[str]:
     output = getattr(task, "output", None)
+    return _output_text(output)
+
+
+def _output_text(output: object) -> Optional[str]:
     if output is None:
         return None
     raw = getattr(output, "raw", None)
@@ -210,7 +217,14 @@ def _task_output_text(task: Task) -> Optional[str]:
         return pydantic_obj.model_dump_json()
     if isinstance(output, dict):
         return json.dumps(output)
-    return str(output)
+    text = str(output)
+    return text if text.strip() else None
+
+
+def _require_non_empty_report(key: str, report_text: Optional[str]) -> str:
+    if report_text and report_text.strip():
+        return report_text
+    raise RuntimeError(f"{key} produced an empty report.")
 
 
 def _prepare_case_bundle_json(

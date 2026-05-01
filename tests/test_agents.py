@@ -8,6 +8,7 @@ from dili_rucam_agents.crew.agents import (
     build_rucam_agent,
     build_score_masking_agent,
 )
+from dili_rucam_agents.crew.config import get_enabled_analyst_configs
 
 
 def _install_fake_completion(monkeypatch, captured_params):
@@ -174,6 +175,13 @@ def test_bare_claude_model_uses_default_anthropic_routing(monkeypatch):
     assert "claude" in agent.llm.model
     assert agent.llm.base_url is None
     assert "custom_llm_provider" not in agent.llm.additional_params
+
+
+def test_analyst_zeta_default_model_is_latest_opus():
+    configs = get_enabled_analyst_configs(use_analyst_zeta=True)
+    zeta_config = next(config for config in configs if config["key"] == "analyst_zeta")
+
+    assert zeta_config["default_model"] == "claude-opus-4-7"
 
 
 def test_analyst_gpt_model_uses_default_provider_routing(monkeypatch):

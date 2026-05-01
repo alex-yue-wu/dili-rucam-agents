@@ -55,7 +55,7 @@ ANALYST_SPECS: tuple[dict[str, Any], ...] = (
         "model_env": "ANALYST_ZETA_MODEL",
         "max_tokens_env": "ANALYST_ZETA_MAX_TOKENS",
         "fallback_envs": ("ANALYST_MODEL", "OPENAI_MODEL"),
-        "default_model": "claude-opus-4-6",
+        "default_model": "claude-opus-4-7",
         "flag_name": "use_analyst_zeta",
     },
     {

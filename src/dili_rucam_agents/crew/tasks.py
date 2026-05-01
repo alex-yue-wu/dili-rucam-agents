@@ -59,6 +59,9 @@ def create_analysis_task(
         Never quote, restate, compare against, or discuss any author-reported, published, or previously assigned
         RUCAM score or category from the source document. Treat any such prior outcomes as withheld and exclude
         them from your narrative, table, and JSON output.
+        Return a complete SECTION A, SECTION B, and fenced SECTION C JSON.
+        Do not stop after SECTION A or partway through SECTION B; if space is constrained, prioritize completing
+        SECTION B and the fenced SECTION C JSON over adding detail to SECTION A.
 
         --- BEGIN CASE BUNDLE JSON ---
         {bundle_placeholder}
@@ -81,7 +84,7 @@ def create_analysis_task(
         description=description,
         expected_output=(
             f"A complete {analyst_label} report containing SECTION A narrative, SECTION B RUCAM table, "
-            "and SECTION C JSON."
+            "and fenced SECTION C JSON."
         ),
         agent=agent,
         **task_kwargs,

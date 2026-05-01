@@ -109,6 +109,36 @@ def test_extract_section_c_json_parses_unfenced_json_below_section_c():
     assert payload["rucam_scores"]["other_causes_excluded"] == -2
 
 
+def test_extract_section_c_json_raises_helpful_error_for_summary_placeholder():
+    report_text = "See complete Sections A, B, and C above."
+
+    try:
+        extract_section_c_json(report_text)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "summary placeholder" in str(exc)
+
+
+def test_extract_section_c_json_raises_helpful_error_for_truncated_report():
+    report_text = """
+## SECTION A
+
+Complete narrative.
+
+## SECTION B
+
+| RUCAM Item | Score |
+| --- | --- |
+| Total | 6 |
+"""
+
+    try:
+        extract_section_c_json(report_text)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "truncated before SECTION C" in str(exc)
+
+
 def test_extract_ground_truth_rucam_score_reads_stable_field():
     report = """
 # Ground Truth RUCAM Score Report
@@ -427,6 +457,49 @@ def test_run_batch_folder_stops_on_error_and_marks_failed(tmp_path: Path, monkey
     assert not (output_dir / "case-b" / "run_status.json").exists()
 
 
+def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(tmp_path: Path, monkeypatch):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    (input_dir / "case-a.pdf").write_bytes(b"%PDF-1.4")
+
+    def fake_run_end_to_end(
+        pdf_path: str,
+        prompt_path: str | None = None,
+        output_dir: str | None = None,
+        **kwargs,
+    ) -> str:
+        result_dir = Path(output_dir)
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_dir.joinpath("analyst-alpha_report.md").write_text(
+            '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+            encoding="utf-8",
+        )
+        result_dir.joinpath("analyst-beta_report.md").write_text(
+            "See complete Sections A, B, and C above.\n",
+            encoding="utf-8",
+        )
+        result_dir.joinpath("analyst-gamma_report.md").write_text(
+            '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+            encoding="utf-8",
+        )
+        return "ok"
+
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
+
+    try:
+        run_batch_folder(
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+        )
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "analyst-beta_report.md" in message
+        assert "summary placeholder" in message
+
+
 def test_run_batch_folder_reruns_failed_pdf_on_resume(tmp_path: Path, monkeypatch):
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -478,4 +551,3 @@ def test_run_batch_folder_reruns_failed_pdf_on_resume(tmp_path: Path, monkeypatc
     assert calls == ["case-a.pdf"]
     status = json.loads((result_dir / "run_status.json").read_text(encoding="utf-8"))
     assert status["status"] == "completed"
-

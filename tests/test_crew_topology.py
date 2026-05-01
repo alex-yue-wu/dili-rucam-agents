@@ -33,6 +33,8 @@ def test_build_crew_defaults_to_three_analysts_without_masking():
     assert "gpt_52" in task_map
     assert "gemini_30" in task_map
     assert "Never quote, restate, compare against, or discuss any author-reported" in crew.tasks[1].description
+    assert "Return a complete SECTION A, SECTION B, and fenced SECTION C JSON." in crew.tasks[2].description
+    assert "fenced SECTION C JSON" in crew.tasks[2].expected_output
 
 
 def test_build_crew_can_enable_masking_and_optional_analysts():
@@ -223,6 +225,71 @@ def test_run_crew_without_masking_passes_raw_bundle_to_analysts(monkeypatch):
     assert "RUCAM score 8" in captured_inputs[0]["raw_case_bundle_json"]
     assert "masked_case_bundle_json" not in captured_inputs[0]
     assert "prepared_case_bundle_json" not in captured_inputs[0]
+
+
+def test_run_crew_raises_when_analyst_returns_empty_output(monkeypatch):
+    class DummyBundle:
+        def to_dict(self):
+            return {
+                "pdf_path": "example.pdf",
+                "extraction_notes": [],
+                "blocks": [],
+                "normalized_text": "ALT 650",
+                "tables": [],
+                "unknowns": [],
+                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+            }
+
+    class DummyCrew:
+        def kickoff(self, inputs):
+            return "   "
+
+    class DummyTask:
+        output = None
+
+    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
+        lambda **kwargs: [("analyst_zeta", DummyCrew(), DummyTask())],
+    )
+
+    try:
+        run_crew("dummy.pdf", capture_reports=True)
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "analyst_zeta" in str(exc)
+        assert "empty report" in str(exc)
+
+
+def test_run_crew_uses_kickoff_output_when_task_output_is_missing(monkeypatch):
+    class DummyBundle:
+        def to_dict(self):
+            return {
+                "pdf_path": "example.pdf",
+                "extraction_notes": [],
+                "blocks": [],
+                "normalized_text": "ALT 650",
+                "tables": [],
+                "unknowns": [],
+                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+            }
+
+    class DummyCrew:
+        def kickoff(self, inputs):
+            return "## SECTION A\n\nReport"
+
+    class DummyTask:
+        output = None
+
+    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
+        lambda **kwargs: [("analyst_zeta", DummyCrew(), DummyTask())],
+    )
+
+    _, reports = run_crew("dummy.pdf", capture_reports=True)
+
+    assert reports["analyst_zeta"] == "## SECTION A\n\nReport"
 
 
 def test_run_crew_leaves_analyst_reports_untouched_when_masking_enabled(monkeypatch):

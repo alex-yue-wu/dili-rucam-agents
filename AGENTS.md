@@ -104,7 +104,7 @@ This step is heuristic and deterministic. It is intended to reduce leakage from 
 - `ANALYST_GAMMA_MODEL`: `moonshotai/kimi-k2.5`
 - `ANALYST_DELTA_MODEL`: `deepseek-reasoner`
 - `ANALYST_EPSILON_MODEL`: `qwen/qwen3.5-plus-02-15`
-- `ANALYST_ZETA_MODEL`: `claude-opus-4-6`
+- `ANALYST_ZETA_MODEL`: `claude-opus-4-7`
 - `ANALYST_ETA_MODEL`: `z-ai/glm-5`
 
 ### Analyst max-token controls

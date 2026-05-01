@@ -257,7 +257,11 @@ def _populate_row_from_reports(
         report_path = pdf_output_dir / f"{config['key'].replace('_', '-')}_report.md"
         if not report_path.exists():
             continue
-        section_c = extract_section_c_json(report_path.read_text(encoding="utf-8"))
+        report_text = report_path.read_text(encoding="utf-8")
+        try:
+            section_c = extract_section_c_json(report_text)
+        except ValueError as exc:
+            raise ValueError(f"{report_path.name}: {exc}") from exc
         row[config["resolved_model_name"]] = section_c.get("total_score")
 
 
@@ -268,7 +272,7 @@ def extract_section_c_json(report_text: str) -> dict[str, Any]:
     else:
         json_block = _extract_unfenced_section_c_json_block(report_text)
         if json_block is None:
-            raise ValueError("Unable to locate SECTION C JSON in report.")
+            raise ValueError(_describe_missing_section_c(report_text))
     try:
         return json.loads(json_block)
     except json.JSONDecodeError:
@@ -276,6 +280,28 @@ def extract_section_c_json(report_text: str) -> dict[str, Any]:
         if repaired is None:
             raise
         return repaired
+
+
+def _describe_missing_section_c(report_text: str) -> str:
+    stripped = report_text.strip()
+    if not stripped:
+        return "Report is empty."
+
+    lowered = stripped.lower()
+    if "see complete sections a, b, and c above." in lowered:
+        return (
+            "Unable to locate SECTION C JSON in report; the model returned a summary "
+            "placeholder instead of the full report."
+        )
+
+    if re.search(r"section\s+b", report_text, re.IGNORECASE) and not re.search(
+        r"section\s+c",
+        report_text,
+        re.IGNORECASE,
+    ):
+        return "Unable to locate SECTION C JSON in report; report appears truncated before SECTION C."
+
+    return "Unable to locate SECTION C JSON in report."
 
 
 def _extract_unfenced_section_c_json_block(report_text: str) -> str | None:
