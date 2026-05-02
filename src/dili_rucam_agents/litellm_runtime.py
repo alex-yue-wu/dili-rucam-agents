@@ -19,7 +19,9 @@ def configure_litellm_runtime() -> None:
     def _disabled_standard_logging_object_payload(*args: Any, **kwargs: Any) -> None:
         return None
 
-    litellm_logging.get_standard_logging_object_payload = _disabled_standard_logging_object_payload
+    litellm_logging.get_standard_logging_object_payload = (
+        _disabled_standard_logging_object_payload
+    )
     litellm.service_callback = []
     litellm.success_callback = []
     litellm.failure_callback = []

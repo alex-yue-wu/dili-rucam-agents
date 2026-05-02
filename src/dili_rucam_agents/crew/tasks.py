@@ -9,16 +9,24 @@ from crewai import Agent, Task
 from dili_rucam_agents.ground_truth import load_ground_truth_prompt
 
 DEFAULT_RUCAM_INFERRING_PROMPT_PATH = (
-    Path(__file__).resolve().parents[1] / "prompts" / "rucam_analysis_production_inferring.md"
+    Path(__file__).resolve().parents[1]
+    / "prompts"
+    / "rucam_analysis_production_inferring.md"
 )
 DEFAULT_RUCAM_STRICT_PROMPT_PATH = (
-    Path(__file__).resolve().parents[1] / "prompts" / "rucam_analysis_production_strict.md"
+    Path(__file__).resolve().parents[1]
+    / "prompts"
+    / "rucam_analysis_production_strict.md"
 )
 
 
-def load_rucam_prompt(prompt_path: Optional[Path] = None, *, strict_scoring: bool = False) -> str:
+def load_rucam_prompt(
+    prompt_path: Optional[Path] = None, *, strict_scoring: bool = False
+) -> str:
     path = prompt_path or (
-        DEFAULT_RUCAM_STRICT_PROMPT_PATH if strict_scoring else DEFAULT_RUCAM_INFERRING_PROMPT_PATH
+        DEFAULT_RUCAM_STRICT_PROMPT_PATH
+        if strict_scoring
+        else DEFAULT_RUCAM_INFERRING_PROMPT_PATH
     )
     return path.read_text(encoding="utf-8")
 
@@ -110,7 +118,9 @@ def create_masking_task(*, agent: Agent, case_bundle_task: Task) -> Task:
     )
 
 
-def build_ground_truth_score_finder_prompt(*, raw_case_bundle_json: str, model_name: str) -> str:
+def build_ground_truth_score_finder_prompt(
+    *, raw_case_bundle_json: str, model_name: str
+) -> str:
     prompt_text = load_ground_truth_prompt()
     return dedent(
         f"""

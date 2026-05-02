@@ -111,7 +111,9 @@ def run_crew(
         pdf_path=pdf_path,
         enable_score_masking=enable_score_masking,
     )
-    bundle_input_name = "masked_case_bundle_json" if masked_case_bundle_json else "raw_case_bundle_json"
+    bundle_input_name = (
+        "masked_case_bundle_json" if masked_case_bundle_json else "raw_case_bundle_json"
+    )
     selected_case_bundle_json = masked_case_bundle_json or raw_case_bundle_json
 
     analyst_runs = _build_isolated_analyst_runs(
@@ -140,7 +142,9 @@ def run_crew(
         )
         fallback_output = _output_text(final_output)
         if capture_reports:
-            report_text = _require_non_empty_report(key, _task_output_text(task) or fallback_output)
+            report_text = _require_non_empty_report(
+                key, _task_output_text(task) or fallback_output
+            )
             reports[key] = report_text
             if on_report:
                 on_report(key, report_text)
@@ -153,7 +157,9 @@ def run_crew(
     if masked_case_bundle_json:
         reports["raw_case_bundle"] = raw_case_bundle_json
         reports["masked_case_bundle"] = masked_case_bundle_json
-        reports["ground_truth_rucam_score"] = _run_ground_truth_score_finder(raw_case_bundle_json)
+        reports["ground_truth_rucam_score"] = _run_ground_truth_score_finder(
+            raw_case_bundle_json
+        )
 
     return final_output, reports
 

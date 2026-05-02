@@ -52,7 +52,9 @@ def run_batch_folder(
     summary_rows: list[dict[str, Any]] = []
 
     for pdf_path in sorted(source_dir.glob("*.pdf")):
-        print(f"\n===================== Analyzing PDF: {pdf_path} =====================\n")
+        print(
+            f"\n===================== Analyzing PDF: {pdf_path} =====================\n"
+        )
         pdf_output_dir = results_dir / pdf_path.stem
         pdf_output_dir.mkdir(parents=True, exist_ok=True)
         row = _initialize_summary_row(pdf_path, pdf_output_dir, enabled_analyst_configs)
@@ -62,7 +64,9 @@ def run_batch_folder(
             enable_score_masking=enable_score_masking,
         ):
             print(f"Skipping completed PDF: {pdf_path.name}")
-            _populate_row_from_reports(row, pdf_output_dir, enabled_analyst_configs, enable_score_masking)
+            _populate_row_from_reports(
+                row, pdf_output_dir, enabled_analyst_configs, enable_score_masking
+            )
             summary_rows.append(row)
             continue
 
@@ -91,7 +95,9 @@ def run_batch_folder(
                         "status": "running",
                         "masking_enabled": enable_score_masking,
                         "strict_scoring": strict_scoring,
-                        "enabled_analysts": [config["key"] for config in enabled_analyst_configs],
+                        "enabled_analysts": [
+                            config["key"] for config in enabled_analyst_configs
+                        ],
                         "started_at": _utc_now_isoformat(),
                     },
                 )
@@ -108,7 +114,9 @@ def run_batch_folder(
                     use_analyst_zeta=use_analyst_zeta,
                     use_analyst_eta=use_analyst_eta,
                 )
-                _populate_row_from_reports(row, pdf_output_dir, enabled_analyst_configs, enable_score_masking)
+                _populate_row_from_reports(
+                    row, pdf_output_dir, enabled_analyst_configs, enable_score_masking
+                )
                 _write_pdf_run_status(
                     pdf_output_dir=pdf_output_dir,
                     payload={
@@ -116,7 +124,9 @@ def run_batch_folder(
                         "status": "completed",
                         "masking_enabled": enable_score_masking,
                         "strict_scoring": strict_scoring,
-                        "enabled_analysts": [config["key"] for config in enabled_analyst_configs],
+                        "enabled_analysts": [
+                            config["key"] for config in enabled_analyst_configs
+                        ],
                         "completed_at": _utc_now_isoformat(),
                     },
                 )
@@ -134,14 +144,18 @@ def run_batch_folder(
                         "status": "failed",
                         "masking_enabled": enable_score_masking,
                         "strict_scoring": strict_scoring,
-                        "enabled_analysts": [config["key"] for config in enabled_analyst_configs],
+                        "enabled_analysts": [
+                            config["key"] for config in enabled_analyst_configs
+                        ],
                         "failed_at": _utc_now_isoformat(),
                         "error": str(exc),
                     },
                 )
                 summary_rows.append(row)
                 summary_path = results_dir / "batch_summary.xlsx"
-                _write_summary_workbook(summary_rows, enabled_analyst_configs, summary_path)
+                _write_summary_workbook(
+                    summary_rows, enabled_analyst_configs, summary_path
+                )
                 raise RuntimeError(f"Batch stopped at {pdf_path.name}: {exc}") from exc
 
         summary_rows.append(row)
@@ -200,7 +214,10 @@ def _expected_report_paths(
     enabled_analyst_configs: list[dict[str, Any]],
     enable_score_masking: bool,
 ) -> list[Path]:
-    expected = [pdf_output_dir / f"{config['key'].replace('_', '-')}_report.md" for config in enabled_analyst_configs]
+    expected = [
+        pdf_output_dir / f"{config['key'].replace('_', '-')}_report.md"
+        for config in enabled_analyst_configs
+    ]
     if enable_score_masking:
         expected.extend(
             [
@@ -251,7 +268,9 @@ def _populate_row_from_reports(
         if ground_truth_report_path.exists():
             report_text = ground_truth_report_path.read_text(encoding="utf-8")
             row["masked_rucam_score"] = extract_ground_truth_rucam_score(report_text)
-            row["masked_rucam_category"] = extract_ground_truth_rucam_category(report_text)
+            row["masked_rucam_category"] = extract_ground_truth_rucam_category(
+                report_text
+            )
 
     for config in enabled_analyst_configs:
         report_path = pdf_output_dir / f"{config['key'].replace('_', '-')}_report.md"
@@ -308,7 +327,7 @@ def _extract_unfenced_section_c_json_block(report_text: str) -> str | None:
     heading_match = _SECTION_C_HEADING_RE.search(report_text)
     if not heading_match:
         return None
-    remainder = report_text[heading_match.end():]
+    remainder = report_text[heading_match.end() :]
     first_brace = remainder.find("{")
     if first_brace == -1:
         return None
@@ -429,20 +448,37 @@ def _write_summary_workbook(
 
     for column_cells in sheet.columns:
         max_length = max(len(str(cell.value or "")) for cell in column_cells)
-        sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 60)
+        sheet.column_dimensions[column_cells[0].column_letter].width = min(
+            max(max_length + 2, 12), 60
+        )
 
     workbook.save(output_path)
 
 
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="Run dili_rucam_agents across a folder of PDFs.")
+    parser = argparse.ArgumentParser(
+        description="Run dili_rucam_agents across a folder of PDFs."
+    )
     parser.add_argument("input_dir", help="Directory containing input PDF files.")
-    parser.add_argument("output_dir", help="Directory where per-PDF results and the summary workbook are written.")
-    parser.add_argument("--prompt-path", dest="prompt_path", help="Optional override for the production prompt file.")
-    parser.add_argument("--mask-scores", dest="enable_score_masking", action="store_true")
+    parser.add_argument(
+        "output_dir",
+        help="Directory where per-PDF results and the summary workbook are written.",
+    )
+    parser.add_argument(
+        "--prompt-path",
+        dest="prompt_path",
+        help="Optional override for the production prompt file.",
+    )
+    parser.add_argument(
+        "--mask-scores", dest="enable_score_masking", action="store_true"
+    )
     parser.add_argument("--strict-scoring", dest="strict_scoring", action="store_true")
-    parser.add_argument("--analyst-delta", dest="use_analyst_delta", action="store_true")
-    parser.add_argument("--analyst-epsilon", dest="use_analyst_epsilon", action="store_true")
+    parser.add_argument(
+        "--analyst-delta", dest="use_analyst_delta", action="store_true"
+    )
+    parser.add_argument(
+        "--analyst-epsilon", dest="use_analyst_epsilon", action="store_true"
+    )
     parser.add_argument("--analyst-zeta", dest="use_analyst_zeta", action="store_true")
     parser.add_argument("--analyst-eta", dest="use_analyst_eta", action="store_true")
     parser.add_argument("--debug", dest="debug", action="store_true")

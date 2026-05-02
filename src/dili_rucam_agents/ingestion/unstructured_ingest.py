@@ -48,7 +48,9 @@ def run_unstructured_ingest(pdf_path: Path) -> Tuple[List[CaseBundleBlock], List
 
         blocks.append(
             CaseBundleBlock(
-                element_type=element.category if hasattr(element, "category") else "NarrativeText",
+                element_type=element.category
+                if hasattr(element, "category")
+                else "NarrativeText",
                 page_number=page_number,
                 text=text.strip(),
             )

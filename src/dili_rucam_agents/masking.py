@@ -73,7 +73,9 @@ _RUCAM_GRADE_LINE_RE = re.compile(
 _INTEGER_TOKEN_RE = re.compile(r"(?<![\d.])[+-]?\d+(?![\d.])")
 _OUTCOME_INTEGER_TOKEN_RE = re.compile(r"(?<!\d)[+-]?\d+(?!\d)")
 _RUCAM_SCORE_COLUMN_RE = re.compile(r"(?i)\b(score|points?|total|result)\b")
-_RUCAM_GRADE_COLUMN_RE = re.compile(r"(?i)\b(category|causality|grade|grading|assessment|result)\b")
+_RUCAM_GRADE_COLUMN_RE = re.compile(
+    r"(?i)\b(category|causality|grade|grading|assessment|result)\b"
+)
 _LIKELY_RUCAM_REVIEW_LINE_RE = re.compile(
     r"(?i)\brucam\b.*((?<![\d.])[+-]?\d+(?![\d.])|(highly probable|probable|possible|unlikely|excluded))"
 )
@@ -90,7 +92,9 @@ _AUTHOR_REPORTED_SCORE_VALUE_RE = re.compile(
     r"(?i)(\b(?:author(?:s)?|published|reported|case report|article|paper|source report|original case report)\b[^.\n]{0,160}?"
     r"\b(?:score|points?|total|result)\b[^.\n;:]{0,40}?)([+-]?\d+)(\b)"
 )
-_RUCAM_GRADE_CONTEXT_RE = re.compile(r"(?i)\brucam\b.*\b(category|causality|grade|grading|assessment|result)\b")
+_RUCAM_GRADE_CONTEXT_RE = re.compile(
+    r"(?i)\brucam\b.*\b(category|causality|grade|grading|assessment|result)\b"
+)
 _RUCAM_CONTEXT_RE = re.compile(r"(?i)\brucam\b")
 _RUCAM_HEADER_RE = re.compile(r"(?i)\brucam\b")
 _PATIENT_SPECIFIC_OUTCOME_LINE_RE = re.compile(
@@ -125,7 +129,9 @@ def mask_case_bundle_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Redact prior RUCAM score values and grades from extracted content."""
 
     masked_payload = copy.deepcopy(payload)
-    masked_payload["normalized_text"] = _mask_text(masked_payload.get("normalized_text", ""))
+    masked_payload["normalized_text"] = _mask_text(
+        masked_payload.get("normalized_text", "")
+    )
 
     for block in masked_payload.get("blocks", []):
         if isinstance(block, dict):
@@ -150,7 +156,9 @@ def mask_case_bundle_payload(payload: dict[str, Any]) -> dict[str, Any]:
             ]
             continue
 
-        table["raw_rows"] = [[_mask_text(str(cell)) for cell in row] for row in raw_rows]
+        table["raw_rows"] = [
+            [_mask_text(str(cell)) for cell in row] for row in raw_rows
+        ]
 
     extraction_notes = list(masked_payload.get("extraction_notes", []))
     extraction_notes.append(
@@ -185,7 +193,10 @@ def _should_mask(text: str) -> bool:
     return bool(
         _RUCAM_SCORE_LINE_RE.search(normalized)
         or _RUCAM_GRADE_LINE_RE.search(normalized)
-        or (_RUCAM_GRADE_CONTEXT_RE.search(normalized) and _RUCAM_CATEGORY_VALUE_RE.search(normalized))
+        or (
+            _RUCAM_GRADE_CONTEXT_RE.search(normalized)
+            and _RUCAM_CATEGORY_VALUE_RE.search(normalized)
+        )
     )
 
 
@@ -197,7 +208,9 @@ def _is_rucam_score_table(table: dict[str, Any]) -> bool:
     preview_text = str(preview)
     if _RUCAM_HEADER_RE.search(header_text):
         return bool(_find_score_columns(raw_rows) or _find_grade_columns(raw_rows))
-    if _RUCAM_TABLE_HINT_RE.search(preview_text) and _RUCAM_HEADER_RE.search(preview_text):
+    if _RUCAM_TABLE_HINT_RE.search(preview_text) and _RUCAM_HEADER_RE.search(
+        preview_text
+    ):
         return bool(_find_score_columns(raw_rows) or _find_grade_columns(raw_rows))
     return False
 
@@ -295,7 +308,13 @@ def _mask_patient_outcome_score_values(text: str) -> str:
 def _mask_patient_outcome_grade_values(text: str) -> str:
     if not (
         _PATIENT_SPECIFIC_GRADE_LINE_RE.search(text)
-        or ((_RUCAM_METHOD_ALIAS_RE.search(text) or any(cue in text.lower() for cue in AUTHOR_OUTCOME_CUES)) and _RUCAM_CATEGORY_VALUE_RE.search(text))
+        or (
+            (
+                _RUCAM_METHOD_ALIAS_RE.search(text)
+                or any(cue in text.lower() for cue in AUTHOR_OUTCOME_CUES)
+            )
+            and _RUCAM_CATEGORY_VALUE_RE.search(text)
+        )
     ):
         return text
     return _RUCAM_CATEGORY_VALUE_RE.sub(MASK_TOKEN, text)
@@ -334,7 +353,10 @@ def _mask_score_values(text: str) -> str:
 def _mask_grade_values(text: str) -> str:
     if not (
         _RUCAM_GRADE_CONTEXT_RE.search(text)
-        or (_RUCAM_METHOD_ALIAS_RE.search(text) and _RUCAM_CATEGORY_VALUE_RE.search(text))
+        or (
+            _RUCAM_METHOD_ALIAS_RE.search(text)
+            and _RUCAM_CATEGORY_VALUE_RE.search(text)
+        )
     ):
         return text
     return _RUCAM_CATEGORY_VALUE_RE.sub(MASK_TOKEN, text)
@@ -345,7 +367,10 @@ def extract_rucam_score_ints(text: str) -> list[int]:
         return []
 
     normalized = text.strip()
-    if not (_RUCAM_SCORE_LINE_RE.search(normalized) or _RUCAM_TABLE_HINT_RE.search(normalized)):
+    if not (
+        _RUCAM_SCORE_LINE_RE.search(normalized)
+        or _RUCAM_TABLE_HINT_RE.search(normalized)
+    ):
         return []
 
     scores: list[int] = []
@@ -375,7 +400,10 @@ def extract_rucam_grade_labels(text: str) -> list[str]:
         return []
 
     normalized = text.strip()
-    if not (_RUCAM_GRADE_LINE_RE.search(normalized) or _RUCAM_TABLE_HINT_RE.search(normalized)):
+    if not (
+        _RUCAM_GRADE_LINE_RE.search(normalized)
+        or _RUCAM_TABLE_HINT_RE.search(normalized)
+    ):
         return []
 
     canonical_labels = {category.lower(): category for category in RUCAM_CATEGORIES}
@@ -394,11 +422,16 @@ def _is_patient_specific_outcome_line(text: str) -> bool:
     normalized = text.strip()
     if not normalized:
         return False
-    if _PATIENT_SPECIFIC_OUTCOME_LINE_RE.search(normalized) or _PATIENT_SPECIFIC_GRADE_LINE_RE.search(normalized):
+    if _PATIENT_SPECIFIC_OUTCOME_LINE_RE.search(
+        normalized
+    ) or _PATIENT_SPECIFIC_GRADE_LINE_RE.search(normalized):
         return True
     lower = normalized.lower()
     has_method = any(alias in lower for alias in RUCAM_METHOD_ALIASES)
-    has_outcome_term = any(term in lower for term in ("final score", "score was", "score of", "total score", "result"))
+    has_outcome_term = any(
+        term in lower
+        for term in ("final score", "score was", "score of", "total score", "result")
+    )
     has_author_cue = any(cue in lower for cue in AUTHOR_OUTCOME_CUES)
     return has_method and has_outcome_term and has_author_cue
 
@@ -407,7 +440,9 @@ def _is_generic_rucam_method_line(text: str) -> bool:
     normalized = text.strip()
     if not normalized:
         return False
-    return bool(_GENERIC_METHOD_LINE_RE.search(normalized)) and not _is_patient_specific_outcome_line(normalized)
+    return bool(
+        _GENERIC_METHOD_LINE_RE.search(normalized)
+    ) and not _is_patient_specific_outcome_line(normalized)
 
 
 def review_masked_case_bundle(
@@ -422,9 +457,14 @@ def review_masked_case_bundle(
         if not _LIKELY_RUCAM_REVIEW_LINE_RE.search(raw_line):
             continue
         masked_line = masked_lines[index] if index < len(masked_lines) else ""
-        unmasked_scores = [score for score in extract_rucam_score_ints(raw_line) if str(score) in masked_line]
+        unmasked_scores = [
+            score
+            for score in extract_rucam_score_ints(raw_line)
+            if str(score) in masked_line
+        ]
         unmasked_grades = [
-            grade for grade in extract_rucam_grade_labels(raw_line)
+            grade
+            for grade in extract_rucam_grade_labels(raw_line)
             if re.search(rf"(?i)\b{re.escape(grade)}\b", masked_line)
         ]
         if not unmasked_scores and not unmasked_grades:
@@ -457,9 +497,14 @@ def review_masked_case_bundle(
                 continue
             masked_row = masked_rows[row_index] if row_index < len(masked_rows) else []
             masked_row_text = " | ".join(str(cell) for cell in masked_row)
-            unmasked_scores = [score for score in extract_rucam_score_ints(raw_row_text) if str(score) in masked_row_text]
+            unmasked_scores = [
+                score
+                for score in extract_rucam_score_ints(raw_row_text)
+                if str(score) in masked_row_text
+            ]
             unmasked_grades = [
-                grade for grade in extract_rucam_grade_labels(raw_row_text)
+                grade
+                for grade in extract_rucam_grade_labels(raw_row_text)
                 if re.search(rf"(?i)\b{re.escape(grade)}\b", masked_row_text)
             ]
             if not unmasked_scores and not unmasked_grades:
@@ -481,7 +526,9 @@ def review_masked_case_bundle(
     return findings
 
 
-def _format_review_reason(unmasked_scores: list[int], unmasked_grades: list[str]) -> str:
+def _format_review_reason(
+    unmasked_scores: list[int], unmasked_grades: list[str]
+) -> str:
     parts: list[str] = []
     if unmasked_scores:
         parts.append("unmasked score values remain")
@@ -494,15 +541,15 @@ class ScoreMaskingTool(BaseTool):
     """CrewAI tool wrapper for deterministic RUCAM score redaction."""
 
     name: str = "score_masker"
-    description: str = (
-        "Mask prior RUCAM scores, score tables, and causality categories from a case_bundle_json payload."
-    )
+    description: str = "Mask prior RUCAM scores, score tables, and causality categories from a case_bundle_json payload."
 
     def _run(self, case_bundle_json: str) -> str:
         payload = parse_case_bundle_json(case_bundle_json)
         return json.dumps(mask_case_bundle_payload(payload), indent=2)
 
-    async def _arun(self, case_bundle_json: str) -> str:  # pragma: no cover - async parity
+    async def _arun(
+        self, case_bundle_json: str
+    ) -> str:  # pragma: no cover - async parity
         return self._run(case_bundle_json)
 
 
@@ -527,7 +574,9 @@ def parse_case_bundle_json(raw_input: str) -> dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
 
-    raise ValueError("Unable to locate a valid case_bundle_json object in score_masker input.")
+    raise ValueError(
+        "Unable to locate a valid case_bundle_json object in score_masker input."
+    )
 
 
 __all__ = [

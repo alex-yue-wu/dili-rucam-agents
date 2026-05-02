@@ -32,7 +32,9 @@ def extract_docling_blocks_and_tables(
         pipeline_options = PdfPipelineOptions()
         pipeline_options.do_ocr = True
         pipeline_options.do_table_structure = True
-        pipeline_options.table_structure_options = TableStructureOptions(do_cell_matching=True)
+        pipeline_options.table_structure_options = TableStructureOptions(
+            do_cell_matching=True
+        )
         pipeline_options.ocr_options = TesseractCliOcrOptions(force_full_page_ocr=True)
 
         converter = DocumentConverter(

@@ -26,7 +26,9 @@ def extract_fallback_blocks(pdf_path: Path) -> Tuple[List[CaseBundleBlock], List
             CaseBundleBlock(
                 element_type="NarrativeText",
                 page_number=page_index + 1,
-                text=" ".join(line.strip() for line in text.splitlines() if line.strip()),
+                text=" ".join(
+                    line.strip() for line in text.splitlines() if line.strip()
+                ),
             )
         )
 

@@ -45,7 +45,9 @@ def run_end_to_end(
 
     resolved_pdf = str(Path(pdf_path).expanduser().resolve())
     resolved_prompt = Path(prompt_path).expanduser().resolve() if prompt_path else None
-    resolved_output_dir = Path(output_dir).expanduser().resolve() if output_dir else None
+    resolved_output_dir = (
+        Path(output_dir).expanduser().resolve() if output_dir else None
+    )
 
     if resolved_output_dir:
         resolved_output_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +94,9 @@ def run_end_to_end(
 
 
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="Execute the full RUCAM crew on a PDF.")
+    parser = argparse.ArgumentParser(
+        description="Execute the full RUCAM crew on a PDF."
+    )
     parser.add_argument("pdf_path", help="Path to the clinical case report PDF.")
     parser.add_argument(
         "--prompt-path",
@@ -157,12 +161,17 @@ def _main() -> None:
 
 
 def _persist_reports(reports: dict[str, Optional[str]], output_dir: Path) -> None:
-    has_masking_outputs = bool(reports.get("raw_case_bundle") and reports.get("masked_case_bundle"))
+    has_masking_outputs = bool(
+        reports.get("raw_case_bundle") and reports.get("masked_case_bundle")
+    )
 
     for key, content in reports.items():
         if not content:
             continue
-        if key in {"masked_case_bundle", "ground_truth_rucam_score"} and not has_masking_outputs:
+        if (
+            key in {"masked_case_bundle", "ground_truth_rucam_score"}
+            and not has_masking_outputs
+        ):
             continue
 
         if key in _REPORT_FILENAME_MAP:
@@ -224,7 +233,11 @@ def _render_masked_case_bundle_report(
     masked_case_bundle_payload: str,
 ) -> str:
     masked_payload = parse_case_bundle_json(masked_case_bundle_payload)
-    raw_payload = parse_case_bundle_json(raw_case_bundle_payload) if raw_case_bundle_payload else None
+    raw_payload = (
+        parse_case_bundle_json(raw_case_bundle_payload)
+        if raw_case_bundle_payload
+        else None
+    )
     extraction_notes = masked_payload.get("extraction_notes", [])
     masked_text_pairs = _extract_masked_text_pairs(
         raw_payload.get("normalized_text", "") if raw_payload else "",
@@ -234,7 +247,9 @@ def _render_masked_case_bundle_report(
         raw_payload.get("tables", []) if raw_payload else [],
         masked_payload.get("tables", []),
     )
-    masked_rucam_scores = _extract_masked_rucam_scores_from_payloads(raw_payload, masked_payload)
+    masked_rucam_scores = _extract_masked_rucam_scores_from_payloads(
+        raw_payload, masked_payload
+    )
     sections = [
         "# Masked Case Bundle Report",
         "",

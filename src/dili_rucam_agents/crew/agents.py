@@ -28,7 +28,9 @@ def _read_int_env(*names: str) -> int | None:
 
 
 def _resolve_analyst_max_output_tokens(max_tokens_env: str) -> int | None:
-    return _read_int_env(max_tokens_env, "ANALYST_MAX_TOKENS", "LLM_MAX_TOKENS") or 12000
+    return (
+        _read_int_env(max_tokens_env, "ANALYST_MAX_TOKENS", "LLM_MAX_TOKENS") or 12000
+    )
 
 
 def _build_routed_llm_kwargs(
@@ -38,7 +40,9 @@ def _build_routed_llm_kwargs(
 ) -> dict:
     normalized_model = model.lower()
     normalized_model_name = normalized_model.split("/")[-1].split(":")[0]
-    is_anthropic_model = "anthropic" in normalized_model or "claude" in normalized_model_name
+    is_anthropic_model = (
+        "anthropic" in normalized_model or "claude" in normalized_model_name
+    )
     is_deepseek_model = "deepseek" in normalized_model
     is_openai_reasoning_model = normalized_model.startswith(("gpt-5", "o1", "o3", "o4"))
     is_gemini_model = (
@@ -72,7 +76,7 @@ def _build_routed_llm_kwargs(
             "qwen-max",
             "qwen3.5-plus-02-15",
             "qwen3.6-plus",
-            "qwen3.6-plus:free"
+            "qwen3.6-plus:free",
         }
         if normalized_model_name in openrouter_models and not is_anthropic_model:
             base_url = "https://openrouter.ai/api/v1"
@@ -102,7 +106,11 @@ def build_ingestion_agent(model: Optional[str] = None) -> Agent:
     """Agent responsible for deterministic PDF ingestion."""
 
     tool = CaseBundleExtractionTool()
-    ingestion_model = model or os.getenv("INGESTION_MODEL") or os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+    ingestion_model = (
+        model
+        or os.getenv("INGESTION_MODEL")
+        or os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+    )
 
     return Agent(
         role="Deterministic PDF Ingestion Specialist",
@@ -173,7 +181,9 @@ def build_score_masking_agent(model: Optional[str] = None) -> Agent:
     """Agent responsible for masking prior RUCAM scores before analysis."""
 
     tool = ScoreMaskingTool()
-    masking_model = model or os.getenv("MASKING_MODEL") or os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+    masking_model = (
+        model or os.getenv("MASKING_MODEL") or os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+    )
     llm_kwargs = _build_routed_llm_kwargs(
         model=masking_model,
         max_output_tokens=_read_int_env("MASKING_MAX_TOKENS", "LLM_MAX_TOKENS"),
@@ -197,10 +207,16 @@ def build_score_masking_agent(model: Optional[str] = None) -> Agent:
 def build_ground_truth_rucam_score_finder_agent(model: Optional[str] = None) -> Agent:
     """Agent responsible for identifying the author-reported RUCAM outcome in the raw PDF extraction."""
 
-    finder_model = model or os.getenv("GROUND_TRUTH_SCORE_FINDER_MODEL") or os.getenv("OPENAI_MODEL", "gpt-5.4")
+    finder_model = (
+        model
+        or os.getenv("GROUND_TRUTH_SCORE_FINDER_MODEL")
+        or os.getenv("OPENAI_MODEL", "gpt-5.4")
+    )
     llm_kwargs = _build_routed_llm_kwargs(
         model=finder_model,
-        max_output_tokens=_read_int_env("GROUND_TRUTH_SCORE_FINDER_MAX_TOKENS", "LLM_MAX_TOKENS"),
+        max_output_tokens=_read_int_env(
+            "GROUND_TRUTH_SCORE_FINDER_MAX_TOKENS", "LLM_MAX_TOKENS"
+        ),
     )
 
     return Agent(
