@@ -94,12 +94,27 @@ def _build_routed_llm_kwargs(
     if max_output_tokens:
         if is_gemini_model:
             llm_kwargs["max_output_tokens"] = max_output_tokens
-        elif is_openai_reasoning_model:
+        elif is_openai_reasoning_model or custom_llm_provider == "openrouter":
             llm_kwargs["max_completion_tokens"] = max_output_tokens
         else:
             llm_kwargs["max_tokens"] = max_output_tokens
 
     return llm_kwargs
+
+
+def _build_crewai_llm(**llm_kwargs: Any) -> LLM:
+    llm_params = dict(llm_kwargs)
+    openrouter_max_completion_tokens = None
+    if llm_params.get("custom_llm_provider") == "openrouter":
+        openrouter_max_completion_tokens = llm_params.pop(
+            "max_completion_tokens", None
+        )
+    llm = LLM(**llm_params)
+    if openrouter_max_completion_tokens:
+        llm.additional_params["max_completion_tokens"] = (
+            openrouter_max_completion_tokens
+        )
+    return llm
 
 
 def build_ingestion_agent(model: Optional[str] = None) -> Agent:
@@ -122,7 +137,7 @@ def build_ingestion_agent(model: Optional[str] = None) -> Agent:
         allow_delegation=False,
         tools=[tool],
         verbose=True,
-        llm=LLM(model=ingestion_model, temperature=0),
+        llm=_build_crewai_llm(model=ingestion_model, temperature=0),
     )
 
 
@@ -156,7 +171,7 @@ def build_rucam_agent(
         ),
         allow_delegation=False,
         verbose=True,
-        llm=LLM(**llm_kwargs),
+        llm=_build_crewai_llm(**llm_kwargs),
     )
 
 
@@ -200,7 +215,7 @@ def build_score_masking_agent(model: Optional[str] = None) -> Agent:
         allow_delegation=False,
         tools=[tool],
         verbose=True,
-        llm=LLM(**llm_kwargs),
+        llm=_build_crewai_llm(**llm_kwargs),
     )
 
 
@@ -227,7 +242,7 @@ def build_ground_truth_rucam_score_finder_agent(model: Optional[str] = None) -> 
         ),
         allow_delegation=False,
         verbose=True,
-        llm=LLM(**llm_kwargs),
+        llm=_build_crewai_llm(**llm_kwargs),
     )
 
 

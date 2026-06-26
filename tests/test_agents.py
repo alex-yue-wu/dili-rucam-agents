@@ -316,3 +316,5 @@ def test_glm_openrouter_model_is_routed_correctly(monkeypatch):
     assert params["model"] == "z-ai/glm-5"
     assert params["base_url"] == "https://openrouter.ai/api/v1"
     assert params["custom_llm_provider"] == "openrouter"
+    assert params["max_completion_tokens"] == 12000
+    assert "max_tokens" not in params
