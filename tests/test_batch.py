@@ -850,6 +850,119 @@ def test_run_batch_folder_skips_completed_pdf(tmp_path: Path, monkeypatch):
     assert calls == []
 
 
+def test_batch_contracted_topology_skips_without_mutating_checkpoint(
+    tmp_path: Path, monkeypatch
+):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    pdf_path = input_dir / "case-a.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    result_dir = output_dir / "case-a"
+    analyst_keys = (
+        "analyst_alpha",
+        "analyst_beta",
+        "analyst_gamma",
+        "analyst_delta",
+    )
+
+    def seed_run(pdf_path, prompt_path=None, **kwargs):
+        for key in analyst_keys:
+            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
+            kwargs["on_attempt"](
+                AnalystAttemptEvent(
+                    key, 1, 3, "completed", report_text=complete_report()
+                )
+            )
+        return "ok", {key: complete_report() for key in analyst_keys}
+
+    monkeypatch.setattr(pipeline_module, "run_crew", seed_run)
+    run_end_to_end(str(pdf_path), output_dir=str(result_dir), use_analyst_delta=True)
+    result_dir.joinpath("run_status.json").write_text(
+        json.dumps(
+            {
+                "pdf_filename": "case-a.pdf",
+                "status": "completed",
+                "masking_enabled": False,
+                "strict_scoring": False,
+                "enabled_analysts": list(analyst_keys),
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = result_dir / "analyst_checkpoints.json"
+    manifest_before = manifest_path.read_bytes()
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end",
+        Mock(side_effect=AssertionError("contracted batch reran pipeline")),
+    )
+
+    run_batch_folder(input_dir=str(input_dir), output_dir=str(output_dir))
+
+    assert manifest_path.read_bytes() == manifest_before
+
+
+def test_batch_topology_expansion_reenters_pipeline(tmp_path: Path, monkeypatch):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    pdf_path = input_dir / "case-a.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    result_dir = output_dir / "case-a"
+
+    def seed_run(pdf_path, prompt_path=None, **kwargs):
+        for key in ("analyst_alpha", "analyst_beta", "analyst_gamma"):
+            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
+            kwargs["on_attempt"](
+                AnalystAttemptEvent(
+                    key, 1, 3, "completed", report_text=complete_report()
+                )
+            )
+        return "ok", {
+            key: complete_report()
+            for key in ("analyst_alpha", "analyst_beta", "analyst_gamma")
+        }
+
+    monkeypatch.setattr(pipeline_module, "run_crew", seed_run)
+    run_end_to_end(str(pdf_path), output_dir=str(result_dir))
+    result_dir.joinpath("run_status.json").write_text(
+        json.dumps(
+            {
+                "pdf_filename": "case-a.pdf",
+                "status": "completed",
+                "masking_enabled": False,
+                "strict_scoring": False,
+                "enabled_analysts": [
+                    "analyst_alpha",
+                    "analyst_beta",
+                    "analyst_gamma",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def expanded_run(pdf_path, *, output_dir, **kwargs):
+        calls.append(Path(pdf_path).name)
+        write_complete_reports(Path(output_dir))
+        Path(output_dir, "analyst-delta_report.md").write_text(
+            complete_report(), encoding="utf-8"
+        )
+        return "ok"
+
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", expanded_run)
+
+    run_batch_folder(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        use_analyst_delta=True,
+    )
+
+    assert calls == ["case-a.pdf"]
+
+
 def test_run_batch_folder_force_rerun_ignores_completed_status(
     tmp_path: Path, monkeypatch
 ):
@@ -1056,8 +1169,56 @@ def test_run_batch_folder_stops_on_error_and_marks_failed(tmp_path: Path, monkey
         (output_dir / "case-a" / "run_status.json").read_text(encoding="utf-8")
     )
     assert status["status"] == "failed"
-    assert "simulated failure" in status["error"]
+    assert "RuntimeError" in status["error"]
+    assert "simulated failure" not in status["error"]
     assert not (output_dir / "case-b" / "run_status.json").exists()
+
+
+def test_batch_execution_exception_diagnostics_never_persist_raw_text(
+    tmp_path: Path, monkeypatch
+):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case-a.pdf").write_bytes(b"%PDF-1.4")
+    secret = "sk-live-TOKEN-DO-NOT-STORE"
+    clinical_text = "Patient Jane Doe ALT 980 after Drug Q"
+
+    class ProviderRequestError(RuntimeError):
+        status_code = 502
+
+    def fail_run(*args, **kwargs):
+        raise ProviderRequestError(
+            f"Authorization: Bearer {secret}; request body: {clinical_text}"
+        )
+
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fail_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        run_batch_folder(
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            debug=True,
+        )
+
+    result_dir = output_dir / "case-a"
+    status_text = result_dir.joinpath("run_status.json").read_text(encoding="utf-8")
+    log_text = result_dir.joinpath("case-a.log").read_text(encoding="utf-8")
+    workbook = load_workbook(output_dir / "batch_summary.xlsx", data_only=True)
+    workbook_text = " ".join(
+        str(cell.value)
+        for row in workbook.active.iter_rows()
+        for cell in row
+        if cell.value is not None
+    )
+    diagnostics = (str(exc_info.value), status_text, log_text, workbook_text)
+    for diagnostic in diagnostics:
+        assert secret not in diagnostic
+        assert clinical_text not in diagnostic
+        assert "Authorization" not in diagnostic
+        assert "request body" not in diagnostic
+        assert "ProviderRequestError" in diagnostic
+        assert "status_code=502" in diagnostic
 
 
 def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(

@@ -8,6 +8,7 @@ from typing import Any, Dict, Literal, Optional, Tuple
 
 from crewai import Crew, Process, Task
 
+from dili_rucam_agents.diagnostics import format_execution_error
 from dili_rucam_agents.ingestion.build_bundle import build_case_bundle
 from dili_rucam_agents.masking import mask_case_bundle_payload
 from dili_rucam_agents.validators.analyst_report import (
@@ -54,14 +55,22 @@ class AnalystExecutionError(RuntimeError):
         attempts: int,
         failure_kind: Literal["execution", "validation"],
         last_error: str,
+        last_exception: BaseException | None = None,
     ) -> None:
         self.analyst_key = analyst_key
         self.attempts = attempts
         self.failure_kind = failure_kind
-        self.last_error = last_error
+        execution_exception = (
+            last_exception if last_exception is not None else Exception()
+        )
+        self.last_error = (
+            format_execution_error(execution_exception)
+            if failure_kind == "execution"
+            else last_error
+        )
         super().__init__(
             f"{analyst_key} failed after {attempts} attempts "
-            f"({failure_kind}): {last_error}"
+            f"({failure_kind}): {self.last_error}"
         )
 
 
@@ -212,6 +221,7 @@ def run_crew(
             continue
         retry_instruction: str | None = None
         last_error = ""
+        last_exception: Exception | None = None
         failure_kind: Literal["execution", "validation"] = "validation"
         for attempt in range(1, max_attempts + 1):
             crew, task = _build_isolated_analyst_run(
@@ -245,6 +255,7 @@ def run_crew(
                 validate_analyst_report(report_text)
             except AnalystReportValidationError as exc:
                 last_error = str(exc)
+                last_exception = exc
                 failure_kind = "validation"
                 retry_instruction = last_error
                 validation_event = AnalystAttemptEvent(
@@ -258,7 +269,8 @@ def run_crew(
                 if on_attempt:
                     on_attempt(validation_event)
             except Exception as exc:
-                last_error = str(exc)
+                last_error = format_execution_error(exc)
+                last_exception = exc
                 failure_kind = "execution"
                 retry_instruction = None
                 execution_event = AnalystAttemptEvent(
@@ -286,12 +298,16 @@ def run_crew(
                         on_report(key, report_text)
                 break
         else:
-            raise AnalystExecutionError(
+            execution_error = AnalystExecutionError(
                 analyst_key=key,
                 attempts=max_attempts,
                 failure_kind=failure_kind,
                 last_error=last_error,
+                last_exception=last_exception,
             )
+            if last_exception is not None:
+                raise execution_error from last_exception
+            raise execution_error
 
     if not capture_reports:
         return final_output

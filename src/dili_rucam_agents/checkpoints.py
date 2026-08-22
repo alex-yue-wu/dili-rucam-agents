@@ -14,6 +14,7 @@ from dili_rucam_agents.crew.agents import (
     resolve_analyst_max_output_tokens,
     resolve_rucam_model,
 )
+from dili_rucam_agents.diagnostics import sanitize_execution_diagnostic
 from dili_rucam_agents.validators.analyst_report import validate_analyst_report
 
 
@@ -182,6 +183,8 @@ class AnalystCheckpointStore:
         error: str,
         report_text: str | None = None,
     ) -> None:
+        if failure_kind == "execution":
+            error = sanitize_execution_diagnostic(error)
         manifest = self._read_manifest() or self._new_manifest()
         entry = self._entry(manifest, identity.key)
         failed_at = _utc_now_isoformat()
@@ -227,6 +230,8 @@ class AnalystCheckpointStore:
 
         manifest = self._read_manifest() or self._new_manifest()
         entry = self._entry(manifest, identity.key)
+        entry.pop("failure_kind", None)
+        entry.pop("failed_at", None)
         entry.update(
             {
                 "status": "completed",

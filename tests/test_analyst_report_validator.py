@@ -62,9 +62,84 @@ def test_strict_validation_rejects_unfenced_section_c_json():
         validate_analyst_report(unfenced)
 
 
+@pytest.mark.parametrize(
+    ("report_text", "message"),
+    [
+        (
+            report_for() + "\n## SECTION A\n\nDuplicate narrative.\n",
+            "exactly one SECTION A",
+        ),
+        (
+            report_for() + "\n## SECTION B\n\nDuplicate table.\n",
+            "exactly one SECTION B",
+        ),
+        (
+            report_for()
+            + "\n## SECTION C\n\n"
+            + f"```json\n{json.dumps(VALID_PAYLOAD)}\n```\n",
+            "exactly one SECTION C",
+        ),
+        (
+            report_for().replace(
+                "## SECTION C — MACHINE-READABLE JSON\n\n",
+                "## SECTION C — MACHINE-READABLE JSON\n\n```json\n{}\n```\n\n",
+            ),
+            "exactly one fenced JSON object",
+        ),
+        (
+            "## section c\n\n"
+            f"```JSON\n{json.dumps(VALID_PAYLOAD)}\n```\n\n"
+            "## **SECTION A**\n\nClinical summary.\n\n"
+            "## Section B\n\n| Item | Score |\n| --- | --- |\n| Total | 6 |\n",
+            "A, B, C order",
+        ),
+    ],
+)
+def test_strict_validation_rejects_ambiguous_or_out_of_order_structure(
+    report_text, message
+):
+    with pytest.raises(AnalystReportValidationError, match=message):
+        validate_analyst_report(report_text)
+
+
+def test_strict_validation_ignores_headings_and_json_examples_inside_code_fences():
+    report = report_for().replace(
+        "Clinical summary.",
+        "Clinical summary.\n\n"
+        "````text\n"
+        "## SECTION C\n"
+        "```json\n"
+        '{"decoy": true}\n'
+        "```\n"
+        "````",
+    )
+
+    assert validate_analyst_report(report).payload.total_score == 6
+
+
 def test_legacy_parser_accepts_unfenced_section_c_json():
     unfenced = report_for().replace("```json\n", "").replace("\n```\n", "\n")
     assert parse_section_c_payload(unfenced, allow_legacy_json=True)["total_score"] == 6
+
+
+def test_legacy_parser_selects_last_json_block_from_malformed_historical_report():
+    report = (
+        "## SECTION C\n\n"
+        '```json\n{"total_score": 1, "category": "Unlikely"}\n```\n\n'
+        f"```JSON\n{json.dumps(VALID_PAYLOAD)}\n```\n"
+    )
+
+    assert parse_section_c_payload(report, allow_legacy_json=True) == VALID_PAYLOAD
+
+
+def test_legacy_parser_selects_last_unfenced_json_object():
+    report = (
+        "## SECTION C\n\n"
+        '{"total_score": 1, "category": "Unlikely"}\n\n'
+        f"{json.dumps(VALID_PAYLOAD)}\n"
+    )
+
+    assert parse_section_c_payload(report, allow_legacy_json=True) == VALID_PAYLOAD
 
 
 def test_validation_diagnostic_omits_model_controlled_values_and_urls():

@@ -13,6 +13,7 @@ from openpyxl import Workbook
 from dili_rucam_agents.crew.agents import resolve_rucam_model
 from dili_rucam_agents.crew.config import get_enabled_analyst_configs
 from dili_rucam_agents.crew.crew import AnalystExecutionError, validate_max_restarts
+from dili_rucam_agents.diagnostics import format_execution_error
 from dili_rucam_agents.ground_truth import (
     extract_ground_truth_rucam_category,
     extract_ground_truth_rucam_score,
@@ -25,6 +26,13 @@ from dili_rucam_agents.validators.analyst_report import (
 
 
 _RUN_STATUS_FILENAME = "run_status.json"
+
+
+class _AnalystReportFileValidationError(ValueError):
+    def __init__(self, *, report_filename: str, diagnostic: str) -> None:
+        self.report_filename = report_filename
+        self.diagnostic = diagnostic
+        super().__init__(f"{report_filename}: {diagnostic}")
 
 
 def run_batch_folder(
@@ -249,10 +257,6 @@ def _is_pdf_run_complete(
         return False
     if status.get("strict_scoring") != strict_scoring:
         return False
-    if status.get("enabled_analysts") != [
-        config["key"] for config in enabled_analyst_configs
-    ]:
-        return False
     return is_end_to_end_complete(
         str(pdf_path),
         str(pdf_output_dir),
@@ -280,10 +284,11 @@ def _stop_batch_after_failure(
     debug: bool,
     analyst_failure: dict[str, Any] | None = None,
 ) -> None:
+    diagnostic = _safe_batch_failure_diagnostic(exc)
     if debug:
-        print(f"Run failed: {exc}")
-    row["masked_rucam_score"] = f"ERROR: {exc}"
-    row["masked_rucam_category"] = f"ERROR: {exc}"
+        print(f"Run failed: {diagnostic}")
+    row["masked_rucam_score"] = f"ERROR: {diagnostic}"
+    row["masked_rucam_category"] = f"ERROR: {diagnostic}"
     _write_pdf_run_status(
         pdf_output_dir=pdf_output_dir,
         payload={
@@ -293,7 +298,7 @@ def _stop_batch_after_failure(
             "strict_scoring": strict_scoring,
             "enabled_analysts": [config["key"] for config in enabled_analyst_configs],
             "failed_at": _utc_now_isoformat(),
-            "error": str(exc),
+            "error": diagnostic,
             **(analyst_failure or {}),
         },
     )
@@ -301,7 +306,25 @@ def _stop_batch_after_failure(
     _write_summary_workbook(
         summary_rows, enabled_analyst_configs, results_dir / "batch_summary.xlsx"
     )
-    raise RuntimeError(f"Batch stopped at {pdf_path.name}: {exc}") from exc
+    raise RuntimeError(f"Batch stopped at {pdf_path.name}: {diagnostic}") from exc
+
+
+def _safe_batch_failure_diagnostic(exc: Exception) -> str:
+    if isinstance(exc, _AnalystReportFileValidationError):
+        return f"{exc.report_filename}: {exc.diagnostic}"
+    if not isinstance(exc, AnalystExecutionError):
+        return format_execution_error(exc)
+    if exc.failure_kind == "validation":
+        return (
+            f"{exc.analyst_key} failed after {exc.attempts} attempts "
+            f"(validation): {exc.last_error}"
+        )
+    cause = exc.__cause__
+    execution_error = cause if isinstance(cause, Exception) else exc
+    return (
+        f"{exc.analyst_key} failed after {exc.attempts} attempts "
+        f"(execution): {format_execution_error(execution_error)}"
+    )
 
 
 def _utc_now_isoformat() -> str:
@@ -331,7 +354,10 @@ def _populate_row_from_reports(
         try:
             validated = validate_analyst_report(report_text, allow_legacy_json=True)
         except ValueError as exc:
-            raise ValueError(f"{report_path.name}: {exc}") from exc
+            raise _AnalystReportFileValidationError(
+                report_filename=report_path.name,
+                diagnostic=str(exc),
+            ) from exc
         row[config["resolved_model_name"]] = validated.payload.total_score
 
 

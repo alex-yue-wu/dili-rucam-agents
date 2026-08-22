@@ -195,7 +195,8 @@ When `--output-dir` is supplied, the pipeline writes artifacts for the enabled w
   `analyst-<name>_attempt-<cumulative-number>-<unique-id>.invalid.md`. Names are
   cumulative and collision-resistant, so a later invocation cannot overwrite an
   earlier invalid output. An execution exception without a report has no markdown
-  artifact; its diagnostic is recorded in the checkpoint manifest history.
+  artifact; a bounded diagnostic containing the exception type and safe numeric
+  status identifiers is recorded without raw provider messages or request data.
 
 Only enabled workflow artifacts are persisted.
 
@@ -225,7 +226,9 @@ batch reuses compatible completed analyst reports. A batch skips a PDF only when
 its completed status and every enabled analyst checkpoint remain compatible and
 validate; a failed or incomplete PDF resumes at the first analyst without a
 compatible validated report. Compatible successful analysts are skipped before the
-failed analyst is retried.
+failed analyst is retried. A completed run from a larger analyst topology may be
+reused by a smaller topology without rewriting the checkpoint manifest; expanding
+the topology still runs any missing or incompatible current analyst.
 
 PDF content, the effective versioned analyst instruction contract, masking mode,
 strict-scoring mode, resolved model, or effective max-output-token changes
@@ -243,6 +246,12 @@ run again.
 including legacy-output adoption, for that invocation. Invalid model outputs are
 retained under `attempts/`, and `analyst_checkpoints.json` records per-analyst
 status and attempt diagnostics.
+
+New reports pass strict structural validation: they contain exactly one SECTION A,
+SECTION B, and SECTION C in that order, with exactly one fenced JSON object in
+SECTION C. Headings or JSON examples inside Markdown code fences do not count as
+report structure. Legacy summary parsing remains deliberately tolerant and selects
+the last historical JSON block when legacy mode is requested.
 
 ## Tests
 

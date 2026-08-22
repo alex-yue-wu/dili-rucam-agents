@@ -202,6 +202,91 @@ def test_run_crew_restarts_after_execution_exception(monkeypatch):
     ]
 
 
+def test_execution_exception_diagnostics_are_safe_across_retry_sinks(
+    tmp_path, monkeypatch, capsys
+):
+    secret = "sk-live-TOKEN-DO-NOT-STORE"
+    clinical_text = "Patient Jane Doe ALT 980 after Drug Q"
+
+    class ProviderRequestError(RuntimeError):
+        status_code = 503
+
+    original_error = ProviderRequestError(
+        f"Authorization: Bearer {secret}; request body: {clinical_text}"
+    )
+    install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter((original_error,))},
+    )
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    identity = AnalystIdentity(
+        key="analyst_alpha",
+        report_filename="analyst-alpha_report.md",
+        fingerprint="fingerprint-a",
+    )
+    events = []
+
+    def record_event(event):
+        events.append(event)
+        if event.status == "running":
+            store.record_running(identity, attempt=event.attempt)
+        elif event.status == "execution_failed":
+            store.record_failure(
+                identity,
+                attempt=event.attempt,
+                failure_kind="execution",
+                error=event.error,
+            )
+
+    with pytest.raises(AnalystExecutionError) as exc_info:
+        run_crew(
+            "dummy.pdf",
+            capture_reports=True,
+            max_restarts=0,
+            on_attempt=record_event,
+        )
+
+    execution_event = next(
+        event for event in events if event.status == "execution_failed"
+    )
+    manifest_text = (tmp_path / "analyst_checkpoints.json").read_text()
+    diagnostics = (
+        execution_event.error,
+        exc_info.value.last_error,
+        str(exc_info.value),
+        manifest_text,
+        capsys.readouterr().out,
+    )
+    for diagnostic in diagnostics:
+        assert secret not in diagnostic
+        assert clinical_text not in diagnostic
+        assert "Authorization" not in diagnostic
+        assert "request body" not in diagnostic
+    assert "ProviderRequestError" in execution_event.error
+    assert "status_code=503" in execution_event.error
+    assert exc_info.value.__cause__ is original_error
+
+
+def test_execution_error_constructor_drops_untrusted_last_error():
+    secret = "sk-live-TOKEN-DO-NOT-STORE"
+
+    error = AnalystExecutionError(
+        analyst_key="analyst_alpha",
+        attempts=1,
+        failure_kind="execution",
+        last_error=f"provider response contained {secret}",
+    )
+
+    assert secret not in error.last_error
+    assert secret not in str(error)
+    assert "type=Exception" in str(error)
+
+
 def test_validation_secrets_do_not_reach_retry_events_or_manifest(
     tmp_path, monkeypatch
 ):

@@ -262,6 +262,58 @@ def test_total_attempts_accumulate_across_invocations(tmp_path: Path):
     assert entry["attempts_in_last_invocation"] == 1
 
 
+def test_completion_clears_current_failure_fields_but_retains_history(tmp_path: Path):
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    store.record_running(identity(), attempt=1)
+    store.record_failure(
+        identity(),
+        attempt=1,
+        failure_kind="validation",
+        error="Missing SECTION C",
+        report_text="invalid report",
+    )
+
+    store.record_completed(identity(), attempt=2, report_text=complete_report())
+
+    manifest = json.loads((tmp_path / "analyst_checkpoints.json").read_text())
+    entry = manifest["analysts"]["analyst_alpha"]
+    assert entry["status"] == "completed"
+    assert "failure_kind" not in entry
+    assert "failed_at" not in entry
+    assert entry["last_error"] is None
+    assert len(entry["attempt_history"]) == 1
+    assert entry["attempt_history"][0]["failure_kind"] == "validation"
+    assert entry["attempt_history"][0]["failed_at"]
+
+
+def test_checkpoint_store_rejects_untrusted_execution_diagnostic(tmp_path: Path):
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    secret = "sk-live-TOKEN-DO-NOT-STORE"
+    store.record_running(identity(), attempt=1)
+
+    store.record_failure(
+        identity(),
+        attempt=1,
+        failure_kind="execution",
+        error=f"raw provider response with {secret}",
+    )
+
+    manifest_text = (tmp_path / "analyst_checkpoints.json").read_text()
+    assert secret not in manifest_text
+    assert "raw provider response" not in manifest_text
+    assert "type=Exception" in manifest_text
+
+
 def test_existing_manifest_write_refreshes_enabled_analysts(tmp_path: Path):
     alpha_store = AnalystCheckpointStore(
         tmp_path,
