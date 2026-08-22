@@ -58,8 +58,21 @@ def create_analysis_task(
     model_name: str,
     bundle_input_name: str,
     case_bundle_task: Task | None = None,
+    retry_instruction: str | None = None,
 ) -> Task:
     bundle_placeholder = "{" + bundle_input_name + "}"
+    retry_block = ""
+    if retry_instruction:
+        retry_block = dedent(
+            f"""
+
+            --- RETRY REQUIREMENT ---
+            The previous attempt was rejected: {retry_instruction}
+            Return a fresh, complete report with non-empty SECTION A and SECTION B,
+            followed by strict fenced SECTION C JSON.
+            --- END RETRY REQUIREMENT ---
+            """
+        ).rstrip()
     description = dedent(
         f"""
         You are the {analyst_label} RUCAM Analyst. Consume the shared case_bundle_json exactly as provided below.
@@ -78,6 +91,7 @@ def create_analysis_task(
         --- BEGIN PRODUCTION PROMPT ---
         {prompt_text}
         --- END PRODUCTION PROMPT ---
+        {retry_block}
 
         Use the configured model "{model_name}". Temperature must remain 0 when supported;
         otherwise use the provider-required default temperature.

@@ -1,6 +1,10 @@
+import json
 from pathlib import Path
 
+import pytest
+
 from dili_rucam_agents.crew.crew import (
+    AnalystExecutionError,
     _prepare_case_bundle_json,
     build_crew,
     run_crew,
@@ -11,6 +15,162 @@ from dili_rucam_agents.crew.tasks import (
     DEFAULT_RUCAM_STRICT_PROMPT_PATH,
     load_rucam_prompt,
 )
+
+
+def complete_report(total_score: int = 6, narrative: str = "Clinical summary") -> str:
+    payload = {
+        "injury_pattern": "hepatocellular",
+        "R_ratio": 6.4,
+        "rucam_scores": {
+            "time_to_onset": 2,
+            "course": 1,
+            "risk_factors": 0,
+            "concomitant_drugs": 0,
+            "other_causes_excluded": 2,
+            "known_hepatotoxicity": 1,
+            "rechallenge": 0,
+        },
+        "total_score": total_score,
+        "category": "Probable",
+    }
+    return (
+        f"## SECTION A\n\n{narrative}\n\n"
+        "## SECTION B\n\n| Item | Score |\n| --- | --- |\n| Total | 6 |\n\n"
+        f"## SECTION C\n\n```json\n{json.dumps(payload)}\n```\n"
+    )
+
+
+def install_retry_scenario(monkeypatch, outputs_by_key):
+    constructed_keys = []
+
+    class DummyBundle:
+        def to_dict(self):
+            return {
+                "pdf_path": "dummy.pdf",
+                "extraction_notes": [],
+                "blocks": [],
+                "normalized_text": "ALT 650",
+                "tables": [],
+                "unknowns": [],
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
+            }
+
+    class DummyTask:
+        output = None
+
+    class DummyCrew:
+        def __init__(self, result):
+            self.result = result
+
+        def kickoff(self, inputs):
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    configs = [
+        {"key": key, "label": key.replace("_", " ").title()}
+        for key in outputs_by_key
+    ]
+
+    def fake_build_run(*, config, **kwargs):
+        constructed_keys.append(config["key"])
+        return DummyCrew(next(outputs_by_key[config["key"]])), DummyTask()
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", lambda path: DummyBundle()
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
+        lambda **flags: configs,
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_run", fake_build_run
+    )
+    return constructed_keys
+
+
+def test_run_crew_restarts_only_invalid_analyst_until_third_attempt(monkeypatch):
+    outputs_by_key = {
+        "analyst_alpha": iter(["incomplete", "still incomplete", complete_report()])
+    }
+    constructed_keys = install_retry_scenario(monkeypatch, outputs_by_key)
+    events = []
+
+    _, reports = run_crew(
+        "dummy.pdf", capture_reports=True, max_restarts=2, on_attempt=events.append
+    )
+
+    assert constructed_keys == ["analyst_alpha"] * 3
+    assert reports["analyst_alpha"].startswith("## SECTION A")
+    assert [event.status for event in events] == [
+        "running",
+        "validation_failed",
+        "running",
+        "validation_failed",
+        "running",
+        "completed",
+    ]
+
+
+def test_run_crew_raises_after_three_invalid_attempts(monkeypatch):
+    constructed_keys = install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter(["incomplete", "incomplete", "incomplete"])},
+    )
+
+    with pytest.raises(AnalystExecutionError) as exc_info:
+        run_crew("dummy.pdf", capture_reports=True, max_restarts=2)
+
+    assert constructed_keys == ["analyst_alpha"] * 3
+    assert exc_info.value.analyst_key == "analyst_alpha"
+    assert exc_info.value.attempts == 3
+    assert exc_info.value.failure_kind == "validation"
+
+
+def test_run_crew_skips_completed_alpha_and_retries_beta(monkeypatch):
+    constructed_keys = install_retry_scenario(
+        monkeypatch,
+        {
+            "analyst_alpha": iter(()),
+            "analyst_beta": iter(["incomplete", complete_report(narrative="beta")]),
+            "analyst_gamma": iter([complete_report(narrative="gamma")]),
+        },
+    )
+
+    _, reports = run_crew(
+        "dummy.pdf",
+        capture_reports=True,
+        completed_reports={"analyst_alpha": complete_report(narrative="saved alpha")},
+        max_restarts=2,
+    )
+
+    assert constructed_keys == ["analyst_beta", "analyst_beta", "analyst_gamma"]
+    assert "saved alpha" in reports["analyst_alpha"]
+
+
+def test_run_crew_restarts_after_execution_exception(monkeypatch):
+    install_retry_scenario(
+        monkeypatch,
+        {
+            "analyst_alpha": iter(
+                [RuntimeError("provider unavailable"), complete_report()]
+            )
+        },
+    )
+    events = []
+
+    run_crew("dummy.pdf", capture_reports=True, on_attempt=events.append)
+
+    assert [event.status for event in events] == [
+        "running",
+        "execution_failed",
+        "running",
+        "completed",
+    ]
 from dili_rucam_agents.pipeline import (
     _persist_reports,
     _render_masked_case_bundle_report,
@@ -114,18 +274,25 @@ def test_run_crew_passes_masked_bundle_to_analysts(monkeypatch):
 
         def kickoff(self, inputs):
             captured_inputs.append({"label": self.label, **inputs})
-            return f"{self.label} done"
+            return complete_report(narrative=self.label)
 
     class DummyTask:
         output = None
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
+        "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
         lambda **kwargs: [
-            ("analyst_alpha", DummyCrew("alpha"), DummyTask()),
-            ("analyst_beta", DummyCrew("beta"), DummyTask()),
+            {"key": "analyst_alpha", "label": "Analyst Alpha"},
+            {"key": "analyst_beta", "label": "Analyst Beta"},
         ],
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_run",
+        lambda *, config, **kwargs: (
+            DummyCrew(config["key"].removeprefix("analyst_")),
+            DummyTask(),
+        ),
     )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew._run_ground_truth_score_finder",
@@ -164,15 +331,22 @@ def test_run_crew_captures_ground_truth_report_outside_analyst_crew(monkeypatch)
 
         def kickoff(self, inputs):
             captured_inputs.append({"label": self.label, **inputs})
-            return f"{self.label} done"
+            return complete_report(narrative=self.label)
 
     class DummyTask:
         output = None
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
-        lambda **kwargs: [("analyst_alpha", DummyCrew("alpha"), DummyTask())],
+        "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
+        lambda **kwargs: [{"key": "analyst_alpha", "label": "Analyst Alpha"}],
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_run",
+        lambda *, config, **kwargs: (
+            DummyCrew(config["key"].removeprefix("analyst_")),
+            DummyTask(),
+        ),
     )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew._run_ground_truth_score_finder",
@@ -209,15 +383,22 @@ def test_run_crew_without_masking_passes_raw_bundle_to_analysts(monkeypatch):
 
         def kickoff(self, inputs):
             captured_inputs.append({"label": self.label, **inputs})
-            return f"{self.label} done"
+            return complete_report(narrative=self.label)
 
     class DummyTask:
         output = None
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
-        lambda **kwargs: [("analyst_alpha", DummyCrew("alpha"), DummyTask())],
+        "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
+        lambda **kwargs: [{"key": "analyst_alpha", "label": "Analyst Alpha"}],
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_run",
+        lambda *, config, **kwargs: (
+            DummyCrew(config["key"].removeprefix("analyst_")),
+            DummyTask(),
+        ),
     )
 
     run_crew("dummy.pdf", enable_score_masking=False)
@@ -250,16 +431,19 @@ def test_run_crew_raises_when_analyst_returns_empty_output(monkeypatch):
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
-        lambda **kwargs: [("analyst_zeta", DummyCrew(), DummyTask())],
+        "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
+        lambda **kwargs: [{"key": "analyst_zeta", "label": "Analyst Zeta"}],
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_run",
+        lambda **kwargs: (DummyCrew(), DummyTask()),
     )
 
-    try:
-        run_crew("dummy.pdf", capture_reports=True)
-        assert False, "expected RuntimeError"
-    except RuntimeError as exc:
-        assert "analyst_zeta" in str(exc)
-        assert "empty report" in str(exc)
+    with pytest.raises(AnalystExecutionError) as exc_info:
+        run_crew("dummy.pdf", capture_reports=True, max_restarts=0)
+
+    assert exc_info.value.analyst_key == "analyst_zeta"
+    assert exc_info.value.failure_kind == "validation"
 
 
 def test_run_crew_uses_kickoff_output_when_task_output_is_missing(monkeypatch):
@@ -277,20 +461,24 @@ def test_run_crew_uses_kickoff_output_when_task_output_is_missing(monkeypatch):
 
     class DummyCrew:
         def kickoff(self, inputs):
-            return "## SECTION A\n\nReport"
+            return complete_report(narrative="Report")
 
     class DummyTask:
         output = None
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
-        lambda **kwargs: [("analyst_zeta", DummyCrew(), DummyTask())],
+        "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
+        lambda **kwargs: [{"key": "analyst_zeta", "label": "Analyst Zeta"}],
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_run",
+        lambda **kwargs: (DummyCrew(), DummyTask()),
     )
 
     _, reports = run_crew("dummy.pdf", capture_reports=True)
 
-    assert reports["analyst_zeta"] == "## SECTION A\n\nReport"
+    assert reports["analyst_zeta"] == complete_report(narrative="Report")
 
 
 def test_run_crew_skips_existing_analyst_reports_on_retry(monkeypatch):
@@ -314,31 +502,38 @@ def test_run_crew_skips_existing_analyst_reports_on_retry(monkeypatch):
 
         def kickoff(self, inputs):
             captured_labels.append(self.label)
-            return f"## SECTION A\n\n{self.label}"
+            return complete_report(narrative=self.label)
 
     class DummyTask:
         output = None
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
+        "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
         lambda **kwargs: [
-            ("analyst_alpha", DummyCrew("alpha"), DummyTask()),
-            ("analyst_beta", DummyCrew("beta"), DummyTask()),
-            ("analyst_gamma", DummyCrew("gamma"), DummyTask()),
+            {"key": "analyst_alpha", "label": "Analyst Alpha"},
+            {"key": "analyst_beta", "label": "Analyst Beta"},
+            {"key": "analyst_gamma", "label": "Analyst Gamma"},
         ],
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_run",
+        lambda *, config, **kwargs: (
+            DummyCrew(config["key"].removeprefix("analyst_")),
+            DummyTask(),
+        ),
     )
 
     _, reports = run_crew(
         "dummy.pdf",
         capture_reports=True,
-        completed_reports={"analyst_alpha": "## SECTION A\n\nexisting alpha"},
+        completed_reports={"analyst_alpha": complete_report(narrative="existing alpha")},
     )
 
     assert captured_labels == ["beta", "gamma"]
-    assert reports["analyst_alpha"] == "## SECTION A\n\nexisting alpha"
-    assert reports["analyst_beta"] == "## SECTION A\n\nbeta"
-    assert reports["analyst_gamma"] == "## SECTION A\n\ngamma"
+    assert reports["analyst_alpha"] == complete_report(narrative="existing alpha")
+    assert reports["analyst_beta"] == complete_report(narrative="beta")
+    assert reports["analyst_gamma"] == complete_report(narrative="gamma")
 
 
 def test_run_crew_leaves_analyst_reports_untouched_when_masking_enabled(monkeypatch):
@@ -354,26 +549,31 @@ def test_run_crew_leaves_analyst_reports_untouched_when_masking_enabled(monkeypa
                 "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
             }
 
-    class DummyOutput:
-        raw = (
+    analyst_report = complete_report(
+        narrative=(
             "The authors of the case report calculated a score of 8. "
             "Applying the strict standardized RUCAM rules yields a score of 5."
         )
+    )
+
+    class DummyOutput:
+        raw = analyst_report
 
     class DummyTask:
         output = DummyOutput()
 
     class DummyCrew:
         def kickoff(self, inputs):
-            return (
-                "The authors of the case report calculated a score of 8. "
-                "Applying the strict standardized RUCAM rules yields a score of 5."
-            )
+            return analyst_report
 
     monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
     monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew._build_isolated_analyst_runs",
-        lambda **kwargs: [("analyst_alpha", DummyCrew(), DummyTask())],
+        "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
+        lambda **kwargs: [{"key": "analyst_alpha", "label": "Analyst Alpha"}],
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_run",
+        lambda **kwargs: (DummyCrew(), DummyTask()),
     )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew._run_ground_truth_score_finder",

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 from crewai import Crew, Process, Task
 
 from dili_rucam_agents.ingestion.build_bundle import build_case_bundle
 from dili_rucam_agents.masking import mask_case_bundle_payload
+from dili_rucam_agents.validators.analyst_report import (
+    AnalystReportValidationError,
+    validate_analyst_report,
+)
 
 from .agents import (
     build_ground_truth_rucam_score_finder_agent,
@@ -24,6 +29,45 @@ from .tasks import (
 )
 
 TaskMap = Dict[str, Task]
+
+AttemptStatus = Literal[
+    "running", "validation_failed", "execution_failed", "completed"
+]
+
+
+@dataclass(frozen=True)
+class AnalystAttemptEvent:
+    analyst_key: str
+    attempt: int
+    max_attempts: int
+    status: AttemptStatus
+    error: str | None = None
+    report_text: str | None = None
+
+
+class AnalystExecutionError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        analyst_key: str,
+        attempts: int,
+        failure_kind: Literal["execution", "validation"],
+        last_error: str,
+    ) -> None:
+        self.analyst_key = analyst_key
+        self.attempts = attempts
+        self.failure_kind = failure_kind
+        self.last_error = last_error
+        super().__init__(
+            f"{analyst_key} failed after {attempts} attempts "
+            f"({failure_kind}): {last_error}"
+        )
+
+
+def validate_max_restarts(max_restarts: int) -> int:
+    if isinstance(max_restarts, bool) or not 0 <= max_restarts <= 2:
+        raise ValueError("max_restarts must be an integer from 0 through 2")
+    return max_restarts
 
 
 def build_crew(
@@ -105,8 +149,11 @@ def run_crew(
     use_analyst_eta: bool = False,
     completed_reports: Mapping[str, str] | None = None,
     on_report: Callable[[str, str], None] | None = None,
+    max_restarts: int = 2,
+    on_attempt: Callable[[AnalystAttemptEvent], None] | None = None,
     **kwargs,
 ) -> str | Tuple[str, Dict[str, Optional[str]]]:
+    max_restarts = validate_max_restarts(max_restarts)
     raw_case_bundle_json, masked_case_bundle_json = _prepare_case_bundle_json(
         pdf_path=pdf_path,
         enable_score_masking=enable_score_masking,
@@ -116,40 +163,103 @@ def run_crew(
     )
     selected_case_bundle_json = masked_case_bundle_json or raw_case_bundle_json
 
-    analyst_runs = _build_isolated_analyst_runs(
-        prompt_path=prompt_path,
-        strict_scoring=strict_scoring,
+    analyst_configs = get_enabled_analyst_configs(
         use_analyst_delta=use_analyst_delta,
         use_analyst_epsilon=use_analyst_epsilon,
         use_analyst_zeta=use_analyst_zeta,
         use_analyst_eta=use_analyst_eta,
-        bundle_input_name=bundle_input_name,
     )
 
     final_output = ""
     reports: Dict[str, Optional[str]] = dict(completed_reports or {})
     if completed_reports:
         final_output = next(reversed(reports.values()), "") or ""
-    for key, crew, task in analyst_runs:
+    max_attempts = max_restarts + 1
+    for config in analyst_configs:
+        key = config["key"]
         if key in reports:
             continue
-        final_output = crew.kickoff(
-            inputs={
-                "pdf_path": pdf_path,
-                bundle_input_name: selected_case_bundle_json,
-                **kwargs,
-            }
-        )
-        fallback_output = _output_text(final_output)
-        if capture_reports:
-            report_text = _require_non_empty_report(
-                key, _task_output_text(task) or fallback_output
+        retry_instruction: str | None = None
+        last_error = ""
+        failure_kind: Literal["execution", "validation"] = "validation"
+        for attempt in range(1, max_attempts + 1):
+            crew, task = _build_isolated_analyst_run(
+                config=config,
+                bundle_input_name=bundle_input_name,
+                prompt_path=prompt_path,
+                strict_scoring=strict_scoring,
+                retry_instruction=retry_instruction,
             )
-            reports[key] = report_text
-            if on_report:
-                on_report(key, report_text)
+            print(f"{key}: attempt {attempt}/{max_attempts}")
+            running_event = AnalystAttemptEvent(
+                analyst_key=key,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                status="running",
+            )
+            if on_attempt:
+                on_attempt(running_event)
+
+            try:
+                final_output = crew.kickoff(
+                    inputs={
+                        "pdf_path": pdf_path,
+                        bundle_input_name: selected_case_bundle_json,
+                        **kwargs,
+                    }
+                )
+                fallback_output = _output_text(final_output)
+                report_text = _task_output_text(task) or fallback_output or ""
+                validate_analyst_report(report_text)
+            except AnalystReportValidationError as exc:
+                last_error = str(exc)
+                failure_kind = "validation"
+                retry_instruction = last_error
+                validation_event = AnalystAttemptEvent(
+                    analyst_key=key,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    status="validation_failed",
+                    error=last_error,
+                    report_text=report_text,
+                )
+                if on_attempt:
+                    on_attempt(validation_event)
+            except Exception as exc:
+                last_error = str(exc)
+                failure_kind = "execution"
+                retry_instruction = None
+                execution_event = AnalystAttemptEvent(
+                    analyst_key=key,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    status="execution_failed",
+                    error=last_error,
+                )
+                if on_attempt:
+                    on_attempt(execution_event)
+            else:
+                completed_event = AnalystAttemptEvent(
+                    analyst_key=key,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    status="completed",
+                    report_text=report_text,
+                )
+                if on_attempt:
+                    on_attempt(completed_event)
+                if capture_reports:
+                    reports[key] = report_text
+                    if on_report:
+                        on_report(key, report_text)
+                break
         else:
-            _require_non_empty_report(key, fallback_output)
+            raise AnalystExecutionError(
+                analyst_key=key,
+                attempts=max_attempts,
+                failure_kind=failure_kind,
+                last_error=last_error,
+            )
 
     if not capture_reports:
         return final_output
@@ -164,49 +274,37 @@ def run_crew(
     return final_output, reports
 
 
-def _build_isolated_analyst_runs(
+def _build_isolated_analyst_run(
     *,
-    prompt_path: Optional[Path] = None,
-    strict_scoring: bool = False,
-    use_analyst_delta: bool = False,
-    use_analyst_epsilon: bool = False,
-    use_analyst_zeta: bool = False,
-    use_analyst_eta: bool = False,
+    config: dict[str, Any],
     bundle_input_name: str,
-) -> list[tuple[str, Crew, Task]]:
+    prompt_path: Path | None,
+    strict_scoring: bool,
+    retry_instruction: str | None,
+) -> tuple[Crew, Task]:
     prompt_text = load_rucam_prompt(prompt_path, strict_scoring=strict_scoring)
-    analyst_configs = get_enabled_analyst_configs(
-        use_analyst_delta=use_analyst_delta,
-        use_analyst_epsilon=use_analyst_epsilon,
-        use_analyst_zeta=use_analyst_zeta,
-        use_analyst_eta=use_analyst_eta,
+    agent = build_rucam_agent(
+        label=config["label"],
+        model_env=config["model_env"],
+        max_tokens_env=config["max_tokens_env"],
+        fallback_envs=config["fallback_envs"],
+        default_model=config["default_model"],
     )
-    analyst_runs: list[tuple[str, Crew, Task]] = []
-
-    for config in analyst_configs:
-        agent = build_rucam_agent(
-            label=config["label"],
-            model_env=config["model_env"],
-            max_tokens_env=config["max_tokens_env"],
-            fallback_envs=config["fallback_envs"],
-            default_model=config["default_model"],
-        )
-        task = create_analysis_task(
-            agent=agent,
-            analyst_label=config["label"],
-            prompt_text=prompt_text,
-            model_name=agent.llm.model,
-            bundle_input_name=bundle_input_name,
-        )
-        crew = Crew(
-            agents=[agent],
-            tasks=[task],
-            process=Process.sequential,
-            verbose=True,
-        )
-        analyst_runs.append((config["key"], crew, task))
-
-    return analyst_runs
+    task = create_analysis_task(
+        agent=agent,
+        analyst_label=config["label"],
+        prompt_text=prompt_text,
+        model_name=agent.llm.model,
+        bundle_input_name=bundle_input_name,
+        retry_instruction=retry_instruction,
+    )
+    crew = Crew(
+        agents=[agent],
+        tasks=[task],
+        process=Process.sequential,
+        verbose=True,
+    )
+    return crew, task
 
 
 def _task_output_text(task: Task) -> Optional[str]:
@@ -230,12 +328,6 @@ def _output_text(output: object) -> Optional[str]:
         return json.dumps(output)
     text = str(output)
     return text if text.strip() else None
-
-
-def _require_non_empty_report(key: str, report_text: Optional[str]) -> str:
-    if report_text and report_text.strip():
-        return report_text
-    raise RuntimeError(f"{key} produced an empty report.")
 
 
 def _prepare_case_bundle_json(
@@ -263,4 +355,11 @@ def _run_ground_truth_score_finder(raw_case_bundle_json: str) -> str:
     return result if isinstance(result, str) else str(result)
 
 
-__all__ = ["build_crew", "run_crew"]
+__all__ = [
+    "AnalystAttemptEvent",
+    "AnalystExecutionError",
+    "AttemptStatus",
+    "build_crew",
+    "run_crew",
+    "validate_max_restarts",
+]
