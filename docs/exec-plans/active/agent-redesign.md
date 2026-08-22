@@ -72,8 +72,11 @@ Checkpoint compatibility uses a versioned effective analyst-instruction snapshot
 shared by fingerprint generation and actual agent/task construction. The snapshot
 includes the production prompt, static task and retry wrappers, expected output,
 and analyst role/goal/backstory; runtime case-bundle content and transient retry
-diagnostics are excluded. Validation diagnostics are reduced to stable Pydantic
-field paths and messages before retry prompts or manifest status/history writes.
+diagnostics are excluded. Validation diagnostics are converted into a validated
+structure containing only allowlisted field paths and issue codes. Retry prompts,
+public events, terminal errors, manifests, batch status/logs, and workbook cells
+render fixed messages only from that structure; raw invalid report text is confined
+to its audit artifact.
 The public `run_crew` boundary also validates supplied completed reports before
 allowing them to skip execution. Existing-manifest writes refresh the enabled
 analyst topology metadata during normal resume, while read-only completion checks
@@ -85,7 +88,9 @@ artifacts remain compatible; a completed expanded topology can contract without
 rerunning or mutating its manifest, while expansion or incompatibility resumes at
 the first incomplete analyst. Strict validation requires exactly one SECTION A,
 SECTION B, and SECTION C in order and exactly one fenced JSON object in SECTION C;
-legacy parsing deliberately retains last-JSON-block recovery. Execution diagnostics
+legacy summary parsing deliberately retains last-fenced-or-unfenced-JSON recovery,
+but checkpoint adoption and public `completed_reports` remain strict at the complete
+canonical report boundary. Execution diagnostics
 persist only bounded exception types and safe numeric identifiers, not raw provider
 messages, credentials, request fragments, or patient text. Public analyst-attempt
 events carry a validated structured diagnostic instead of the raw exception and are
@@ -95,7 +100,10 @@ structured diagnostic and rejects invalid diagnostics or unknown failure kinds b
 writing. Successful completion clears stale current failure fields while preserving
 attempt history.
 Legacy report directories without a manifest can be adopted only when their reports
-validate and their existing batch context, when present, remains compatible.
+pass strict canonical validation and their existing batch context, when present,
+remains compatible. A manifestless completed batch enters normal resume once to
+create the versioned manifest; only a compatible versioned manifest may satisfy the
+read-only batch completion gate.
 `--force-rerun` disables all report and manifest reuse for a batch invocation,
 including legacy-output adoption.
 
@@ -107,10 +115,10 @@ All checks were offline; no live model provider was invoked.
   tests` — both report the same three baseline findings already present at the
   feature starting commit `0a1dad6`: F541 in `batch.py`, F821 in `agents.py`, and
   F541 in `tasks.py`. The feature-introduced E402 was removed.
-- `uv run ruff format --check <Task 7 touched Python files>` — all 6 files are
+- `uv run ruff format --check <Task 8 touched Python files>` — all 10 files are
   formatted. No unrelated Python files were reformatted.
-- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 141 passed.
-- `uv run pytest -q` — 166 passed, with five pre-existing PyMuPDF/SWIG deprecation
+- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 155 passed.
+- `uv run pytest -q` — 180 passed, with five pre-existing PyMuPDF/SWIG deprecation
   warnings from the ingestion smoke tests.
 - `git diff --check`, `git status --short`, and `git diff --stat 0a1dad6..HEAD` —
   run during the final scope inspection; no whitespace errors or generated files

@@ -17,6 +17,7 @@ from dili_rucam_agents.checkpoints import (
 from dili_rucam_agents.crew.tasks import build_analyst_instruction_contract
 from dili_rucam_agents.diagnostics import (
     SafeExecutionDiagnostic,
+    SafeValidationDiagnostic,
     build_execution_diagnostic,
 )
 
@@ -399,6 +400,53 @@ def test_checkpoint_store_rejects_forged_structured_diagnostic_before_any_write(
         assert not (tmp_path / "attempts").exists()
 
 
+def test_checkpoint_store_revalidates_validation_diagnostic_before_any_write(
+    tmp_path: Path,
+):
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    store.record_running(identity(), attempt=1)
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    manifest_before = manifest_path.read_bytes()
+    secret = "MODEL-CONTROLLED-CHECKPOINT-SECRET"
+    forged = object.__new__(SafeValidationDiagnostic)
+    object.__setattr__(forged, "issues", (("total_score", secret),))
+
+    with pytest.raises(ValueError):
+        store.record_failure(
+            identity(),
+            attempt=1,
+            failure_kind="validation",
+            error=f"caller text {secret}",
+            report_text=f"invalid report {secret}",
+            validation_diagnostic=forged,
+        )
+
+    assert manifest_path.read_bytes() == manifest_before
+    assert not (tmp_path / "attempts").exists()
+
+    store.record_failure(
+        identity(),
+        attempt=1,
+        failure_kind="validation",
+        error=f"caller text {secret}",
+        report_text=f"invalid report {secret}",
+        validation_diagnostic=SafeValidationDiagnostic(
+            (("total_score", "score_sum_mismatch"),)
+        ),
+    )
+
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    artifact_text = next(tmp_path.joinpath("attempts").glob("*.invalid.md")).read_text()
+    assert secret not in manifest_text
+    assert "total_score does not match" in manifest_text
+    assert secret in artifact_text
+
+
 def test_checkpoint_store_rejects_invalid_failure_kind_before_any_write(
     tmp_path: Path,
 ):
@@ -526,6 +574,32 @@ def test_store_adopts_valid_legacy_report(tmp_path: Path):
     )
     assert reports == {"analyst_alpha": complete_report()}
     assert (tmp_path / "analyst_checkpoints.json").exists()
+
+
+def test_store_does_not_adopt_tolerant_unfenced_historical_report(tmp_path: Path):
+    unfenced_report = (
+        complete_report().replace("```json\n", "").replace("\n```\n", "\n")
+    )
+    (tmp_path / "analyst-alpha_report.md").write_text(unfenced_report, encoding="utf-8")
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+
+    reports = store.load_compatible_reports(
+        [identity()],
+        resume=True,
+        legacy_context=LegacyRunContext(
+            pdf_filename="case.pdf",
+            masking_enabled=False,
+            strict_scoring=False,
+        ),
+    )
+
+    assert reports == {}
+    assert not (tmp_path / "analyst_checkpoints.json").exists()
 
 
 def test_store_rejects_legacy_context_for_a_different_pdf(tmp_path: Path):

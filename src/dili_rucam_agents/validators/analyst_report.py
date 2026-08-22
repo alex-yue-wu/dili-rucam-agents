@@ -5,7 +5,15 @@ import json
 import re
 from typing import Any
 
-from .rucam_json import RucamReport, validate_rucam_json
+from pydantic import ValidationError
+
+from dili_rucam_agents.diagnostics import (
+    SafeValidationDiagnostic,
+    render_validation_diagnostic,
+    validate_validation_diagnostic,
+)
+
+from .rucam_json import RucamReport
 
 
 _SECTION_HEADING_RE = re.compile(
@@ -16,7 +24,13 @@ _FLOAT_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
 
 
 class AnalystReportValidationError(ValueError):
-    pass
+    def __init__(self, diagnostic: object) -> None:
+        try:
+            validated = validate_validation_diagnostic(diagnostic)
+        except (TypeError, ValueError):
+            validated = SafeValidationDiagnostic((("report", "invalid_report"),))
+        self.diagnostic = validated
+        super().__init__(render_validation_diagnostic(validated))
 
 
 @dataclass(frozen=True)
@@ -40,9 +54,9 @@ def parse_section_c_payload(
     headings, fences = _markdown_structure(report_text)
     section_c_headings = [match for match in headings if match.group(1).upper() == "C"]
     if not section_c_headings:
-        raise AnalystReportValidationError("Unable to locate SECTION C.")
+        raise _validation_error("SECTION_C", "missing_section")
     if not allow_legacy_json and len(section_c_headings) != 1:
-        raise AnalystReportValidationError("Report must contain exactly one SECTION C.")
+        raise _validation_error("SECTION_C", "duplicate_section")
     section_c = section_c_headings[-1] if allow_legacy_json else section_c_headings[0]
     section_end = next(
         (
@@ -61,40 +75,41 @@ def parse_section_c_payload(
     ]
     if json_fences:
         if not allow_legacy_json and len(json_fences) != 1:
-            raise AnalystReportValidationError(
-                "SECTION C must contain exactly one fenced JSON object."
-            )
+            raise _validation_error("SECTION_C", "json_fence_count")
         fence = json_fences[-1] if allow_legacy_json else json_fences[0]
         json_text = report_text[fence.content_start : fence.content_end].strip()
     elif allow_legacy_json:
         section_text = report_text[section_c.end() : section_end]
         json_text = _extract_balanced_json_object(section_text)
     else:
-        raise AnalystReportValidationError(
-            "SECTION C must contain exactly one fenced JSON object."
-        )
+        raise _validation_error("SECTION_C", "json_fence_count")
+    invalid_json = False
     try:
         payload = json.loads(json_text)
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
         recovered = _recover_section_c_payload(json_text) if allow_legacy_json else None
         if recovered is None:
-            raise AnalystReportValidationError(
-                f"Invalid SECTION C JSON: {exc}"
-            ) from exc
-        payload = recovered
+            invalid_json = True
+            payload = {}
+        else:
+            payload = recovered
+    if invalid_json:
+        raise _validation_error("SECTION_C", "invalid_json")
     if not isinstance(payload, dict):
-        raise AnalystReportValidationError("SECTION C JSON must be an object.")
+        raise _validation_error("SECTION_C", "json_not_object")
     return payload
 
 
 def validate_analyst_report(
     report_text: str, *, allow_legacy_json: bool = False
 ) -> ValidatedAnalystReport:
+    if type(report_text) is not str:
+        raise _validation_error("report", "invalid_report")
     stripped = report_text.strip()
     if not stripped:
-        raise AnalystReportValidationError("Report is empty.")
+        raise _validation_error("report", "report_empty")
     if "see complete sections a, b, and c above." in stripped.lower():
-        raise AnalystReportValidationError("Report is a summary placeholder.")
+        raise _validation_error("report", "summary_placeholder")
     headings, _ = _markdown_structure(report_text)
     by_name = {
         name: [match for match in headings if match.group(1).upper() == name]
@@ -102,24 +117,27 @@ def validate_analyst_report(
     }
     for required in ("A", "B", "C"):
         if not by_name[required]:
-            raise AnalystReportValidationError(f"Missing SECTION {required}.")
+            raise _validation_error(f"SECTION_{required}", "missing_section")
         if len(by_name[required]) != 1:
-            raise AnalystReportValidationError(
-                f"Report must contain exactly one SECTION {required}."
-            )
+            raise _validation_error(f"SECTION_{required}", "duplicate_section")
     if tuple(match.group(1).upper() for match in headings) != ("A", "B", "C"):
-        raise AnalystReportValidationError("Sections must appear in A, B, C order.")
+        raise _validation_error("report", "section_order")
     for required in ("A", "B"):
         match = by_name[required][0]
         position = headings.index(match)
         end = headings[position + 1].start()
         if not report_text[match.end() : end].strip(" \t\r\n-"):
-            raise AnalystReportValidationError(f"SECTION {required} is empty.")
+            raise _validation_error(f"SECTION_{required}", "empty_section")
     payload = parse_section_c_payload(report_text, allow_legacy_json=allow_legacy_json)
+    validation_diagnostic = None
     try:
-        typed = validate_rucam_json(payload)
-    except ValueError as exc:
-        raise AnalystReportValidationError(str(exc)) from exc
+        typed = RucamReport.model_validate(payload)
+    except ValidationError as exc:
+        validation_diagnostic = _pydantic_diagnostic(exc)
+        typed = None
+    if validation_diagnostic is not None:
+        raise AnalystReportValidationError(validation_diagnostic)
+    assert typed is not None
     return ValidatedAnalystReport(
         payload=typed,
         canonical_payload=typed.model_dump(),
@@ -212,7 +230,59 @@ def _extract_balanced_json_object(section_text: str) -> str:
                 object_start = None
     if objects:
         return objects[-1]
-    raise AnalystReportValidationError("Unable to locate a complete JSON object.")
+    raise _validation_error("SECTION_C", "missing_json_object")
+
+
+def _validation_error(field_path: str, issue_code: str) -> AnalystReportValidationError:
+    return AnalystReportValidationError(
+        SafeValidationDiagnostic(((field_path, issue_code),))
+    )
+
+
+def _pydantic_diagnostic(exc: ValidationError) -> SafeValidationDiagnostic:
+    issues: list[tuple[str, str]] = []
+    for error in exc.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    ):
+        location = ".".join(str(part) for part in error["loc"])
+        if location == "rucam_scores.alternative_causes_excluded":
+            location = "rucam_scores.other_causes_excluded"
+        issue_type = error["type"]
+        if not location:
+            message = error.get("msg")
+            if (
+                message
+                == "Value error, total_score does not match the seven-item score sum"
+            ):
+                location, issue_code = "total_score", "score_sum_mismatch"
+            elif message == "Value error, category does not match total_score":
+                location, issue_code = "category", "category_mismatch"
+            else:
+                location, issue_code = "report", "invalid_value"
+        else:
+            issue_code = {
+                "missing": "field_required",
+                "int_parsing": "invalid_integer",
+                "int_type": "invalid_integer",
+                "greater_than_equal": (
+                    "number_too_small" if location == "R_ratio" else "integer_too_small"
+                ),
+                "less_than_equal": "integer_too_large",
+                "float_parsing": "invalid_number",
+                "float_type": "invalid_number",
+                "literal_error": "invalid_literal",
+            }.get(issue_type, "invalid_value")
+        try:
+            issue = SafeValidationDiagnostic(((location, issue_code),)).issues[0]
+        except ValueError:
+            issue = ("report", "invalid_value")
+        if issue not in issues:
+            issues.append(issue)
+    return SafeValidationDiagnostic(
+        tuple(issues[:16]) or (("report", "invalid_value"),)
+    )
 
 
 def _recover_section_c_payload(json_block: str) -> dict[str, Any] | None:

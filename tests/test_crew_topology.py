@@ -16,6 +16,7 @@ from dili_rucam_agents.crew.crew import (
 )
 from dili_rucam_agents.diagnostics import (
     SafeExecutionDiagnostic,
+    SafeValidationDiagnostic,
     build_execution_diagnostic,
 )
 from dili_rucam_agents.ground_truth import load_ground_truth_prompt
@@ -29,6 +30,7 @@ from dili_rucam_agents.pipeline import (
     _persist_reports,
     _render_masked_case_bundle_report,
 )
+from dili_rucam_agents.validators.analyst_report import AnalystReportValidationError
 
 
 def complete_report(total_score: int = 6, narrative: str = "Clinical summary") -> str:
@@ -209,6 +211,67 @@ def test_run_crew_restarts_after_execution_exception(monkeypatch):
     ]
 
 
+def test_kickoff_validation_shaped_exception_is_execution_failure(monkeypatch):
+    first_error = AnalystReportValidationError("provider kickoff failure")
+    terminal_error = AnalystReportValidationError("provider terminal failure")
+    install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter((first_error, terminal_error))},
+    )
+    events = []
+
+    with pytest.raises(AnalystExecutionError) as exc_info:
+        run_crew(
+            "dummy.pdf",
+            capture_reports=True,
+            max_restarts=1,
+            on_attempt=events.append,
+        )
+
+    assert [event.status for event in events] == [
+        "running",
+        "execution_failed",
+        "running",
+        "execution_failed",
+    ]
+    assert all(event.report_text is None for event in events)
+    assert exc_info.value.failure_kind == "execution"
+    assert exc_info.value.__cause__ is terminal_error
+
+
+def test_output_extraction_validation_shaped_exception_is_execution_failure(
+    monkeypatch,
+):
+    extraction_error = AnalystReportValidationError("output extraction failure")
+
+    class ValidationShapedOutput:
+        def __str__(self):
+            raise extraction_error
+
+    install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter((ValidationShapedOutput(), complete_report()))},
+    )
+    events = []
+
+    run_crew(
+        "dummy.pdf",
+        capture_reports=True,
+        max_restarts=1,
+        on_attempt=events.append,
+    )
+
+    assert [event.status for event in events] == [
+        "running",
+        "execution_failed",
+        "running",
+        "completed",
+    ]
+    assert events[1].execution_diagnostic.exception_type == (
+        "AnalystReportValidationError"
+    )
+
+
 def test_execution_exception_diagnostics_are_safe_across_retry_sinks(
     tmp_path, monkeypatch, capsys
 ):
@@ -324,8 +387,9 @@ def test_attempt_event_constructor_enforces_status_specific_invariants():
         1,
         3,
         "validation_failed",
-        error="SECTION C: invalid JSON",
-        report_text="incomplete",
+        validation_diagnostic=SafeValidationDiagnostic(
+            (("SECTION_C", "invalid_json"),)
+        ),
     )
     AnalystAttemptEvent(
         "analyst_alpha", 1, 3, "completed", report_text=complete_report()
@@ -341,8 +405,8 @@ def test_attempt_event_constructor_enforces_status_specific_invariants():
     invalid_events = (
         {"status": "running", "error": "unexpected"},
         {"status": "running", "report_text": "unexpected"},
-        {"status": "validation_failed", "error": None, "report_text": "bad"},
-        {"status": "validation_failed", "error": "bad", "report_text": None},
+        {"status": "validation_failed", "report_text": "bad"},
+        {"status": "validation_failed", "validation_diagnostic": None},
         {"status": "completed", "report_text": None},
         {"status": "completed", "report_text": complete_report(), "error": "bad"},
         {
@@ -397,6 +461,37 @@ def test_direct_execution_event_serialization_contains_only_safe_diagnostic():
         "status_code": 503,
         "errno": None,
     }
+
+
+def test_direct_validation_event_rejects_forged_diagnostic():
+    secret = "MODEL-CONTROLLED-DIRECT-EVENT-SECRET"
+    diagnostic = SafeValidationDiagnostic(
+        (("rucam_scores.time_to_onset", "invalid_integer"),)
+    )
+    event = AnalystAttemptEvent(
+        "analyst_alpha",
+        1,
+        3,
+        "validation_failed",
+        validation_diagnostic=diagnostic,
+    )
+
+    assert event.report_text is None
+    assert asdict(event)["validation_diagnostic"] == {
+        "issues": (("rucam_scores.time_to_onset", "invalid_integer"),)
+    }
+
+    forged = object.__new__(SafeValidationDiagnostic)
+    object.__setattr__(forged, "issues", (("total_score", secret),))
+    with pytest.raises(ValueError) as exc_info:
+        AnalystAttemptEvent(
+            "analyst_alpha",
+            1,
+            3,
+            "validation_failed",
+            validation_diagnostic=forged,
+        )
+    assert secret not in str(exc_info.value)
 
 
 class _HostileExceptionType(type):
@@ -569,32 +664,79 @@ def test_validation_secrets_do_not_reach_retry_events_or_manifest(
         events.append(event)
         if event.status == "running":
             store.record_running(identity, attempt=event.attempt)
-        elif event.status == "validation_failed":
-            store.record_failure(
-                identity,
-                attempt=event.attempt,
-                failure_kind="validation",
-                error=event.error,
-                report_text=event.report_text,
-            )
+
+    def persist_invalid_report(key, attempt, report, diagnostic):
+        assert key == identity.key
+        store.record_failure(
+            identity,
+            attempt=attempt,
+            failure_kind="validation",
+            error="caller-controlled text must be ignored",
+            report_text=report,
+            validation_diagnostic=diagnostic,
+        )
 
     run_crew(
         "dummy.pdf",
         capture_reports=True,
         max_restarts=1,
         on_attempt=record_event,
+        _on_invalid_report_audit=persist_invalid_report,
     )
 
     validation_event = next(
         event for event in events if event.status == "validation_failed"
     )
     manifest_text = (tmp_path / "analyst_checkpoints.json").read_text()
+    artifact_text = next(tmp_path.joinpath("attempts").glob("*.invalid.md")).read_text()
+    serialized_event_views = (
+        repr(validation_event),
+        repr(asdict(validation_event)),
+        repr(vars(validation_event)),
+        pickle.dumps(validation_event),
+    )
     assert retry_instructions[0] is None
     assert "rucam_scores.time_to_onset" in retry_instructions[1]
     assert "valid integer" in retry_instructions[1]
     assert secret not in retry_instructions[1]
     assert secret not in validation_event.error
     assert secret not in manifest_text
+    assert validation_event.validation_diagnostic == SafeValidationDiagnostic(
+        (("rucam_scores.time_to_onset", "invalid_integer"),)
+    )
+    for serialized in serialized_event_views:
+        encoded = serialized if isinstance(serialized, bytes) else serialized.encode()
+        assert secret.encode() not in encoded
+    assert secret in artifact_text
+
+
+def test_terminal_validation_error_contains_only_structured_diagnostic(monkeypatch):
+    secret = "MODEL-CONTROLLED-TERMINAL-SECRET"
+    invalid_report = complete_report().replace(
+        '"time_to_onset": 2', f'"time_to_onset": "{secret}"'
+    )
+    install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter((invalid_report, invalid_report))},
+    )
+
+    with pytest.raises(AnalystExecutionError) as exc_info:
+        run_crew("dummy.pdf", capture_reports=True, max_restarts=1)
+
+    terminal_error = exc_info.value
+    assert terminal_error.validation_diagnostic == SafeValidationDiagnostic(
+        (("rucam_scores.time_to_onset", "invalid_integer"),)
+    )
+    serialized = (
+        str(terminal_error),
+        repr(vars(terminal_error)),
+        pickle.dumps(terminal_error),
+    )
+    for value in serialized:
+        encoded = value if isinstance(value, bytes) else value.encode()
+        assert secret.encode() not in encoded
+    assert secret not in str(terminal_error.__cause__)
+    assert terminal_error.__cause__.__context__ is None
 
 
 def test_build_crew_defaults_to_three_analysts_without_masking():

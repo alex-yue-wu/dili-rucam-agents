@@ -1,7 +1,14 @@
 import json
+from dataclasses import asdict
+import pickle
 
 import pytest
 
+from dili_rucam_agents.diagnostics import (
+    SafeValidationDiagnostic,
+    render_validation_diagnostic,
+    validate_validation_diagnostic,
+)
 from dili_rucam_agents.validators.analyst_report import (
     AnalystReportValidationError,
     parse_section_c_payload,
@@ -161,3 +168,42 @@ def test_validation_diagnostic_omits_model_controlled_values_and_urls():
     assert secret not in diagnostic
     assert "input_value" not in diagnostic
     assert "errors.pydantic.dev" not in diagnostic
+
+
+def test_validation_diagnostic_is_structured_allowlisted_and_forge_resistant():
+    secret = "MODEL-CONTROLLED-SECRET"
+    payload = {
+        **VALID_PAYLOAD,
+        "rucam_scores": {
+            **VALID_PAYLOAD["rucam_scores"],
+            "time_to_onset": secret,
+        },
+    }
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report(report_for(payload))
+
+    diagnostic = exc_info.value.diagnostic
+    assert diagnostic == SafeValidationDiagnostic(
+        (("rucam_scores.time_to_onset", "invalid_integer"),)
+    )
+    serialized = (
+        repr(diagnostic),
+        repr(asdict(diagnostic)),
+        repr(vars(diagnostic)),
+        pickle.dumps(diagnostic),
+        render_validation_diagnostic(diagnostic),
+    )
+    for value in serialized:
+        encoded = value if isinstance(value, bytes) else value.encode()
+        assert secret.encode() not in encoded
+
+    with pytest.raises(ValueError):
+        SafeValidationDiagnostic(((f"patient.{secret}", "invalid_integer"),))
+    with pytest.raises(ValueError):
+        SafeValidationDiagnostic((("total_score", secret),))
+
+    forged = object.__new__(SafeValidationDiagnostic)
+    object.__setattr__(forged, "issues", (("total_score", secret),))
+    with pytest.raises(ValueError):
+        validate_validation_diagnostic(forged)

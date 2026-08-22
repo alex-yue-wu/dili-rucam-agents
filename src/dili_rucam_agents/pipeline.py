@@ -109,20 +109,14 @@ def _build_checkpoint_context(
 
 
 def _handle_attempt_event(
-    context: PipelineCheckpointContext, event: AnalystAttemptEvent
+    context: PipelineCheckpointContext,
+    event: AnalystAttemptEvent,
 ) -> None:
     identity = context.identities[event.analyst_key]
     if event.status == "running":
         context.store.record_running(identity, attempt=event.attempt)
         return
     if event.status == "validation_failed":
-        context.store.record_failure(
-            identity,
-            attempt=event.attempt,
-            failure_kind="validation",
-            error=event.error or "Unknown validation error",
-            report_text=event.report_text,
-        )
         return
     if event.status == "execution_failed":
         context.store.record_failure(
@@ -197,6 +191,21 @@ def run_end_to_end(
         else {}
     )
 
+    def persist_invalid_report_audit(
+        analyst_key: str, attempt: int, report_text: str, diagnostic: object
+    ) -> None:
+        checkpoint_context.store.record_failure(
+            checkpoint_context.identities[analyst_key],
+            attempt=attempt,
+            failure_kind="validation",
+            error="caller-supplied validation text is ignored",
+            report_text=report_text,
+            validation_diagnostic=diagnostic,
+        )
+
+    def handle_attempt(event: AnalystAttemptEvent) -> None:
+        _handle_attempt_event(checkpoint_context, event)
+
     result = run_crew(
         resolved_pdf,
         resolved_prompt,
@@ -209,10 +218,9 @@ def run_end_to_end(
         use_analyst_eta=use_analyst_eta,
         completed_reports=completed_reports,
         max_restarts=max_restarts,
-        on_attempt=(
-            (lambda event: _handle_attempt_event(checkpoint_context, event))
-            if resolved_output_dir
-            else None
+        on_attempt=(handle_attempt if resolved_output_dir else None),
+        _on_invalid_report_audit=(
+            persist_invalid_report_audit if resolved_output_dir else None
         ),
         instruction_contracts=(
             checkpoint_context.instruction_contracts if resolved_output_dir else None

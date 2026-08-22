@@ -195,12 +195,14 @@ When `--output-dir` is supplied, the pipeline writes artifacts for the enabled w
   `analyst-<name>_attempt-<cumulative-number>-<unique-id>.invalid.md`. Names are
   cumulative and collision-resistant, so a later invocation cannot overwrite an
   earlier invalid output. An execution exception without a report has no markdown
-  artifact. Public attempt callbacks receive only a validated structured
-  diagnostic containing the exception type and allowlisted numeric status
-  identifiers; raw exception objects remain local for terminal exception chaining.
-  The persistence boundary validates and renders that structure again without
-  trusting caller-supplied text, arbitrary objects, raw provider messages, or
-  request data.
+  artifact. Public attempt callbacks receive only validated structured
+  diagnostics: execution failures contain a conservative exception type and
+  allowlisted numeric identifiers, while validation failures contain only
+  allowlisted field paths and issue codes rendered through fixed messages. Raw
+  exception objects remain local for terminal exception chaining, and raw invalid
+  report text is handed only to the invalid-attempt audit writer. Persistence
+  boundaries validate and render both structures again without trusting
+  caller-supplied text, arbitrary objects, raw provider messages, or request data.
 
 Only enabled workflow artifacts are persisted.
 
@@ -241,10 +243,12 @@ the production prompt, task wrapper and expected output, and analyst
 role/goal/backstory. Runtime case-bundle content and transient retry diagnostics
 are not part of that instruction hash (the source PDF hash is tracked separately).
 Old output directories without `analyst_checkpoints.json` are handled as legacy
-checkpoints during a normal resume: valid legacy reports are adopted into the
-manifest, provided any existing `run_status.json` matches the PDF filename,
-masking mode, and strict-scoring mode. Invalid or incompatible legacy reports are
-run again.
+checkpoint candidates during a normal resume. A manifestless completed batch is
+not eligible for the read-only batch fast-skip: it enters the pipeline once, where
+complete reports that pass the strict canonical validator are adopted into a
+current versioned manifest, provided any existing `run_status.json` matches the PDF
+filename, masking mode, and strict-scoring mode. A later compatible batch may then
+skip normally. Invalid or incompatible legacy reports are run again.
 
 `--force-rerun` is a batch CLI control that bypasses every analyst checkpoint,
 including legacy-output adoption, for that invocation. Invalid model outputs are
@@ -255,7 +259,11 @@ New reports pass strict structural validation: they contain exactly one SECTION 
 SECTION B, and SECTION C in that order, with exactly one fenced JSON object in
 SECTION C. Headings or JSON examples inside Markdown code fences do not count as
 report structure. Legacy summary parsing remains deliberately tolerant and selects
-the last historical JSON block when legacy mode is requested.
+the last historical fenced or unfenced JSON block when legacy mode is requested.
+That tolerant parser exists only to rebuild summaries from historical output; it
+does not authorize checkpoint adoption or a public `completed_reports` entry.
+Malformed historical output is resumable only after it can be canonicalized into a
+complete strict report without losing content.
 
 ## Tests
 

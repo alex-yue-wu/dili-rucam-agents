@@ -9,6 +9,50 @@ _SAFE_TYPE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 _FAILURE_KINDS = frozenset(("validation", "execution"))
 FailureKind = Literal["validation", "execution"]
 
+_VALIDATION_FIELD_PATHS = frozenset(
+    (
+        "report",
+        "SECTION_A",
+        "SECTION_B",
+        "SECTION_C",
+        "injury_pattern",
+        "R_ratio",
+        "rucam_scores",
+        "rucam_scores.time_to_onset",
+        "rucam_scores.course",
+        "rucam_scores.risk_factors",
+        "rucam_scores.concomitant_drugs",
+        "rucam_scores.other_causes_excluded",
+        "rucam_scores.known_hepatotoxicity",
+        "rucam_scores.rechallenge",
+        "total_score",
+        "category",
+    )
+)
+_VALIDATION_ISSUE_MESSAGES = {
+    "invalid_report": "Report is invalid.",
+    "report_empty": "Report is empty.",
+    "summary_placeholder": "Report is a summary placeholder.",
+    "missing_section": "Missing {field}.",
+    "duplicate_section": "Report must contain exactly one {field}.",
+    "section_order": "Sections must appear in A, B, C order.",
+    "empty_section": "{field} is empty.",
+    "json_fence_count": ("SECTION C must contain exactly one fenced JSON object."),
+    "invalid_json": "Invalid SECTION C JSON.",
+    "json_not_object": "SECTION C JSON must be an object.",
+    "missing_json_object": "Unable to locate a complete JSON object.",
+    "field_required": "{field}: Field required.",
+    "invalid_integer": "{field}: Input should be a valid integer.",
+    "integer_too_small": "{field}: Integer is below the allowed minimum.",
+    "integer_too_large": "{field}: Integer exceeds the allowed maximum.",
+    "invalid_number": "{field}: Input should be a valid number.",
+    "number_too_small": "{field}: Number is below the allowed minimum.",
+    "invalid_literal": "{field}: Input is not an allowed value.",
+    "score_sum_mismatch": "total_score does not match the seven-item score sum.",
+    "category_mismatch": "category does not match total_score.",
+    "invalid_value": "{field}: Value is invalid.",
+}
+
 
 @dataclass(frozen=True)
 class SafeExecutionDiagnostic:
@@ -35,6 +79,53 @@ class SafeExecutionDiagnostic:
             minimum=-9999,
             maximum=9999,
         )
+
+
+@dataclass(frozen=True)
+class SafeValidationDiagnostic:
+    """Serializable validation issues containing only allowlisted metadata."""
+
+    issues: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        if type(self.issues) is not tuple or not self.issues or len(self.issues) > 16:
+            raise ValueError("issues must contain from 1 through 16 validation issues")
+        for issue in self.issues:
+            if type(issue) is not tuple or len(issue) != 2:
+                raise ValueError("each validation issue must be a field/code pair")
+            field_path, issue_code = issue
+            if type(field_path) is not str or field_path not in _VALIDATION_FIELD_PATHS:
+                raise ValueError("validation field path is not allowed")
+            if (
+                type(issue_code) is not str
+                or issue_code not in _VALIDATION_ISSUE_MESSAGES
+            ):
+                raise ValueError("validation issue code is not allowed")
+
+
+def validate_validation_diagnostic(diagnostic: object) -> SafeValidationDiagnostic:
+    """Independently validate structured validation metadata at a boundary."""
+
+    if type(diagnostic) is not SafeValidationDiagnostic:
+        raise ValueError("validation_diagnostic must be a SafeValidationDiagnostic")
+    return SafeValidationDiagnostic(tuple(diagnostic.issues))
+
+
+def render_validation_diagnostic(diagnostic: object) -> str:
+    """Render only fixed messages selected by validated issue metadata."""
+
+    validated = validate_validation_diagnostic(diagnostic)
+    messages = []
+    for field_path, issue_code in validated.issues:
+        field_label = (
+            field_path.replace("_", " ")
+            if field_path.startswith("SECTION_")
+            else field_path
+        )
+        messages.append(
+            _VALIDATION_ISSUE_MESSAGES[issue_code].format(field=field_label)
+        )
+    return "; ".join(messages)
 
 
 def validate_failure_kind(value: object) -> FailureKind:
@@ -133,10 +224,13 @@ def _safe_integer_attribute(
 __all__ = [
     "FailureKind",
     "SafeExecutionDiagnostic",
+    "SafeValidationDiagnostic",
     "build_execution_diagnostic",
     "canonicalize_execution_error",
     "format_execution_error",
     "render_execution_diagnostic",
+    "render_validation_diagnostic",
     "validate_execution_diagnostic",
     "validate_failure_kind",
+    "validate_validation_diagnostic",
 ]

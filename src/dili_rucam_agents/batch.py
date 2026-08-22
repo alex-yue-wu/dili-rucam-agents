@@ -13,13 +13,19 @@ from openpyxl import Workbook
 from dili_rucam_agents.crew.agents import resolve_rucam_model
 from dili_rucam_agents.crew.config import get_enabled_analyst_configs
 from dili_rucam_agents.crew.crew import AnalystExecutionError, validate_max_restarts
-from dili_rucam_agents.diagnostics import format_execution_error
+from dili_rucam_agents.diagnostics import (
+    SafeValidationDiagnostic,
+    format_execution_error,
+    render_validation_diagnostic,
+    validate_validation_diagnostic,
+)
 from dili_rucam_agents.ground_truth import (
     extract_ground_truth_rucam_category,
     extract_ground_truth_rucam_score,
 )
 from dili_rucam_agents.pipeline import is_end_to_end_complete, run_end_to_end
 from dili_rucam_agents.validators.analyst_report import (
+    AnalystReportValidationError,
     parse_section_c_payload,
     validate_analyst_report,
 )
@@ -29,10 +35,14 @@ _RUN_STATUS_FILENAME = "run_status.json"
 
 
 class _AnalystReportFileValidationError(ValueError):
-    def __init__(self, *, report_filename: str, diagnostic: str) -> None:
+    def __init__(
+        self, *, report_filename: str, diagnostic: SafeValidationDiagnostic
+    ) -> None:
         self.report_filename = report_filename
-        self.diagnostic = diagnostic
-        super().__init__(f"{report_filename}: {diagnostic}")
+        self.diagnostic = validate_validation_diagnostic(diagnostic)
+        super().__init__(
+            f"{report_filename}: {render_validation_diagnostic(self.diagnostic)}"
+        )
 
 
 def run_batch_folder(
@@ -311,13 +321,14 @@ def _stop_batch_after_failure(
 
 def _safe_batch_failure_diagnostic(exc: Exception) -> str:
     if isinstance(exc, _AnalystReportFileValidationError):
-        return f"{exc.report_filename}: {exc.diagnostic}"
+        return f"{exc.report_filename}: {render_validation_diagnostic(exc.diagnostic)}"
     if not isinstance(exc, AnalystExecutionError):
         return format_execution_error(exc)
     if exc.failure_kind == "validation":
         return (
             f"{exc.analyst_key} failed after {exc.attempts} attempts "
-            f"(validation): {exc.last_error}"
+            f"(validation): "
+            f"{render_validation_diagnostic(exc.validation_diagnostic)}"
         )
     cause = exc.__cause__
     execution_error = cause if isinstance(cause, Exception) else exc
@@ -353,10 +364,10 @@ def _populate_row_from_reports(
         report_text = report_path.read_text(encoding="utf-8")
         try:
             validated = validate_analyst_report(report_text, allow_legacy_json=True)
-        except ValueError as exc:
+        except AnalystReportValidationError as exc:
             raise _AnalystReportFileValidationError(
                 report_filename=report_path.name,
-                diagnostic=str(exc),
+                diagnostic=exc.diagnostic,
             ) from exc
         row[config["resolved_model_name"]] = validated.payload.total_score
 

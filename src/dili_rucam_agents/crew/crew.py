@@ -11,10 +11,13 @@ from crewai import Crew, Process, Task
 from dili_rucam_agents.diagnostics import (
     FailureKind,
     SafeExecutionDiagnostic,
+    SafeValidationDiagnostic,
     build_execution_diagnostic,
     format_execution_error,
+    render_validation_diagnostic,
     validate_execution_diagnostic,
     validate_failure_kind,
+    validate_validation_diagnostic,
 )
 from dili_rucam_agents.ingestion.build_bundle import build_case_bundle
 from dili_rucam_agents.masking import mask_case_bundle_payload
@@ -53,9 +56,15 @@ class AnalystAttemptEvent:
     attempt: int
     max_attempts: int
     status: AttemptStatus
-    error: str | None = None
     report_text: str | None = None
     execution_diagnostic: SafeExecutionDiagnostic | None = None
+    validation_diagnostic: SafeValidationDiagnostic | None = None
+
+    @property
+    def error(self) -> str | None:
+        if self.validation_diagnostic is None:
+            return None
+        return render_validation_diagnostic(self.validation_diagnostic)
 
     def __post_init__(self) -> None:
         if type(self.analyst_key) is not str:
@@ -74,33 +83,38 @@ class AnalystAttemptEvent:
             raise ValueError("attempt must be between 1 and max_attempts")
         if type(self.status) is not str or self.status not in _ATTEMPT_STATUSES:
             raise ValueError("status must be a supported analyst attempt status")
-        if self.error is not None and type(self.error) is not str:
-            raise TypeError("error must be a string or None")
         if self.report_text is not None and type(self.report_text) is not str:
             raise TypeError("report_text must be a string or None")
 
         if self.status == "running":
             if (
-                self.error is not None
-                or self.report_text is not None
+                self.report_text is not None
                 or self.execution_diagnostic is not None
+                or self.validation_diagnostic is not None
             ):
                 raise ValueError("running events cannot carry result data")
             return
         if self.status == "validation_failed":
-            if self.error is None or self.report_text is None:
-                raise ValueError(
-                    "validation failure events require error and report_text"
-                )
+            if self.report_text is not None:
+                raise ValueError("validation failure events cannot carry report_text")
             if self.execution_diagnostic is not None:
                 raise ValueError(
                     "validation failure events cannot carry execution diagnostics"
                 )
+            if self.validation_diagnostic is None:
+                raise ValueError(
+                    "validation failure events require a validation diagnostic"
+                )
+            object.__setattr__(
+                self,
+                "validation_diagnostic",
+                validate_validation_diagnostic(self.validation_diagnostic),
+            )
             return
         if self.status == "execution_failed":
-            if self.error is not None or self.report_text is not None:
+            if self.report_text is not None or self.validation_diagnostic is not None:
                 raise ValueError(
-                    "execution failure events cannot carry error or report_text"
+                    "execution failure events cannot carry validation result data"
                 )
             if self.execution_diagnostic is None:
                 raise ValueError(
@@ -112,10 +126,13 @@ class AnalystAttemptEvent:
                 validate_execution_diagnostic(self.execution_diagnostic),
             )
             return
-        if self.error is not None or self.report_text is None:
-            raise ValueError("completed events require report_text and no error")
-        if self.execution_diagnostic is not None:
-            raise ValueError("completed events cannot carry execution diagnostics")
+        if self.report_text is None:
+            raise ValueError("completed events require report_text")
+        if (
+            self.execution_diagnostic is not None
+            or self.validation_diagnostic is not None
+        ):
+            raise ValueError("completed events cannot carry failure diagnostics")
 
 
 class AnalystExecutionError(RuntimeError):
@@ -125,8 +142,9 @@ class AnalystExecutionError(RuntimeError):
         analyst_key: str,
         attempts: int,
         failure_kind: FailureKind,
-        last_error: str,
+        last_error: str = "",
         last_exception: BaseException | None = None,
+        validation_diagnostic: SafeValidationDiagnostic | None = None,
     ) -> None:
         self.analyst_key = analyst_key
         self.attempts = attempts
@@ -134,11 +152,19 @@ class AnalystExecutionError(RuntimeError):
         execution_exception = (
             last_exception if last_exception is not None else Exception()
         )
-        self.last_error = (
-            format_execution_error(execution_exception)
-            if self.failure_kind == "execution"
-            else last_error
-        )
+        if self.failure_kind == "execution":
+            if validation_diagnostic is not None:
+                raise ValueError(
+                    "execution failures cannot carry validation diagnostics"
+                )
+            self.validation_diagnostic = None
+            self.last_error = format_execution_error(execution_exception)
+        else:
+            source = validation_diagnostic or SafeValidationDiagnostic(
+                (("report", "invalid_report"),)
+            )
+            self.validation_diagnostic = validate_validation_diagnostic(source)
+            self.last_error = render_validation_diagnostic(self.validation_diagnostic)
         super().__init__(
             f"{analyst_key} failed after {attempts} attempts "
             f"({self.failure_kind}): {self.last_error}"
@@ -250,6 +276,9 @@ def run_crew(
     on_report: Callable[[str, str], None] | None = None,
     max_restarts: int = 2,
     on_attempt: Callable[[AnalystAttemptEvent], None] | None = None,
+    _on_invalid_report_audit: (
+        Callable[[str, int, str, SafeValidationDiagnostic], None] | None
+    ) = None,
     instruction_contracts: Mapping[str, AnalystInstructionContract] | None = None,
     **kwargs,
 ) -> str | Tuple[str, Dict[str, Optional[str]]]:
@@ -293,6 +322,7 @@ def run_crew(
         retry_instruction: str | None = None
         last_error = ""
         last_exception: Exception | None = None
+        last_validation_diagnostic: SafeValidationDiagnostic | None = None
         failure_kind: FailureKind = "validation"
         for attempt in range(1, max_attempts + 1):
             crew, task = _build_isolated_analyst_run(
@@ -323,27 +353,12 @@ def run_crew(
                 )
                 fallback_output = _output_text(final_output)
                 report_text = _task_output_text(task) or fallback_output or ""
-                validate_analyst_report(report_text)
-            except AnalystReportValidationError as exc:
-                last_error = str(exc)
-                last_exception = exc
-                failure_kind = "validation"
-                retry_instruction = last_error
-                validation_event = AnalystAttemptEvent(
-                    analyst_key=key,
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                    status="validation_failed",
-                    error=last_error,
-                    report_text=report_text,
-                )
-                if on_attempt:
-                    on_attempt(validation_event)
             except Exception as exc:
                 last_error = format_execution_error(exc)
                 last_exception = exc
                 failure_kind = "execution"
                 retry_instruction = None
+                last_validation_diagnostic = None
                 execution_event = AnalystAttemptEvent(
                     analyst_key=key,
                     attempt=attempt,
@@ -354,20 +369,49 @@ def run_crew(
                 if on_attempt:
                     on_attempt(execution_event)
             else:
-                completed_event = AnalystAttemptEvent(
-                    analyst_key=key,
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                    status="completed",
-                    report_text=report_text,
-                )
-                if on_attempt:
-                    on_attempt(completed_event)
-                if capture_reports:
-                    reports[key] = report_text
-                    if on_report:
-                        on_report(key, report_text)
-                break
+                try:
+                    validate_analyst_report(report_text)
+                except AnalystReportValidationError as exc:
+                    last_validation_diagnostic = validate_validation_diagnostic(
+                        exc.diagnostic
+                    )
+                    last_error = render_validation_diagnostic(
+                        last_validation_diagnostic
+                    )
+                    last_exception = exc
+                    failure_kind = "validation"
+                    retry_instruction = last_error
+                    if _on_invalid_report_audit:
+                        _on_invalid_report_audit(
+                            key,
+                            attempt,
+                            report_text,
+                            last_validation_diagnostic,
+                        )
+                    validation_event = AnalystAttemptEvent(
+                        analyst_key=key,
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        status="validation_failed",
+                        validation_diagnostic=last_validation_diagnostic,
+                    )
+                    if on_attempt:
+                        on_attempt(validation_event)
+                else:
+                    completed_event = AnalystAttemptEvent(
+                        analyst_key=key,
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        status="completed",
+                        report_text=report_text,
+                    )
+                    if on_attempt:
+                        on_attempt(completed_event)
+                    if capture_reports:
+                        reports[key] = report_text
+                        if on_report:
+                            on_report(key, report_text)
+                    break
         else:
             execution_error = AnalystExecutionError(
                 analyst_key=key,
@@ -375,6 +419,7 @@ def run_crew(
                 failure_kind=failure_kind,
                 last_error=last_error,
                 last_exception=last_exception,
+                validation_diagnostic=last_validation_diagnostic,
             )
             if last_exception is not None:
                 raise execution_error from last_exception

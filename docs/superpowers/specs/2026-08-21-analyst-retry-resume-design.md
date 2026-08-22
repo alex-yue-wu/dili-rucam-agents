@@ -63,7 +63,9 @@ A valid new report must contain:
 - A `total_score` equal to the sum of the seven item scores.
 - A recognized causality category consistent with `total_score`: `Excluded` for scores at or below 0, `Unlikely` for 1–2, `Possible` for 3–5, `Probable` for 6–8, and `Highly probable` for 9 or above.
 
-New analyst attempts require strict JSON. Existing tolerant extraction in `batch.py` remains available only for reading legacy reports and diagnostic recovery; it is not the success gate for newly generated output.
+New analyst attempts require strict JSON. Existing tolerant extraction in
+`batch.py` remains available only for historical batch-summary recovery; it is not
+a checkpoint-adoption, `completed_reports`, or new-output success gate.
 
 The RUCAM schema must be aligned with the production prompts before it is used at the boundary:
 
@@ -157,7 +159,19 @@ A checkpoint is reusable only when:
 
 If any condition fails, that analyst is pending and will run. One analyst's incompatibility does not invalidate other compatible analysts.
 
-Existing report files without a versioned manifest are treated as legacy checkpoints. They may be reused only when the shared validator accepts them and the existing `run_status.json`, when present, matches the PDF filename plus masking and strict-scoring settings. The legacy enabled-analyst list is not required to equal the current list, so enabling an additional analyst does not rerun existing default analysts. Once reused, reports are adopted into the new manifest with the current fingerprint. This is a one-time compatibility path for outputs created before manifests existed; `--force-rerun` bypasses it when the operator does not trust those files.
+Existing report files without a versioned manifest are treated as legacy checkpoint
+candidates. A completed manifestless batch enters normal pipeline resume once; it
+cannot satisfy the read-only batch completion gate. The normal resume path adopts
+only complete reports that pass strict canonical validation and whose existing
+`run_status.json`, when present, matches the PDF filename plus masking and
+strict-scoring settings. Tolerant last-block or unfenced historical recovery is
+reserved for batch summaries and cannot create a successful checkpoint unless the
+report is canonicalized without content loss. The legacy enabled-analyst list is
+not required to equal the current list, so enabling an additional analyst does not
+rerun existing default analysts. Once adopted, reports have the current fingerprint
+in a versioned manifest and later compatible runs may skip normally. This is a
+one-time compatibility path for outputs created before manifests existed;
+`--force-rerun` bypasses it when the operator does not trust those files.
 
 ### 5. Batch Resume and Force Rerun
 

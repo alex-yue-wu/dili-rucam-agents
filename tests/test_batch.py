@@ -8,12 +8,14 @@ import pytest
 import dili_rucam_agents.pipeline as pipeline_module
 from dili_rucam_agents.batch import (
     _is_pdf_run_complete,
+    _safe_batch_failure_diagnostic,
     extract_ground_truth_rucam_category,
     extract_ground_truth_rucam_score,
     extract_section_c_json,
     run_batch_folder,
 )
 from dili_rucam_agents.crew.crew import AnalystAttemptEvent, AnalystExecutionError
+from dili_rucam_agents.diagnostics import SafeValidationDiagnostic
 from dili_rucam_agents.pipeline import is_end_to_end_complete, run_end_to_end
 from dili_rucam_agents.validators.analyst_report import (
     AnalystReportValidationError,
@@ -483,15 +485,16 @@ def test_run_end_to_end_persists_invalid_attempt_then_valid_report(
 
     def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
         callback = kwargs["on_attempt"]
+        diagnostic = SafeValidationDiagnostic((("SECTION_C", "missing_section"),))
         callback(AnalystAttemptEvent("analyst_alpha", 1, 3, "running"))
+        kwargs["_on_invalid_report_audit"]("analyst_alpha", 1, "incomplete", diagnostic)
         callback(
             AnalystAttemptEvent(
                 "analyst_alpha",
                 1,
                 3,
                 "validation_failed",
-                error="Missing SECTION C",
-                report_text="incomplete",
+                validation_diagnostic=diagnostic,
             )
         )
         callback(AnalystAttemptEvent("analyst_alpha", 2, 3, "running"))
@@ -527,22 +530,23 @@ def test_invalid_attempt_artifacts_and_history_accumulate_across_invocations(
     def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
         report_text = next(invalid_outputs)
         callback = kwargs["on_attempt"]
+        diagnostic = SafeValidationDiagnostic((("SECTION_C", "missing_section"),))
         callback(AnalystAttemptEvent("analyst_alpha", 1, 1, "running"))
+        kwargs["_on_invalid_report_audit"]("analyst_alpha", 1, report_text, diagnostic)
         callback(
             AnalystAttemptEvent(
                 "analyst_alpha",
                 1,
                 1,
                 "validation_failed",
-                error="Missing SECTION C",
-                report_text=report_text,
+                validation_diagnostic=diagnostic,
             )
         )
         raise AnalystExecutionError(
             analyst_key="analyst_alpha",
             attempts=1,
             failure_kind="validation",
-            last_error="Missing SECTION C",
+            validation_diagnostic=diagnostic,
         )
 
     monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
@@ -659,6 +663,7 @@ def test_later_failure_preserves_completed_alpha_checkpoint(tmp_path, monkeypatc
 
     def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
         callback = kwargs["on_attempt"]
+        diagnostic = SafeValidationDiagnostic((("SECTION_C", "missing_section"),))
         callback(AnalystAttemptEvent("analyst_alpha", 1, 3, "running"))
         callback(
             AnalystAttemptEvent(
@@ -666,21 +671,21 @@ def test_later_failure_preserves_completed_alpha_checkpoint(tmp_path, monkeypatc
             )
         )
         callback(AnalystAttemptEvent("analyst_beta", 1, 3, "running"))
+        kwargs["_on_invalid_report_audit"]("analyst_beta", 1, "incomplete", diagnostic)
         callback(
             AnalystAttemptEvent(
                 "analyst_beta",
                 1,
                 3,
                 "validation_failed",
-                error="Missing SECTION C",
-                report_text="incomplete",
+                validation_diagnostic=diagnostic,
             )
         )
         raise AnalystExecutionError(
             analyst_key="analyst_beta",
             attempts=3,
             failure_kind="validation",
-            last_error="Missing SECTION C",
+            validation_diagnostic=diagnostic,
         )
 
     monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
@@ -848,6 +853,138 @@ def test_run_batch_folder_skips_completed_pdf(tmp_path: Path, monkeypatch):
     )
 
     assert calls == []
+
+
+def test_manifestless_completed_batch_enters_pipeline_once_then_skips(
+    tmp_path: Path, monkeypatch
+):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    pdf_path = input_dir / "case-a.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 legacy")
+    result_dir = output_dir / "case-a"
+    write_complete_reports(result_dir)
+    result_dir.joinpath("masked-case-bundle_report.md").write_text(
+        "# Masked Case Bundle Report\n", encoding="utf-8"
+    )
+    result_dir.joinpath("ground-truth-rucam-score_report.md").write_text(
+        "# Ground Truth RUCAM Score Report\n\n"
+        "```text\nGROUND_TRUTH_RUCAM_SCORE: 8\n"
+        "GROUND_TRUTH_RUCAM_CATEGORY: Probable\n```\n",
+        encoding="utf-8",
+    )
+    result_dir.joinpath("run_status.json").write_text(
+        json.dumps(
+            {
+                "pdf_filename": pdf_path.name,
+                "status": "completed",
+                "masking_enabled": True,
+                "strict_scoring": False,
+                "enabled_analysts": [
+                    "analyst_alpha",
+                    "analyst_beta",
+                    "analyst_gamma",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    pipeline_calls = []
+
+    def adopt_legacy_reports(pdf_path, prompt_path=None, **kwargs):
+        pipeline_calls.append(dict(kwargs["completed_reports"]))
+        return "adopted", dict(kwargs["completed_reports"])
+
+    monkeypatch.setattr(pipeline_module, "run_crew", adopt_legacy_reports)
+
+    run_batch_folder(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        enable_score_masking=True,
+    )
+
+    assert [set(reports) for reports in pipeline_calls] == [
+        {"analyst_alpha", "analyst_beta", "analyst_gamma"}
+    ]
+    assert result_dir.joinpath("analyst_checkpoints.json").exists()
+
+    skip_guard = Mock(side_effect=AssertionError("compatible batch entered pipeline"))
+    ingestion_guard = Mock(side_effect=AssertionError("compatible batch ingested PDF"))
+    masking_guard = Mock(side_effect=AssertionError("compatible batch masked case"))
+    monkeypatch.setattr(pipeline_module, "run_crew", skip_guard)
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", ingestion_guard
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.mask_case_bundle_payload", masking_guard
+    )
+
+    run_batch_folder(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        enable_score_masking=True,
+    )
+
+    skip_guard.assert_not_called()
+    ingestion_guard.assert_not_called()
+    masking_guard.assert_not_called()
+
+
+@pytest.mark.parametrize("compatibility_change", ("model", "tokens", "prompt", "pdf"))
+def test_adopted_legacy_batch_invalidates_on_compatibility_change(
+    tmp_path: Path, monkeypatch, compatibility_change: str
+):
+    pdf_path = tmp_path / "case-a.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 legacy")
+    result_dir = tmp_path / "case-a"
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("initial prompt", encoding="utf-8")
+    write_complete_reports(result_dir)
+    result_dir.joinpath("run_status.json").write_text(
+        json.dumps(
+            {
+                "pdf_filename": pdf_path.name,
+                "status": "completed",
+                "masking_enabled": False,
+                "strict_scoring": False,
+                "enabled_analysts": [
+                    "analyst_alpha",
+                    "analyst_beta",
+                    "analyst_gamma",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_crew",
+        lambda pdf_path, prompt_path=None, **kwargs: (
+            "adopted",
+            dict(kwargs["completed_reports"]),
+        ),
+    )
+    run_end_to_end(
+        str(pdf_path), prompt_path=str(prompt_path), output_dir=str(result_dir)
+    )
+    assert is_end_to_end_complete(
+        str(pdf_path), str(result_dir), prompt_path=str(prompt_path)
+    )
+
+    if compatibility_change == "model":
+        monkeypatch.setenv("ANALYST_ALPHA_MODEL", "changed-model")
+    elif compatibility_change == "tokens":
+        monkeypatch.setenv("ANALYST_ALPHA_MAX_TOKENS", "16001")
+    elif compatibility_change == "prompt":
+        prompt_path.write_text("changed prompt", encoding="utf-8")
+    else:
+        pdf_path.write_bytes(b"%PDF-1.4 changed")
+
+    assert not is_end_to_end_complete(
+        str(pdf_path), str(result_dir), prompt_path=str(prompt_path)
+    )
 
 
 def test_batch_contracted_topology_skips_without_mutating_checkpoint(
@@ -1219,6 +1356,74 @@ def test_batch_execution_exception_diagnostics_never_persist_raw_text(
         assert "request body" not in diagnostic
         assert "ProviderRequestError" in diagnostic
         assert "status_code=502" in diagnostic
+
+
+def test_batch_validation_diagnostics_never_persist_caller_text(
+    tmp_path: Path, monkeypatch
+):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case-a.pdf").write_bytes(b"%PDF-1.4")
+    secret = "MODEL-CONTROLLED-BATCH-SECRET"
+    clinical_text = "Patient Jane Doe ALT 980 after Drug Q"
+
+    def fail_run(*args, **kwargs):
+        raise AnalystExecutionError(
+            analyst_key="analyst_alpha",
+            attempts=3,
+            failure_kind="validation",
+            last_error=f"{secret}: {clinical_text}",
+            validation_diagnostic=SafeValidationDiagnostic(
+                (("rucam_scores.time_to_onset", "invalid_integer"),)
+            ),
+        )
+
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fail_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        run_batch_folder(
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            debug=True,
+        )
+
+    result_dir = output_dir / "case-a"
+    status_text = result_dir.joinpath("run_status.json").read_text(encoding="utf-8")
+    log_text = result_dir.joinpath("case-a.log").read_text(encoding="utf-8")
+    workbook = load_workbook(output_dir / "batch_summary.xlsx", data_only=True)
+    workbook_text = " ".join(
+        str(cell.value)
+        for row in workbook.active.iter_rows()
+        for cell in row
+        if cell.value is not None
+    )
+    diagnostics = (str(exc_info.value), status_text, log_text, workbook_text)
+    for diagnostic in diagnostics:
+        assert secret not in diagnostic
+        assert clinical_text not in diagnostic
+        assert "rucam_scores.time_to_onset" in diagnostic
+        assert "valid integer" in diagnostic
+
+
+def test_batch_validation_sink_rejects_forged_structured_diagnostic():
+    secret = "MODEL-CONTROLLED-FORGED-BATCH-SECRET"
+    error = AnalystExecutionError(
+        analyst_key="analyst_alpha",
+        attempts=1,
+        failure_kind="validation",
+        validation_diagnostic=SafeValidationDiagnostic(
+            (("total_score", "score_sum_mismatch"),)
+        ),
+    )
+    forged = object.__new__(SafeValidationDiagnostic)
+    object.__setattr__(forged, "issues", (("total_score", secret),))
+    error.validation_diagnostic = forged
+
+    with pytest.raises(ValueError) as exc_info:
+        _safe_batch_failure_diagnostic(error)
+
+    assert secret not in str(exc_info.value)
 
 
 def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(

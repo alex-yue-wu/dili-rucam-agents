@@ -16,8 +16,11 @@ from dili_rucam_agents.crew.agents import (
 )
 from dili_rucam_agents.diagnostics import (
     SafeExecutionDiagnostic,
+    SafeValidationDiagnostic,
     render_execution_diagnostic,
+    render_validation_diagnostic,
     validate_failure_kind,
+    validate_validation_diagnostic,
 )
 from dili_rucam_agents.validators.analyst_report import validate_analyst_report
 
@@ -152,7 +155,7 @@ class AnalystCheckpointStore:
                 self._write_manifest(manifest)
             return reports
 
-        if self.manifest_path.exists() or legacy_context is None:
+        if self.manifest_path.exists() or legacy_context is None or not adopt_legacy:
             return {}
         if not self._legacy_context_matches(legacy_context):
             return {}
@@ -187,10 +190,26 @@ class AnalystCheckpointStore:
         error: str,
         report_text: str | None = None,
         execution_diagnostic: SafeExecutionDiagnostic | None = None,
+        validation_diagnostic: SafeValidationDiagnostic | None = None,
     ) -> None:
         failure_kind = validate_failure_kind(failure_kind)
         if failure_kind == "execution":
+            if validation_diagnostic is not None:
+                raise ValueError(
+                    "execution failures cannot carry validation diagnostics"
+                )
             error = render_execution_diagnostic(execution_diagnostic)
+        else:
+            if execution_diagnostic is not None:
+                raise ValueError(
+                    "validation failures cannot carry execution diagnostics"
+                )
+            source = validation_diagnostic or SafeValidationDiagnostic(
+                (("report", "invalid_report"),)
+            )
+            error = render_validation_diagnostic(validate_validation_diagnostic(source))
+        if report_text is not None and type(report_text) is not str:
+            raise TypeError("report_text must be a string or None")
         manifest = self._read_manifest() or self._new_manifest()
         entry = self._entry(manifest, identity.key)
         failed_at = _utc_now_isoformat()
