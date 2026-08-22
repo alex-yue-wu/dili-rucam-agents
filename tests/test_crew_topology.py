@@ -8,6 +8,7 @@ from dili_rucam_agents.crew.crew import (
     _prepare_case_bundle_json,
     build_crew,
     run_crew,
+    validate_max_restarts,
 )
 from dili_rucam_agents.ground_truth import load_ground_truth_prompt
 from dili_rucam_agents.crew.tasks import (
@@ -91,6 +92,11 @@ def install_retry_scenario(monkeypatch, outputs_by_key):
         "dili_rucam_agents.crew.crew._build_isolated_analyst_run", fake_build_run
     )
     return constructed_keys
+
+
+def test_validate_max_restarts_rejects_non_integer_values():
+    with pytest.raises(ValueError, match="integer from 0 through 2"):
+        validate_max_restarts(1.5)
 
 
 def test_run_crew_restarts_only_invalid_analyst_until_third_attempt(monkeypatch):

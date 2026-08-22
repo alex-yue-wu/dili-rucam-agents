@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -337,7 +338,27 @@ def _populate_row_from_reports(
 
 
 def extract_section_c_json(report_text: str) -> dict[str, Any]:
-    return parse_section_c_payload(report_text, allow_legacy_json=True)
+    try:
+        return parse_section_c_payload(report_text, allow_legacy_json=True)
+    except ValueError as exc:
+        diagnostic = _describe_legacy_missing_section_c(report_text)
+        if diagnostic is not None:
+            raise ValueError(diagnostic) from exc
+        raise
+
+
+def _describe_legacy_missing_section_c(report_text: str) -> str | None:
+    stripped = report_text.strip()
+    if "see complete sections a, b, and c above." in stripped.lower():
+        return (
+            "Unable to locate SECTION C JSON in report; the model returned a summary "
+            "placeholder instead of the full report."
+        )
+    if re.search(r"section\s+b", report_text, re.IGNORECASE) and not re.search(
+        r"section\s+c", report_text, re.IGNORECASE
+    ):
+        return "Unable to locate SECTION C JSON in report; report appears truncated before SECTION C."
+    return None
 
 
 def _write_summary_workbook(

@@ -65,7 +65,11 @@ class AnalystExecutionError(RuntimeError):
 
 
 def validate_max_restarts(max_restarts: int) -> int:
-    if isinstance(max_restarts, bool) or not 0 <= max_restarts <= 2:
+    if (
+        isinstance(max_restarts, bool)
+        or not isinstance(max_restarts, int)
+        or not 0 <= max_restarts <= 2
+    ):
         raise ValueError("max_restarts must be an integer from 0 through 2")
     return max_restarts
 

@@ -167,7 +167,7 @@ def test_extract_section_c_json_raises_helpful_error_for_summary_placeholder():
         extract_section_c_json(report_text)
         assert False, "expected ValueError"
     except ValueError as exc:
-        assert "Unable to locate SECTION C" in str(exc)
+        assert "summary placeholder" in str(exc)
 
 
 def test_extract_section_c_json_raises_helpful_error_for_truncated_report():
@@ -187,7 +187,7 @@ Complete narrative.
         extract_section_c_json(report_text)
         assert False, "expected ValueError"
     except ValueError as exc:
-        assert "Unable to locate SECTION C" in str(exc)
+        assert "truncated before SECTION C" in str(exc)
 
 
 def test_extract_ground_truth_rucam_score_reads_stable_field():
@@ -796,6 +796,91 @@ def test_is_pdf_run_complete_requires_status_and_parseable_reports(tmp_path: Pat
         use_analyst_zeta=False,
         use_analyst_eta=False,
     )
+
+
+def test_completed_status_delegates_all_compatibility_arguments(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "case-a.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    result_dir = tmp_path / "case-a"
+    result_dir.mkdir()
+    enabled_analyst_configs = [
+        {"key": "analyst_alpha"},
+        {"key": "analyst_beta"},
+        {"key": "analyst_gamma"},
+        {"key": "analyst_delta"},
+    ]
+    result_dir.joinpath("run_status.json").write_text(
+        json.dumps(
+            {
+                "pdf_filename": "case-a.pdf",
+                "status": "completed",
+                "masking_enabled": True,
+                "strict_scoring": True,
+                "enabled_analysts": [
+                    "analyst_alpha",
+                    "analyst_beta",
+                    "analyst_gamma",
+                    "analyst_delta",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured_calls = []
+    validator_outcomes = iter((True, False))
+
+    def fake_is_end_to_end_complete(pdf_arg, output_arg, prompt_path=None, **kwargs):
+        captured_calls.append((pdf_arg, output_arg, prompt_path, kwargs))
+        return next(validator_outcomes)
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.is_end_to_end_complete",
+        fake_is_end_to_end_complete,
+    )
+
+    settings = {
+        "pdf_path": pdf_path,
+        "pdf_output_dir": result_dir,
+        "prompt_path": str(tmp_path / "prompt.md"),
+        "enabled_analyst_configs": enabled_analyst_configs,
+        "enable_score_masking": True,
+        "strict_scoring": True,
+        "use_analyst_delta": True,
+        "use_analyst_epsilon": False,
+        "use_analyst_zeta": False,
+        "use_analyst_eta": False,
+    }
+
+    assert _is_pdf_run_complete(**settings) is True
+    assert _is_pdf_run_complete(**settings) is False
+    assert captured_calls == [
+        (
+            str(pdf_path),
+            str(result_dir),
+            str(tmp_path / "prompt.md"),
+            {
+                "enable_score_masking": True,
+                "strict_scoring": True,
+                "use_analyst_delta": True,
+                "use_analyst_epsilon": False,
+                "use_analyst_zeta": False,
+                "use_analyst_eta": False,
+            },
+        ),
+        (
+            str(pdf_path),
+            str(result_dir),
+            str(tmp_path / "prompt.md"),
+            {
+                "enable_score_masking": True,
+                "strict_scoring": True,
+                "use_analyst_delta": True,
+                "use_analyst_epsilon": False,
+                "use_analyst_zeta": False,
+                "use_analyst_eta": False,
+            },
+        ),
+    ]
 
 
 def test_run_batch_folder_stops_on_error_and_marks_failed(tmp_path: Path, monkeypatch):
