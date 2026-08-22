@@ -2,6 +2,7 @@
 /results
 /logs
 /src/db
+/.worktrees/
 
 # Mac OS
 .DS_Store
