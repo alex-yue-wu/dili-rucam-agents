@@ -52,7 +52,12 @@ def test_ground_truth_score_finder_agent_uses_tool_and_default_routing(monkeypat
 
 
 def test_litellm_runtime_disables_standard_logging_payload():
-    assert litellm_logging.get_standard_logging_object_payload(None, None, None, None, None, "success") is None
+    assert (
+        litellm_logging.get_standard_logging_object_payload(
+            None, None, None, None, None, "success"
+        )
+        is None
+    )
     assert litellm.service_callback == []
     assert litellm.success_callback == []
     assert litellm.failure_callback == []

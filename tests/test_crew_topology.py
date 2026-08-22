@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from dili_rucam_agents.checkpoints import AnalystCheckpointStore, AnalystIdentity
 from dili_rucam_agents.crew.crew import (
     AnalystExecutionError,
     _prepare_case_bundle_json,
@@ -14,7 +15,12 @@ from dili_rucam_agents.ground_truth import load_ground_truth_prompt
 from dili_rucam_agents.crew.tasks import (
     DEFAULT_RUCAM_INFERRING_PROMPT_PATH,
     DEFAULT_RUCAM_STRICT_PROMPT_PATH,
+    build_analyst_instruction_contract,
     load_rucam_prompt,
+)
+from dili_rucam_agents.pipeline import (
+    _persist_reports,
+    _render_masked_case_bundle_report,
 )
 
 
@@ -73,8 +79,7 @@ def install_retry_scenario(monkeypatch, outputs_by_key):
             return self.result
 
     configs = [
-        {"key": key, "label": key.replace("_", " ").title()}
-        for key in outputs_by_key
+        {"key": key, "label": key.replace("_", " ").title()} for key in outputs_by_key
     ]
 
     def fake_build_run(*, config, **kwargs):
@@ -158,6 +163,24 @@ def test_run_crew_skips_completed_alpha_and_retries_beta(monkeypatch):
     assert "saved alpha" in reports["analyst_alpha"]
 
 
+def test_run_crew_does_not_skip_invalid_supplied_completed_report(monkeypatch):
+    replacement = complete_report(narrative="fresh alpha")
+    constructed_keys = install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter([replacement])},
+    )
+
+    _, reports = run_crew(
+        "dummy.pdf",
+        capture_reports=True,
+        completed_reports={"analyst_alpha": "unvalidated checkpoint text"},
+        max_restarts=0,
+    )
+
+    assert constructed_keys == ["analyst_alpha"]
+    assert reports == {"analyst_alpha": replacement}
+
+
 def test_run_crew_restarts_after_execution_exception(monkeypatch):
     install_retry_scenario(
         monkeypatch,
@@ -177,10 +200,102 @@ def test_run_crew_restarts_after_execution_exception(monkeypatch):
         "running",
         "completed",
     ]
-from dili_rucam_agents.pipeline import (
-    _persist_reports,
-    _render_masked_case_bundle_report,
-)
+
+
+def test_validation_secrets_do_not_reach_retry_events_or_manifest(
+    tmp_path, monkeypatch
+):
+    secret = "MODEL-CONTROLLED-SECRET"
+    invalid_report = complete_report().replace(
+        '"time_to_onset": 2', f'"time_to_onset": "{secret}"'
+    )
+    outputs = iter((invalid_report, complete_report()))
+    retry_instructions = []
+
+    class DummyBundle:
+        def to_dict(self):
+            return {
+                "pdf_path": "dummy.pdf",
+                "extraction_notes": [],
+                "blocks": [],
+                "normalized_text": "ALT 650",
+                "tables": [],
+                "unknowns": [],
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
+            }
+
+    class DummyTask:
+        output = None
+
+    class DummyCrew:
+        def __init__(self, report_text):
+            self.report_text = report_text
+
+        def kickoff(self, inputs):
+            return self.report_text
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", lambda path: DummyBundle()
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
+        lambda **flags: [{"key": "analyst_alpha", "label": "Analyst Alpha"}],
+    )
+
+    def fake_build_run(*, retry_instruction, **kwargs):
+        retry_instructions.append(retry_instruction)
+        return DummyCrew(next(outputs)), DummyTask()
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew._build_isolated_analyst_run", fake_build_run
+    )
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    identity = AnalystIdentity(
+        key="analyst_alpha",
+        report_filename="analyst-alpha_report.md",
+        fingerprint="fingerprint-a",
+    )
+    events = []
+
+    def record_event(event):
+        events.append(event)
+        if event.status == "running":
+            store.record_running(identity, attempt=event.attempt)
+        elif event.status == "validation_failed":
+            store.record_failure(
+                identity,
+                attempt=event.attempt,
+                failure_kind="validation",
+                error=event.error,
+                report_text=event.report_text,
+            )
+
+    run_crew(
+        "dummy.pdf",
+        capture_reports=True,
+        max_restarts=1,
+        on_attempt=record_event,
+    )
+
+    validation_event = next(
+        event for event in events if event.status == "validation_failed"
+    )
+    manifest_text = (tmp_path / "analyst_checkpoints.json").read_text()
+    assert retry_instructions[0] is None
+    assert "rucam_scores.time_to_onset" in retry_instructions[1]
+    assert "valid integer" in retry_instructions[1]
+    assert secret not in retry_instructions[1]
+    assert secret not in validation_event.error
+    assert secret not in manifest_text
 
 
 def test_build_crew_defaults_to_three_analysts_without_masking():
@@ -199,9 +314,32 @@ def test_build_crew_defaults_to_three_analysts_without_masking():
         "analyst_beta",
         "analyst_gamma",
     }
-    assert "Never quote, restate, compare against, or discuss any author-reported" in crew.tasks[1].description
-    assert "Return a complete SECTION A, SECTION B, and fenced SECTION C JSON." in crew.tasks[2].description
+    assert (
+        "Never quote, restate, compare against, or discuss any author-reported"
+        in crew.tasks[1].description
+    )
+    assert (
+        "Return a complete SECTION A, SECTION B, and fenced SECTION C JSON."
+        in crew.tasks[2].description
+    )
     assert "fenced SECTION C JSON" in crew.tasks[2].expected_output
+
+
+def test_build_crew_consumes_the_versioned_instruction_contract():
+    crew, task_map = build_crew(pdf_path="dummy.pdf")
+    task = task_map["analyst_alpha"]
+    contract = build_analyst_instruction_contract(
+        analyst_label="Analyst Alpha",
+        prompt_text=load_rucam_prompt(),
+        model_name=task.agent.llm.model,
+        bundle_input_name="prepared_case_bundle_json",
+    )
+
+    assert task.agent.role == contract.agent_role
+    assert task.agent.goal == contract.agent_goal
+    assert task.agent.backstory == contract.agent_backstory
+    assert task.description == contract.render_task_description(retry_instruction=None)
+    assert task.expected_output == contract.task_expected_output
 
 
 def test_build_crew_can_enable_masking_and_optional_analysts():
@@ -227,7 +365,9 @@ def test_build_crew_can_enable_masking_and_optional_analysts():
         context = getattr(task_map[key], "context", [])
         if not isinstance(context, (list, tuple)):
             context = []
-        assert all(getattr(task, "name", None) != "case_bundle_generation" for task in context)
+        assert all(
+            getattr(task, "name", None) != "case_bundle_generation" for task in context
+        )
 
 
 def test_prepare_case_bundle_json_masks_deterministically(monkeypatch):
@@ -236,11 +376,21 @@ def test_prepare_case_bundle_json_masks_deterministically(monkeypatch):
             return {
                 "pdf_path": "example.pdf",
                 "extraction_notes": [],
-                "blocks": [{"element_type": "NarrativeText", "page_number": 1, "text": "RUCAM score 8"}],
+                "blocks": [
+                    {
+                        "element_type": "NarrativeText",
+                        "page_number": 1,
+                        "text": "RUCAM score 8",
+                    }
+                ],
                 "normalized_text": "RUCAM score 8",
                 "tables": [],
                 "unknowns": [],
-                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
             }
 
     monkeypatch.setattr(
@@ -267,11 +417,21 @@ def test_run_crew_passes_masked_bundle_to_analysts(monkeypatch):
             return {
                 "pdf_path": "example.pdf",
                 "extraction_notes": [],
-                "blocks": [{"element_type": "NarrativeText", "page_number": 1, "text": "RUCAM score 8"}],
+                "blocks": [
+                    {
+                        "element_type": "NarrativeText",
+                        "page_number": 1,
+                        "text": "RUCAM score 8",
+                    }
+                ],
                 "normalized_text": "RUCAM score 8",
                 "tables": [],
                 "unknowns": [],
-                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
             }
 
     class DummyCrew:
@@ -285,7 +445,9 @@ def test_run_crew_passes_masked_bundle_to_analysts(monkeypatch):
     class DummyTask:
         output = None
 
-    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle()
+    )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
         lambda **kwargs: [
@@ -324,11 +486,21 @@ def test_run_crew_captures_ground_truth_report_outside_analyst_crew(monkeypatch)
             return {
                 "pdf_path": "example.pdf",
                 "extraction_notes": [],
-                "blocks": [{"element_type": "NarrativeText", "page_number": 1, "text": "RUCAM score 8"}],
+                "blocks": [
+                    {
+                        "element_type": "NarrativeText",
+                        "page_number": 1,
+                        "text": "RUCAM score 8",
+                    }
+                ],
                 "normalized_text": "RUCAM score 8",
                 "tables": [],
                 "unknowns": [],
-                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
             }
 
     class DummyCrew:
@@ -342,7 +514,9 @@ def test_run_crew_captures_ground_truth_report_outside_analyst_crew(monkeypatch)
     class DummyTask:
         output = None
 
-    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle()
+    )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
         lambda **kwargs: [{"key": "analyst_alpha", "label": "Analyst Alpha"}],
@@ -376,11 +550,21 @@ def test_run_crew_without_masking_passes_raw_bundle_to_analysts(monkeypatch):
             return {
                 "pdf_path": "example.pdf",
                 "extraction_notes": [],
-                "blocks": [{"element_type": "NarrativeText", "page_number": 1, "text": "RUCAM score 8"}],
+                "blocks": [
+                    {
+                        "element_type": "NarrativeText",
+                        "page_number": 1,
+                        "text": "RUCAM score 8",
+                    }
+                ],
                 "normalized_text": "RUCAM score 8",
                 "tables": [],
                 "unknowns": [],
-                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
             }
 
     class DummyCrew:
@@ -394,7 +578,9 @@ def test_run_crew_without_masking_passes_raw_bundle_to_analysts(monkeypatch):
     class DummyTask:
         output = None
 
-    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle()
+    )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
         lambda **kwargs: [{"key": "analyst_alpha", "label": "Analyst Alpha"}],
@@ -425,7 +611,11 @@ def test_run_crew_raises_when_analyst_returns_empty_output(monkeypatch):
                 "normalized_text": "ALT 650",
                 "tables": [],
                 "unknowns": [],
-                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
             }
 
     class DummyCrew:
@@ -435,7 +625,9 @@ def test_run_crew_raises_when_analyst_returns_empty_output(monkeypatch):
     class DummyTask:
         output = None
 
-    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle()
+    )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
         lambda **kwargs: [{"key": "analyst_zeta", "label": "Analyst Zeta"}],
@@ -462,7 +654,11 @@ def test_run_crew_uses_kickoff_output_when_task_output_is_missing(monkeypatch):
                 "normalized_text": "ALT 650",
                 "tables": [],
                 "unknowns": [],
-                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
             }
 
     class DummyCrew:
@@ -472,7 +668,9 @@ def test_run_crew_uses_kickoff_output_when_task_output_is_missing(monkeypatch):
     class DummyTask:
         output = None
 
-    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle()
+    )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
         lambda **kwargs: [{"key": "analyst_zeta", "label": "Analyst Zeta"}],
@@ -499,7 +697,11 @@ def test_run_crew_skips_existing_analyst_reports_on_retry(monkeypatch):
                 "normalized_text": "ALT 650",
                 "tables": [],
                 "unknowns": [],
-                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
             }
 
     class DummyCrew:
@@ -513,7 +715,9 @@ def test_run_crew_skips_existing_analyst_reports_on_retry(monkeypatch):
     class DummyTask:
         output = None
 
-    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle()
+    )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
         lambda **kwargs: [
@@ -533,7 +737,9 @@ def test_run_crew_skips_existing_analyst_reports_on_retry(monkeypatch):
     _, reports = run_crew(
         "dummy.pdf",
         capture_reports=True,
-        completed_reports={"analyst_alpha": complete_report(narrative="existing alpha")},
+        completed_reports={
+            "analyst_alpha": complete_report(narrative="existing alpha")
+        },
     )
 
     assert captured_labels == ["beta", "gamma"]
@@ -548,11 +754,21 @@ def test_run_crew_leaves_analyst_reports_untouched_when_masking_enabled(monkeypa
             return {
                 "pdf_path": "example.pdf",
                 "extraction_notes": [],
-                "blocks": [{"element_type": "NarrativeText", "page_number": 1, "text": "RUCAM score 8"}],
+                "blocks": [
+                    {
+                        "element_type": "NarrativeText",
+                        "page_number": 1,
+                        "text": "RUCAM score 8",
+                    }
+                ],
                 "normalized_text": "RUCAM score 8",
                 "tables": [],
                 "unknowns": [],
-                "quality": {"unstructured_total_score": 1, "fallback_pages": [], "fallback_total_score": 0},
+                "quality": {
+                    "unstructured_total_score": 1,
+                    "fallback_pages": [],
+                    "fallback_total_score": 0,
+                },
             }
 
     analyst_report = complete_report(
@@ -572,7 +788,9 @@ def test_run_crew_leaves_analyst_reports_untouched_when_masking_enabled(monkeypa
         def kickoff(self, inputs):
             return analyst_report
 
-    monkeypatch.setattr("dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle())
+    monkeypatch.setattr(
+        "dili_rucam_agents.crew.crew.build_case_bundle", lambda _: DummyBundle()
+    )
     monkeypatch.setattr(
         "dili_rucam_agents.crew.crew.get_enabled_analyst_configs",
         lambda **kwargs: [{"key": "analyst_alpha", "label": "Analyst Alpha"}],
@@ -586,7 +804,9 @@ def test_run_crew_leaves_analyst_reports_untouched_when_masking_enabled(monkeypa
         lambda raw_json: "ground truth report",
     )
 
-    final_output, reports = run_crew("dummy.pdf", enable_score_masking=True, capture_reports=True)
+    final_output, reports = run_crew(
+        "dummy.pdf", enable_score_masking=True, capture_reports=True
+    )
 
     assert "calculated a score of 8" in final_output
     assert "yields a score of 5" in final_output
@@ -639,13 +859,15 @@ def test_persist_reports_writes_masked_case_bundle_markdown(tmp_path: Path):
             "## Evidence\n"
             "- Location: `normalized_text line 1`\n"
             "```text\nRUCAM score 8 probable\n```\n"
-        )
+        ),
     }
 
     _persist_reports(reports, tmp_path)
 
     content = (tmp_path / "masked-case-bundle_report.md").read_text(encoding="utf-8")
-    ground_truth_content = (tmp_path / "ground-truth-rucam-score_report.md").read_text(encoding="utf-8")
+    ground_truth_content = (tmp_path / "ground-truth-rucam-score_report.md").read_text(
+        encoding="utf-8"
+    )
     assert "# Masked Case Bundle Report" in content
     assert "## Masked RUCAM Scores" in content
     assert "```text\n8\n```" in content
@@ -712,13 +934,13 @@ def test_render_masked_case_bundle_report_extracts_only_patient_specific_outcome
     content = _render_masked_case_bundle_report(
         raw_case_bundle_payload=(
             '{"pdf_path":"example.pdf","extraction_notes":[],"blocks":[],"normalized_text":"'
-            'When it is applied, a score from -10 to +14 is obtained and is used to classify causality into five categories.\\n'
+            "When it is applied, a score from -10 to +14 is obtained and is used to classify causality into five categories.\\n"
             'The Roussel UCLAF method was applied for an acute hepatocellular problem, with a final score of 8.",'
             '"tables":[],"unknowns":[],"quality":{"unstructured_total_score":0,"fallback_pages":[],"fallback_total_score":0}}'
         ),
         masked_case_bundle_payload=(
             '{"pdf_path":"example.pdf","extraction_notes":[],"blocks":[],"normalized_text":"'
-            'When it is applied, a score from -10 to +14 is obtained and is used to classify causality into five categories.\\n'
+            "When it is applied, a score from -10 to +14 is obtained and is used to classify causality into five categories.\\n"
             'The Roussel UCLAF method was applied for an acute hepatocellular problem, with a final score of [RUCAM_SCORE_MASKED].",'
             '"tables":[],"unknowns":[],"quality":{"unstructured_total_score":0,"fallback_pages":[],"fallback_total_score":0}}'
         ),

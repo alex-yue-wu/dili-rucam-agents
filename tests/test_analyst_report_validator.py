@@ -65,3 +65,24 @@ def test_strict_validation_rejects_unfenced_section_c_json():
 def test_legacy_parser_accepts_unfenced_section_c_json():
     unfenced = report_for().replace("```json\n", "").replace("\n```\n", "\n")
     assert parse_section_c_payload(unfenced, allow_legacy_json=True)["total_score"] == 6
+
+
+def test_validation_diagnostic_omits_model_controlled_values_and_urls():
+    secret = "MODEL-CONTROLLED-SECRET"
+    payload = {
+        **VALID_PAYLOAD,
+        "rucam_scores": {
+            **VALID_PAYLOAD["rucam_scores"],
+            "time_to_onset": secret,
+        },
+    }
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report(report_for(payload))
+
+    diagnostic = str(exc_info.value)
+    assert "rucam_scores.time_to_onset" in diagnostic
+    assert "valid integer" in diagnostic
+    assert secret not in diagnostic
+    assert "input_value" not in diagnostic
+    assert "errors.pydantic.dev" not in diagnostic

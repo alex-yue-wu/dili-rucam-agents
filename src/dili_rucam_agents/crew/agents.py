@@ -9,6 +9,8 @@ from dili_rucam_agents.ingestion.build_bundle import CaseBundleExtractionTool
 from dili_rucam_agents.litellm_runtime import configure_litellm_runtime
 from dili_rucam_agents.masking import ScoreMaskingTool
 
+from .tasks import AnalystInstructionContract
+
 
 configure_litellm_runtime()
 
@@ -109,9 +111,7 @@ def _build_crewai_llm(**llm_kwargs: Any) -> LLM:
     llm_params = dict(llm_kwargs)
     openrouter_max_completion_tokens = None
     if llm_params.get("custom_llm_provider") == "openrouter":
-        openrouter_max_completion_tokens = llm_params.pop(
-            "max_completion_tokens", None
-        )
+        openrouter_max_completion_tokens = llm_params.pop("max_completion_tokens", None)
     llm = LLM(**llm_params)
     if openrouter_max_completion_tokens:
         llm.additional_params["max_completion_tokens"] = (
@@ -151,6 +151,7 @@ def build_rucam_agent(
     max_tokens_env: str,
     fallback_envs: tuple[str, ...] = (),
     default_model: str,
+    instruction_contract: AnalystInstructionContract | None = None,
 ) -> Agent:
     """Factory for configurable RUCAM analysts."""
 
@@ -165,12 +166,24 @@ def build_rucam_agent(
     )
 
     return Agent(
-        role=f"{label} Expert DILI RUCAM Analyst",
-        goal="Apply the production RUCAM prompt verbatim to case_bundle_json inputs.",
+        role=(
+            instruction_contract.agent_role
+            if instruction_contract
+            else f"{label} Expert DILI RUCAM Analyst"
+        ),
+        goal=(
+            instruction_contract.agent_goal
+            if instruction_contract
+            else "Apply the production RUCAM prompt verbatim to case_bundle_json inputs."
+        ),
         backstory=(
-            f"{label} is a board-certified hepatologist and pharmacovigilance researcher. "
-            "Always compute R-ratio, determine injury pattern, score all seven RUCAM items, "
-            "and output Sections A/B/C exactly as specified."
+            instruction_contract.agent_backstory
+            if instruction_contract
+            else (
+                f"{label} is a board-certified hepatologist and pharmacovigilance researcher. "
+                "Always compute R-ratio, determine injury pattern, score all seven RUCAM items, "
+                "and output Sections A/B/C exactly as specified."
+            )
         ),
         allow_delegation=False,
         verbose=True,

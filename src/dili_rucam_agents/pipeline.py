@@ -7,12 +7,17 @@ from pathlib import Path
 from typing import Optional
 
 from dili_rucam_agents.crew.config import get_enabled_analyst_configs
+from dili_rucam_agents.crew.agents import resolve_rucam_model
 from dili_rucam_agents.crew.crew import (
     AnalystAttemptEvent,
     run_crew,
     validate_max_restarts,
 )
-from dili_rucam_agents.crew.tasks import load_rucam_prompt
+from dili_rucam_agents.crew.tasks import (
+    AnalystInstructionContract,
+    build_analyst_instruction_contract,
+    load_rucam_prompt,
+)
 from dili_rucam_agents.checkpoints import (
     AnalystCheckpointStore,
     AnalystIdentity,
@@ -44,6 +49,7 @@ _REPORT_FILENAME_MAP = {
 class PipelineCheckpointContext:
     store: AnalystCheckpointStore
     identities: dict[str, AnalystIdentity]
+    instruction_contracts: dict[str, AnalystInstructionContract]
     legacy_context: LegacyRunContext
 
 
@@ -59,11 +65,29 @@ def _build_checkpoint_context(
     prompt_text = load_rucam_prompt(prompt_path, strict_scoring=strict_scoring)
     pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
     configs = get_enabled_analyst_configs(**analyst_flags)
+    bundle_input_name = (
+        "masked_case_bundle_json" if enable_score_masking else "raw_case_bundle_json"
+    )
+    instruction_contracts = {}
+    for config in configs:
+        model_name = resolve_rucam_model(
+            model_env=config["model_env"],
+            fallback_envs=config["fallback_envs"],
+            default_model=config["default_model"],
+        )
+        instruction_contracts[config["key"]] = build_analyst_instruction_contract(
+            analyst_label=config["label"],
+            prompt_text=prompt_text,
+            model_name=model_name,
+            bundle_input_name=bundle_input_name,
+        )
     identities = build_analyst_identities(
         configs=configs,
         report_filename_map=_REPORT_FILENAME_MAP,
         pdf_sha256=pdf_sha256,
-        prompt_sha256=hashlib.sha256(prompt_text.encode()).hexdigest(),
+        analyst_instruction_sha256={
+            key: contract.sha256 for key, contract in instruction_contracts.items()
+        },
         enable_score_masking=enable_score_masking,
         strict_scoring=strict_scoring,
     )
@@ -75,6 +99,7 @@ def _build_checkpoint_context(
             enabled_analysts=tuple(identities),
         ),
         identities=identities,
+        instruction_contracts=instruction_contracts,
         legacy_context=LegacyRunContext(
             pdf_filename=pdf_path.name,
             masking_enabled=enable_score_masking,
@@ -91,20 +116,12 @@ def _handle_attempt_event(
         context.store.record_running(identity, attempt=event.attempt)
         return
     if event.status == "validation_failed":
-        if event.report_text:
-            attempt_filename = (
-                f"{event.analyst_key.replace('_', '-')}_attempt-"
-                f"{event.attempt}.invalid.md"
-            )
-            atomic_write_text(
-                context.store.output_dir / "attempts" / attempt_filename,
-                event.report_text,
-            )
         context.store.record_failure(
             identity,
             attempt=event.attempt,
             failure_kind="validation",
             error=event.error or "Unknown validation error",
+            report_text=event.report_text,
         )
         return
     if event.status == "execution_failed":
@@ -195,6 +212,9 @@ def run_end_to_end(
             (lambda event: _handle_attempt_event(checkpoint_context, event))
             if resolved_output_dir
             else None
+        ),
+        instruction_contracts=(
+            checkpoint_context.instruction_contracts if resolved_output_dir else None
         ),
     )
 

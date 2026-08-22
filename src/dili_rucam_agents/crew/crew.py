@@ -19,9 +19,12 @@ from .agents import (
     build_ground_truth_rucam_score_finder_agent,
     build_ingestion_agent,
     build_rucam_agent,
+    resolve_rucam_model,
 )
 from .config import get_enabled_analyst_configs
 from .tasks import (
+    AnalystInstructionContract,
+    build_analyst_instruction_contract,
     build_ground_truth_score_finder_prompt,
     create_analysis_task,
     create_case_bundle_task,
@@ -30,9 +33,7 @@ from .tasks import (
 
 TaskMap = Dict[str, Task]
 
-AttemptStatus = Literal[
-    "running", "validation_failed", "execution_failed", "completed"
-]
+AttemptStatus = Literal["running", "validation_failed", "execution_failed", "completed"]
 
 
 @dataclass(frozen=True)
@@ -94,13 +95,26 @@ def build_crew(
         use_analyst_eta=use_analyst_eta,
     )
     for config in analyst_configs:
+        model_name = resolve_rucam_model(
+            model_env=config["model_env"],
+            fallback_envs=config["fallback_envs"],
+            default_model=config["default_model"],
+        )
+        instruction_contract = build_analyst_instruction_contract(
+            analyst_label=config["label"],
+            prompt_text=prompt_text,
+            model_name=model_name,
+            bundle_input_name="prepared_case_bundle_json",
+        )
         config["agent"] = build_rucam_agent(
             label=config["label"],
             model_env=config["model_env"],
             max_tokens_env=config["max_tokens_env"],
             fallback_envs=config["fallback_envs"],
             default_model=config["default_model"],
+            instruction_contract=instruction_contract,
         )
+        config["instruction_contract"] = instruction_contract
 
     case_bundle_task = create_case_bundle_task(pdf_path=pdf_path, agent=ingestion_agent)
     analyst_tasks = []
@@ -111,6 +125,7 @@ def build_crew(
             prompt_text=prompt_text,
             model_name=config["agent"].llm.model,
             bundle_input_name="prepared_case_bundle_json",
+            instruction_contract=config["instruction_contract"],
         )
         config["task"] = task
         analyst_tasks.append(task)
@@ -155,6 +170,7 @@ def run_crew(
     on_report: Callable[[str, str], None] | None = None,
     max_restarts: int = 2,
     on_attempt: Callable[[AnalystAttemptEvent], None] | None = None,
+    instruction_contracts: Mapping[str, AnalystInstructionContract] | None = None,
     **kwargs,
 ) -> str | Tuple[str, Dict[str, Optional[str]]]:
     max_restarts = validate_max_restarts(max_restarts)
@@ -175,8 +191,19 @@ def run_crew(
     )
 
     final_output = ""
-    reports: Dict[str, Optional[str]] = dict(completed_reports or {})
-    if completed_reports:
+    reports: Dict[str, Optional[str]] = {}
+    supplied_reports = completed_reports or {}
+    for config in analyst_configs:
+        key = config["key"]
+        report_text = supplied_reports.get(key)
+        if not isinstance(report_text, str):
+            continue
+        try:
+            validate_analyst_report(report_text)
+        except AnalystReportValidationError:
+            continue
+        reports[key] = report_text
+    if reports:
         final_output = next(reversed(reports.values()), "") or ""
     max_attempts = max_restarts + 1
     for config in analyst_configs:
@@ -193,6 +220,7 @@ def run_crew(
                 prompt_path=prompt_path,
                 strict_scoring=strict_scoring,
                 retry_instruction=retry_instruction,
+                instruction_contract=(instruction_contracts or {}).get(key),
             )
             print(f"{key}: attempt {attempt}/{max_attempts}")
             running_event = AnalystAttemptEvent(
@@ -285,14 +313,27 @@ def _build_isolated_analyst_run(
     prompt_path: Path | None,
     strict_scoring: bool,
     retry_instruction: str | None,
+    instruction_contract: AnalystInstructionContract | None = None,
 ) -> tuple[Crew, Task]:
     prompt_text = load_rucam_prompt(prompt_path, strict_scoring=strict_scoring)
+    model_name = resolve_rucam_model(
+        model_env=config["model_env"],
+        fallback_envs=config["fallback_envs"],
+        default_model=config["default_model"],
+    )
+    contract = instruction_contract or build_analyst_instruction_contract(
+        analyst_label=config["label"],
+        prompt_text=prompt_text,
+        model_name=model_name,
+        bundle_input_name=bundle_input_name,
+    )
     agent = build_rucam_agent(
         label=config["label"],
         model_env=config["model_env"],
         max_tokens_env=config["max_tokens_env"],
         fallback_envs=config["fallback_envs"],
         default_model=config["default_model"],
+        instruction_contract=contract,
     )
     task = create_analysis_task(
         agent=agent,
@@ -301,6 +342,7 @@ def _build_isolated_analyst_run(
         model_name=agent.llm.model,
         bundle_input_name=bundle_input_name,
         retry_instruction=retry_instruction,
+        instruction_contract=contract,
     )
     crew = Crew(
         agents=[agent],

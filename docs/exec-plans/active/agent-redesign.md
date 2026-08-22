@@ -64,7 +64,19 @@ Once analyst execution starts, its PDF output directory contains a versioned
 including compatible fingerprints, attempt counts, and failure diagnostics.
 Canonical analyst reports, manifests, and invalid-attempt artifacts are persisted
 atomically; invalid report text is retained under `attempts/` and never replaces a
-canonical report.
+canonical report. Invalid-attempt names use a cumulative attempt number plus a
+unique identifier, and manifest history retains every artifact path across
+invocations.
+
+Checkpoint compatibility uses a versioned effective analyst-instruction snapshot
+shared by fingerprint generation and actual agent/task construction. The snapshot
+includes the production prompt, static task and retry wrappers, expected output,
+and analyst role/goal/backstory; runtime case-bundle content and transient retry
+diagnostics are excluded. Validation diagnostics are reduced to stable Pydantic
+field paths and messages before retry prompts or manifest status/history writes.
+The public `run_crew` boundary also validates supplied completed reports before
+allowing them to skip execution. Existing-manifest writes refresh the enabled
+analyst topology metadata.
 
 Normal single-PDF and batch reruns reuse only compatible validated analyst reports.
 A batch skips a PDF only when its completion status and all enabled end-to-end
@@ -78,14 +90,14 @@ including legacy-output adoption.
 
 All checks were offline; no live model provider was invoked.
 
-- `uv run ruff check src tests` — does not pass because of four pre-existing
-  committed violations outside this documentation task: two unnecessary f-strings,
-  one missing `Any` import, and one late test import.
-- `uv run ruff format --check src tests` — does not pass because 13 pre-existing
-  committed source and test files would be reformatted. No formatter changes were
-  made outside the approved Task 6 files.
-- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 103 passed.
-- `uv run pytest -q` — 128 passed, with five pre-existing PyMuPDF/SWIG deprecation
+- `uv run ruff check <feature-changed Python files>` and `uv run ruff check src
+  tests` — both report the same three baseline findings already present at the
+  feature starting commit `0a1dad6`: F541 in `batch.py`, F821 in `agents.py`, and
+  F541 in `tasks.py`. The feature-introduced E402 was removed.
+- `uv run ruff format --check <feature-changed Python files>` — all 14 files are
+  formatted. No unrelated Python files were reformatted.
+- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 112 passed.
+- `uv run pytest -q` — 137 passed, with five pre-existing PyMuPDF/SWIG deprecation
   warnings from the ingestion smoke tests.
 - `git diff --check`, `git status --short`, and `git diff --stat HEAD~5..HEAD` —
   run during the final scope inspection; no whitespace errors or generated files

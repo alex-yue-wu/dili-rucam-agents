@@ -73,16 +73,10 @@ class RucamReport(BaseModel):
     @model_validator(mode="after")
     def validate_score_and_category(self) -> RucamReport:
         if self.total_score != self.rucam_scores.total:
-            raise ValueError(
-                f"total_score {self.total_score} does not match item sum "
-                f"{self.rucam_scores.total}"
-            )
+            raise ValueError("total_score does not match the seven-item score sum")
         expected = expected_category(self.total_score)
         if self.category != expected:
-            raise ValueError(
-                f"category {self.category} does not match total_score "
-                f"{self.total_score} ({expected})"
-            )
+            raise ValueError("category does not match total_score")
         return self
 
 
@@ -95,7 +89,15 @@ def validate_rucam_json(payload: dict[str, Any] | str) -> RucamReport:
     try:
         return RucamReport.model_validate(payload)
     except ValidationError as exc:  # pragma: no cover - formatting
-        raise ValueError(f"Invalid RUCAM JSON: {exc}") from exc
+        diagnostics = []
+        for error in exc.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        ):
+            location = ".".join(str(part) for part in error["loc"]) or "report"
+            diagnostics.append(f"{location}: {error['msg']}")
+        raise ValueError(f"Invalid RUCAM JSON: {'; '.join(diagnostics)}") from exc
 
 
 __all__ = [

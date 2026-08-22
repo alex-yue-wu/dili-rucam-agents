@@ -300,9 +300,7 @@ def test_run_batch_folder_forwards_restart_limit_and_resume(tmp_path, monkeypatc
         write_complete_reports(Path(output_dir))
         return "ok"
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
     run_batch_folder(
         input_dir=str(input_dir), output_dir=str(output_dir), max_restarts=1
     )
@@ -322,9 +320,7 @@ def test_force_rerun_disables_pipeline_resume(tmp_path, monkeypatch):
         write_complete_reports(Path(output_dir))
         return "ok"
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
     run_batch_folder(
         input_dir=str(input_dir), output_dir=str(output_dir), force_rerun=True
     )
@@ -368,9 +364,7 @@ def test_rerun_skips_completed_pdf_then_runs_failed_pdf(tmp_path, monkeypatch):
         write_complete_reports(Path(output_dir))
         return "ok"
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
     summary_path = run_batch_folder(
         input_dir=str(input_dir), output_dir=str(output_dir)
     )
@@ -411,9 +405,7 @@ def test_run_batch_folder_records_analyst_failure_details(tmp_path, monkeypatch)
             last_error="Invalid SECTION C JSON",
         )
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
 
     with pytest.raises(RuntimeError, match="case.pdf"):
         run_batch_folder(input_dir=str(input_dir), output_dir=str(output_dir))
@@ -480,7 +472,9 @@ def test_run_end_to_end_forwards_strict_scoring(monkeypatch):
     assert captured_kwargs["strict_scoring"] is True
 
 
-def test_run_end_to_end_persists_invalid_attempt_then_valid_report(tmp_path, monkeypatch):
+def test_run_end_to_end_persists_invalid_attempt_then_valid_report(
+    tmp_path, monkeypatch
+):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
@@ -509,13 +503,75 @@ def test_run_end_to_end_persists_invalid_attempt_then_valid_report(tmp_path, mon
     monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
     run_end_to_end(str(pdf_path), output_dir=str(output_dir))
 
-    assert (output_dir / "attempts/analyst-alpha_attempt-1.invalid.md").read_text() == "incomplete"
-    assert validate_analyst_report(
-        (output_dir / "analyst-alpha_report.md").read_text()
-    ).payload.total_score == 6
+    attempt_paths = list((output_dir / "attempts").glob("analyst-alpha_*.invalid.md"))
+    assert len(attempt_paths) == 1
+    assert attempt_paths[0].read_text() == "incomplete"
+    assert (
+        validate_analyst_report(
+            (output_dir / "analyst-alpha_report.md").read_text()
+        ).payload.total_score
+        == 6
+    )
 
 
-def test_run_end_to_end_resume_false_supplies_no_completed_reports(tmp_path, monkeypatch):
+def test_invalid_attempt_artifacts_and_history_accumulate_across_invocations(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    invalid_outputs = iter(("first invalid output", "second invalid output"))
+
+    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
+        report_text = next(invalid_outputs)
+        callback = kwargs["on_attempt"]
+        callback(AnalystAttemptEvent("analyst_alpha", 1, 1, "running"))
+        callback(
+            AnalystAttemptEvent(
+                "analyst_alpha",
+                1,
+                1,
+                "validation_failed",
+                error="Missing SECTION C",
+                report_text=report_text,
+            )
+        )
+        raise AnalystExecutionError(
+            analyst_key="analyst_alpha",
+            attempts=1,
+            failure_kind="validation",
+            last_error="Missing SECTION C",
+        )
+
+    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
+
+    for _ in range(2):
+        with pytest.raises(AnalystExecutionError):
+            run_end_to_end(
+                str(pdf_path),
+                output_dir=str(output_dir),
+                max_restarts=0,
+            )
+
+    attempt_paths = sorted((output_dir / "attempts").glob("*.invalid.md"))
+    assert len(attempt_paths) == 2
+    assert attempt_paths[0] != attempt_paths[1]
+    assert {path.read_text() for path in attempt_paths} == {
+        "first invalid output",
+        "second invalid output",
+    }
+    manifest = json.loads(
+        (output_dir / "analyst_checkpoints.json").read_text(encoding="utf-8")
+    )
+    entry = manifest["analysts"]["analyst_alpha"]
+    assert entry["total_attempts"] == 2
+    assert [item["total_attempt"] for item in entry["attempt_history"]] == [1, 2]
+    assert all(item["artifact_file"] for item in entry["attempt_history"])
+
+
+def test_run_end_to_end_resume_false_supplies_no_completed_reports(
+    tmp_path, monkeypatch
+):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
@@ -595,9 +651,12 @@ def test_later_failure_preserves_completed_alpha_checkpoint(tmp_path, monkeypatc
     monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
     with pytest.raises(AnalystExecutionError):
         run_end_to_end(str(pdf_path), output_dir=str(output_dir))
-    assert validate_analyst_report(
-        (output_dir / "analyst-alpha_report.md").read_text()
-    ).payload.total_score == 6
+    assert (
+        validate_analyst_report(
+            (output_dir / "analyst-alpha_report.md").read_text()
+        ).payload.total_score
+        == 6
+    )
 
 
 def test_second_invocation_supplies_all_checkpointed_reports(tmp_path, monkeypatch):
@@ -610,7 +669,9 @@ def test_second_invocation_supplies_all_checkpointed_reports(tmp_path, monkeypat
         for key in analyst_keys:
             kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
             kwargs["on_attempt"](
-                AnalystAttemptEvent(key, 1, 3, "completed", report_text=complete_report())
+                AnalystAttemptEvent(
+                    key, 1, 3, "completed", report_text=complete_report()
+                )
             )
         return "ok", {key: complete_report() for key in analyst_keys}
 
@@ -627,7 +688,9 @@ def test_second_invocation_supplies_all_checkpointed_reports(tmp_path, monkeypat
     assert set(captured_kwargs["completed_reports"]) == set(analyst_keys)
 
 
-def test_is_end_to_end_complete_uses_validated_checkpoint_manifest(tmp_path, monkeypatch):
+def test_is_end_to_end_complete_uses_validated_checkpoint_manifest(
+    tmp_path, monkeypatch
+):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
@@ -637,7 +700,9 @@ def test_is_end_to_end_complete_uses_validated_checkpoint_manifest(tmp_path, mon
         for key in analyst_keys:
             kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
             kwargs["on_attempt"](
-                AnalystAttemptEvent(key, 1, 3, "completed", report_text=complete_report())
+                AnalystAttemptEvent(
+                    key, 1, 3, "completed", report_text=complete_report()
+                )
             )
         return "ok", {key: complete_report() for key in analyst_keys}
 
@@ -711,7 +776,9 @@ def test_run_batch_folder_skips_completed_pdf(tmp_path: Path, monkeypatch):
     assert calls == []
 
 
-def test_run_batch_folder_force_rerun_ignores_completed_status(tmp_path: Path, monkeypatch):
+def test_run_batch_folder_force_rerun_ignores_completed_status(
+    tmp_path: Path, monkeypatch
+):
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     input_dir.mkdir()
@@ -911,13 +978,17 @@ def test_run_batch_folder_stops_on_error_and_marks_failed(tmp_path: Path, monkey
         assert "case-a.pdf" in str(exc)
 
     assert calls == ["case-a.pdf"]
-    status = json.loads((output_dir / "case-a" / "run_status.json").read_text(encoding="utf-8"))
+    status = json.loads(
+        (output_dir / "case-a" / "run_status.json").read_text(encoding="utf-8")
+    )
     assert status["status"] == "failed"
     assert "simulated failure" in status["error"]
     assert not (output_dir / "case-b" / "run_status.json").exists()
 
 
-def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(tmp_path: Path, monkeypatch):
+def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(
+    tmp_path: Path, monkeypatch
+):
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     input_dir.mkdir()

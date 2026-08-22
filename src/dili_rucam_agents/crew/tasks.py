@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
+import hashlib
+import json
 from pathlib import Path
 from textwrap import dedent
 from typing import Optional
@@ -18,6 +21,99 @@ DEFAULT_RUCAM_STRICT_PROMPT_PATH = (
     / "prompts"
     / "rucam_analysis_production_strict.md"
 )
+
+ANALYST_INSTRUCTION_SCHEMA_VERSION = 1
+_RETRY_REQUIREMENT_SLOT = "[[ANALYST_RETRY_REQUIREMENT]]"
+_RETRY_DIAGNOSTIC_SLOT = "[[SANITIZED_RETRY_DIAGNOSTIC]]"
+
+
+@dataclass(frozen=True)
+class AnalystInstructionContract:
+    schema_version: int
+    agent_role: str
+    agent_goal: str
+    agent_backstory: str
+    task_name: str
+    task_description_template: str
+    retry_instruction_template: str
+    task_expected_output: str
+
+    @property
+    def sha256(self) -> str:
+        encoded = json.dumps(
+            asdict(self), sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def render_task_description(self, *, retry_instruction: str | None) -> str:
+        retry_block = ""
+        if retry_instruction:
+            retry_block = self.retry_instruction_template.replace(
+                _RETRY_DIAGNOSTIC_SLOT, retry_instruction
+            )
+        return self.task_description_template.replace(
+            _RETRY_REQUIREMENT_SLOT, retry_block
+        )
+
+
+def build_analyst_instruction_contract(
+    *,
+    analyst_label: str,
+    prompt_text: str,
+    model_name: str,
+    bundle_input_name: str,
+) -> AnalystInstructionContract:
+    bundle_placeholder = "{" + bundle_input_name + "}"
+    task_description_template = dedent(
+        f"""
+        You are the {analyst_label} RUCAM Analyst. Consume the shared case_bundle_json exactly as provided below.
+        Follow every instruction in the provided RUCAM production prompt without deviation.
+        Never quote, restate, compare against, or discuss any author-reported, published, or previously assigned
+        RUCAM score or category from the source document. Treat any such prior outcomes as withheld and exclude
+        them from your narrative, table, and JSON output.
+        Return a complete SECTION A, SECTION B, and fenced SECTION C JSON.
+        Do not stop after SECTION A or partway through SECTION B; if space is constrained, prioritize completing
+        SECTION B and the fenced SECTION C JSON over adding detail to SECTION A.
+
+        --- BEGIN CASE BUNDLE JSON ---
+        {bundle_placeholder}
+        --- END CASE BUNDLE JSON ---
+
+        --- BEGIN PRODUCTION PROMPT ---
+        {prompt_text}
+        --- END PRODUCTION PROMPT ---
+        {_RETRY_REQUIREMENT_SLOT}
+
+        Use the configured model "{model_name}". Temperature must remain 0 when supported;
+        otherwise use the provider-required default temperature.
+        """
+    ).strip()
+    return AnalystInstructionContract(
+        schema_version=ANALYST_INSTRUCTION_SCHEMA_VERSION,
+        agent_role=f"{analyst_label} Expert DILI RUCAM Analyst",
+        agent_goal="Apply the production RUCAM prompt verbatim to case_bundle_json inputs.",
+        agent_backstory=(
+            f"{analyst_label} is a board-certified hepatologist and pharmacovigilance researcher. "
+            "Always compute R-ratio, determine injury pattern, score all seven RUCAM items, "
+            "and output Sections A/B/C exactly as specified."
+        ),
+        task_name=f"{analyst_label.lower().replace(' ', '_')}_analysis",
+        task_description_template=task_description_template,
+        retry_instruction_template=dedent(
+            f"""
+
+            --- RETRY REQUIREMENT ---
+            The previous attempt was rejected: {_RETRY_DIAGNOSTIC_SLOT}
+            Return a fresh, complete report with non-empty SECTION A and SECTION B,
+            followed by strict fenced SECTION C JSON.
+            --- END RETRY REQUIREMENT ---
+            """
+        ).rstrip(),
+        task_expected_output=(
+            f"A complete {analyst_label} report containing SECTION A narrative, SECTION B RUCAM table, "
+            "and fenced SECTION C JSON."
+        ),
+    )
 
 
 def load_rucam_prompt(
@@ -59,56 +155,24 @@ def create_analysis_task(
     bundle_input_name: str,
     case_bundle_task: Task | None = None,
     retry_instruction: str | None = None,
+    instruction_contract: AnalystInstructionContract | None = None,
 ) -> Task:
-    bundle_placeholder = "{" + bundle_input_name + "}"
-    retry_block = ""
-    if retry_instruction:
-        retry_block = dedent(
-            f"""
-
-            --- RETRY REQUIREMENT ---
-            The previous attempt was rejected: {retry_instruction}
-            Return a fresh, complete report with non-empty SECTION A and SECTION B,
-            followed by strict fenced SECTION C JSON.
-            --- END RETRY REQUIREMENT ---
-            """
-        ).rstrip()
-    description = dedent(
-        f"""
-        You are the {analyst_label} RUCAM Analyst. Consume the shared case_bundle_json exactly as provided below.
-        Follow every instruction in the provided RUCAM production prompt without deviation.
-        Never quote, restate, compare against, or discuss any author-reported, published, or previously assigned
-        RUCAM score or category from the source document. Treat any such prior outcomes as withheld and exclude
-        them from your narrative, table, and JSON output.
-        Return a complete SECTION A, SECTION B, and fenced SECTION C JSON.
-        Do not stop after SECTION A or partway through SECTION B; if space is constrained, prioritize completing
-        SECTION B and the fenced SECTION C JSON over adding detail to SECTION A.
-
-        --- BEGIN CASE BUNDLE JSON ---
-        {bundle_placeholder}
-        --- END CASE BUNDLE JSON ---
-
-        --- BEGIN PRODUCTION PROMPT ---
-        {prompt_text}
-        --- END PRODUCTION PROMPT ---
-        {retry_block}
-
-        Use the configured model "{model_name}". Temperature must remain 0 when supported;
-        otherwise use the provider-required default temperature.
-        """
-    ).strip()
+    contract = instruction_contract or build_analyst_instruction_contract(
+        analyst_label=analyst_label,
+        prompt_text=prompt_text,
+        model_name=model_name,
+        bundle_input_name=bundle_input_name,
+    )
+    description = contract.render_task_description(retry_instruction=retry_instruction)
 
     task_kwargs = {}
     if case_bundle_task is not None:
         task_kwargs["context"] = [case_bundle_task]
 
     return Task(
-        name=f"{analyst_label.lower().replace(' ', '_')}_analysis",
+        name=contract.task_name,
         description=description,
-        expected_output=(
-            f"A complete {analyst_label} report containing SECTION A narrative, SECTION B RUCAM table, "
-            "and fenced SECTION C JSON."
-        ),
+        expected_output=contract.task_expected_output,
         agent=agent,
         **task_kwargs,
     )
@@ -157,9 +221,12 @@ def build_ground_truth_score_finder_prompt(
 
 
 __all__ = [
+    "ANALYST_INSTRUCTION_SCHEMA_VERSION",
+    "AnalystInstructionContract",
     "DEFAULT_RUCAM_INFERRING_PROMPT_PATH",
     "DEFAULT_RUCAM_STRICT_PROMPT_PATH",
     "load_rucam_prompt",
+    "build_analyst_instruction_contract",
     "build_ground_truth_score_finder_prompt",
     "create_case_bundle_task",
     "create_analysis_task",

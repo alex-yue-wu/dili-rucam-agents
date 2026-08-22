@@ -46,7 +46,7 @@ def test_validator_accepts_documented_missing_pattern_and_ratio():
 def test_validator_rejects_category_inconsistent_with_total():
     payload = valid_payload()
     payload["category"] = "Possible"
-    with pytest.raises(ValueError, match="category Possible does not match total_score 6"):
+    with pytest.raises(ValueError, match="category does not match total_score"):
         validate_rucam_json(payload)
 
 

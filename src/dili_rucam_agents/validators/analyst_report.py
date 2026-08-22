@@ -45,7 +45,9 @@ def parse_section_c_payload(
     except json.JSONDecodeError as exc:
         recovered = _recover_section_c_payload(json_text) if allow_legacy_json else None
         if recovered is None:
-            raise AnalystReportValidationError(f"Invalid SECTION C JSON: {exc}") from exc
+            raise AnalystReportValidationError(
+                f"Invalid SECTION C JSON: {exc}"
+            ) from exc
         payload = recovered
     if not isinstance(payload, dict):
         raise AnalystReportValidationError("SECTION C JSON must be an object.")

@@ -100,11 +100,11 @@ Invalid outputs are retained for auditability under the PDF output directory:
 
 ```text
 attempts/
-  analyst-beta_attempt-1.invalid.md
-  analyst-beta_attempt-2.invalid.md
+  analyst-beta_attempt-000001-<unique-id>.invalid.md
+  analyst-beta_attempt-000002-<unique-id>.invalid.md
 ```
 
-If an attempt raises before producing report text, no markdown attempt artifact is created; its exception is recorded in checkpoint metadata.
+Attempt numbers are cumulative across invocations and filenames are collision-resistant, so reruns retain earlier invalid outputs. The manifest records append-only failure history with each artifact path. If an attempt raises before producing report text, no markdown attempt artifact is created; its exception is recorded in checkpoint metadata.
 
 ### 4. Analyst Checkpoint Manifest
 
@@ -114,7 +114,7 @@ The manifest has a versioned structure:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "pdf_sha256": "...",
   "analysts": {
     "analyst_alpha": {
@@ -135,7 +135,9 @@ Manifest writes are atomic. Status values are `pending`, `running`, `completed`,
 An analyst fingerprint includes:
 
 - PDF content SHA-256.
-- Effective prompt content SHA-256.
+- Effective versioned analyst instruction-contract SHA-256, covering the base
+  production prompt, task wrapper and expected output, and relevant analyst
+  role/goal/backstory.
 - Score-masking setting.
 - Strict-scoring setting.
 - Resolved analyst model identifier.
@@ -143,6 +145,8 @@ An analyst fingerprint includes:
 - Checkpoint schema version.
 
 The enabled analyst set is stored for observability but is not included in an individual analyst fingerprint. Enabling Delta later must not invalidate successful Alpha, Beta, and Gamma reports.
+
+Runtime case-bundle content and transient retry diagnostics are excluded from the instruction-contract hash. PDF bytes remain a separate fingerprint input, and retry diagnostics are sanitized to stable Pydantic field paths and messages before they enter retry prompts or manifest history.
 
 A checkpoint is reusable only when:
 
@@ -194,6 +198,10 @@ run_crew(..., max_restarts: int = 2)
 run_end_to_end(..., max_restarts: int = 2, resume: bool = True)
 run_batch_folder(..., max_restarts: int = 2)
 ```
+
+`run_crew` strictly validates every supplied enabled `completed_reports` entry.
+An invalid supplied entry is treated as incomplete and cannot bypass analyst
+execution.
 
 Add a batch and single-PDF CLI option:
 

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -10,7 +11,9 @@ from dili_rucam_agents.checkpoints import (
     LegacyRunContext,
     atomic_write_text,
     build_analyst_fingerprint,
+    build_analyst_identities,
 )
+from dili_rucam_agents.crew.tasks import build_analyst_instruction_contract
 
 
 def complete_report() -> str:
@@ -48,7 +51,7 @@ def identity(key: str = "analyst_alpha", fingerprint: str = "fingerprint-a"):
     ("field", "replacement"),
     [
         ("pdf_sha256", "pdf-b"),
-        ("prompt_sha256", "prompt-b"),
+        ("analyst_instruction_sha256", "instructions-b"),
         ("enable_score_masking", True),
         ("strict_scoring", True),
         ("model", "model-b"),
@@ -58,7 +61,7 @@ def identity(key: str = "analyst_alpha", fingerprint: str = "fingerprint-a"):
 def test_fingerprint_changes_with_each_compatibility_input(field, replacement):
     base = dict(
         pdf_sha256="pdf-a",
-        prompt_sha256="prompt-a",
+        analyst_instruction_sha256="instructions-a",
         enable_score_masking=False,
         strict_scoring=False,
         model="model-a",
@@ -66,6 +69,111 @@ def test_fingerprint_changes_with_each_compatibility_input(field, replacement):
     )
     first = build_analyst_fingerprint(**base)
     assert build_analyst_fingerprint(**{**base, field: replacement}) != first
+
+
+def test_static_instruction_change_invalidates_only_affected_analyst(monkeypatch):
+    configs = [
+        {
+            "key": "analyst_alpha",
+            "label": "Analyst Alpha",
+            "model_env": "TEST_ALPHA_MODEL",
+            "max_tokens_env": "TEST_ALPHA_MAX_TOKENS",
+            "fallback_envs": (),
+            "default_model": "model-a",
+        },
+        {
+            "key": "analyst_beta",
+            "label": "Analyst Beta",
+            "model_env": "TEST_BETA_MODEL",
+            "max_tokens_env": "TEST_BETA_MAX_TOKENS",
+            "fallback_envs": (),
+            "default_model": "model-b",
+        },
+    ]
+    monkeypatch.delenv("ANALYST_MODEL", raising=False)
+    contracts = {
+        config["key"]: build_analyst_instruction_contract(
+            analyst_label=config["label"],
+            prompt_text="Production prompt",
+            model_name=config["default_model"],
+            bundle_input_name="raw_case_bundle_json",
+        )
+        for config in configs
+    }
+    report_filename_map = {
+        "analyst_alpha": "analyst-alpha_report.md",
+        "analyst_beta": "analyst-beta_report.md",
+    }
+
+    original = build_analyst_identities(
+        configs=configs,
+        report_filename_map=report_filename_map,
+        pdf_sha256="pdf-a",
+        analyst_instruction_sha256={
+            key: contract.sha256 for key, contract in contracts.items()
+        },
+        enable_score_masking=False,
+        strict_scoring=False,
+    )
+    changed_alpha = replace(
+        contracts["analyst_alpha"],
+        task_expected_output="Changed static output contract.",
+    )
+    changed = build_analyst_identities(
+        configs=configs,
+        report_filename_map=report_filename_map,
+        pdf_sha256="pdf-a",
+        analyst_instruction_sha256={
+            "analyst_alpha": changed_alpha.sha256,
+            "analyst_beta": contracts["analyst_beta"].sha256,
+        },
+        enable_score_masking=False,
+        strict_scoring=False,
+    )
+
+    assert changed["analyst_alpha"].fingerprint != original["analyst_alpha"].fingerprint
+    assert changed["analyst_beta"].fingerprint == original["analyst_beta"].fingerprint
+
+
+def test_instruction_fingerprint_excludes_case_content_and_retry_diagnostics():
+    contract = build_analyst_instruction_contract(
+        analyst_label="Analyst Alpha",
+        prompt_text="Production prompt",
+        model_name="model-a",
+        bundle_input_name="raw_case_bundle_json",
+    )
+    fingerprint = contract.sha256
+
+    first_description = contract.render_task_description(
+        retry_instruction="first sanitized diagnostic"
+    )
+    second_description = contract.render_task_description(
+        retry_instruction="second sanitized diagnostic"
+    )
+
+    assert first_description != second_description
+    assert contract.sha256 == fingerprint
+    assert "{raw_case_bundle_json}" in first_description
+    assert "PATIENT-CASE-CONTENT" not in first_description
+
+
+def test_static_retry_wrapper_is_part_of_instruction_fingerprint():
+    contract = build_analyst_instruction_contract(
+        analyst_label="Analyst Alpha",
+        prompt_text="Production prompt",
+        model_name="model-a",
+        bundle_input_name="raw_case_bundle_json",
+    )
+
+    changed = replace(
+        contract,
+        retry_instruction_template=(
+            contract.retry_instruction_template
+            + "\nReturn every required field before stopping."
+        ),
+    )
+
+    assert changed.sha256 != contract.sha256
 
 
 def test_store_reuses_only_matching_completed_valid_report(tmp_path: Path):
@@ -80,9 +188,10 @@ def test_store_reuses_only_matching_completed_valid_report(tmp_path: Path):
     assert store.load_compatible_reports([identity()], resume=True) == {
         "analyst_alpha": report
     }
-    assert store.load_compatible_reports(
-        [identity(fingerprint="changed")], resume=True
-    ) == {}
+    assert (
+        store.load_compatible_reports([identity(fingerprint="changed")], resume=True)
+        == {}
+    )
 
 
 def test_store_rejects_invalid_report_even_when_manifest_says_completed(tmp_path: Path):
@@ -151,6 +260,27 @@ def test_total_attempts_accumulate_across_invocations(tmp_path: Path):
     entry = manifest["analysts"]["analyst_alpha"]
     assert entry["total_attempts"] == 2
     assert entry["attempts_in_last_invocation"] == 1
+
+
+def test_existing_manifest_write_refreshes_enabled_analysts(tmp_path: Path):
+    alpha_store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    alpha_store.record_completed(identity(), attempt=1, report_text=complete_report())
+
+    expanded_store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha", "analyst_delta"),
+    )
+    expanded_store.record_running(identity("analyst_delta", "fingerprint-d"), attempt=1)
+
+    manifest = json.loads((tmp_path / "analyst_checkpoints.json").read_text())
+    assert manifest["enabled_analysts"] == ["analyst_alpha", "analyst_delta"]
 
 
 def test_store_adopts_valid_legacy_report(tmp_path: Path):

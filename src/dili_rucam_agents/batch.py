@@ -291,9 +291,7 @@ def _stop_batch_after_failure(
             "status": "failed",
             "masking_enabled": enable_score_masking,
             "strict_scoring": strict_scoring,
-            "enabled_analysts": [
-                config["key"] for config in enabled_analyst_configs
-            ],
+            "enabled_analysts": [config["key"] for config in enabled_analyst_configs],
             "failed_at": _utc_now_isoformat(),
             "error": str(exc),
             **(analyst_failure or {}),

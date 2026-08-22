@@ -192,9 +192,10 @@ When `--output-dir` is supplied, the pipeline writes artifacts for the enabled w
   attempt counts, and failure diagnostics.
 
 - `attempts/` contains invalid model outputs as
-  `analyst-<name>_attempt-<number>.invalid.md`. An execution exception without a
-  report has no markdown artifact; its diagnostic is recorded in the checkpoint
-  manifest.
+  `analyst-<name>_attempt-<cumulative-number>-<unique-id>.invalid.md`. Names are
+  cumulative and collision-resistant, so a later invocation cannot overwrite an
+  earlier invalid output. An execution exception without a report has no markdown
+  artifact; its diagnostic is recorded in the checkpoint manifest history.
 
 Only enabled workflow artifacts are persisted.
 
@@ -226,8 +227,12 @@ validate; a failed or incomplete PDF resumes at the first analyst without a
 compatible validated report. Compatible successful analysts are skipped before the
 failed analyst is retried.
 
-PDF content, prompt content, masking mode, strict-scoring mode, resolved model, or
-effective max-output-token changes invalidate only the affected analyst checkpoint.
+PDF content, the effective versioned analyst instruction contract, masking mode,
+strict-scoring mode, resolved model, or effective max-output-token changes
+invalidate only the affected analyst checkpoint. The instruction contract covers
+the production prompt, task wrapper and expected output, and analyst
+role/goal/backstory. Runtime case-bundle content and transient retry diagnostics
+are not part of that instruction hash (the source PDF hash is tracked separately).
 Old output directories without `analyst_checkpoints.json` are handled as legacy
 checkpoints during a normal resume: valid legacy reports are adopted into the
 manifest, provided any existing `run_status.json` matches the PDF filename,

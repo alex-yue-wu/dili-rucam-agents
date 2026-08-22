@@ -17,7 +17,7 @@ from dili_rucam_agents.crew.agents import (
 from dili_rucam_agents.validators.analyst_report import validate_analyst_report
 
 
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 2
 CHECKPOINT_FILENAME = "analyst_checkpoints.json"
 
 
@@ -52,7 +52,7 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def build_analyst_fingerprint(
     *,
     pdf_sha256: str,
-    prompt_sha256: str,
+    analyst_instruction_sha256: str,
     enable_score_masking: bool,
     strict_scoring: bool,
     model: str,
@@ -61,7 +61,7 @@ def build_analyst_fingerprint(
     payload = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "pdf_sha256": pdf_sha256,
-        "prompt_sha256": prompt_sha256,
+        "analyst_instruction_sha256": analyst_instruction_sha256,
         "enable_score_masking": enable_score_masking,
         "strict_scoring": strict_scoring,
         "model": model,
@@ -76,7 +76,7 @@ def build_analyst_identities(
     configs: list[dict[str, Any]],
     report_filename_map: Mapping[str, str],
     pdf_sha256: str,
-    prompt_sha256: str,
+    analyst_instruction_sha256: Mapping[str, str],
     enable_score_masking: bool,
     strict_scoring: bool,
 ) -> dict[str, AnalystIdentity]:
@@ -94,7 +94,7 @@ def build_analyst_identities(
             report_filename=report_filename_map[key],
             fingerprint=build_analyst_fingerprint(
                 pdf_sha256=pdf_sha256,
-                prompt_sha256=prompt_sha256,
+                analyst_instruction_sha256=analyst_instruction_sha256[key],
                 enable_score_masking=enable_score_masking,
                 strict_scoring=strict_scoring,
                 model=model,
@@ -144,9 +144,7 @@ class AnalystCheckpointStore:
             for identity in identities:
                 report_text = reports.get(identity.key)
                 if report_text is not None:
-                    self.record_completed(
-                        identity, attempt=0, report_text=report_text
-                    )
+                    self.record_completed(identity, attempt=0, report_text=report_text)
         return reports
 
     def record_running(self, identity: AnalystIdentity, *, attempt: int) -> None:
@@ -169,16 +167,41 @@ class AnalystCheckpointStore:
         attempt: int,
         failure_kind: str,
         error: str,
+        report_text: str | None = None,
     ) -> None:
         manifest = self._read_manifest() or self._new_manifest()
         entry = self._entry(manifest, identity.key)
+        failed_at = _utc_now_isoformat()
+        total_attempt = int(entry.get("total_attempts", 0))
+        artifact_file = None
+        if report_text is not None:
+            artifact_file = (
+                "attempts/"
+                f"{identity.key.replace('_', '-')}_attempt-{total_attempt:06d}-"
+                f"{uuid4().hex}.invalid.md"
+            )
+            atomic_write_text(self.output_dir / artifact_file, report_text)
+        history = entry.get("attempt_history")
+        if not isinstance(history, list):
+            history = []
+            entry["attempt_history"] = history
+        history.append(
+            {
+                "invocation_attempt": attempt,
+                "total_attempt": total_attempt,
+                "failure_kind": failure_kind,
+                "error": error,
+                "artifact_file": artifact_file,
+                "failed_at": failed_at,
+            }
+        )
         entry.update(
             {
                 "status": "failed",
                 "attempts_in_last_invocation": attempt,
                 "failure_kind": failure_kind,
                 "last_error": error,
-                "failed_at": _utc_now_isoformat(),
+                "failed_at": failed_at,
             }
         )
         self._write_manifest(manifest)
@@ -260,7 +283,9 @@ class AnalystCheckpointStore:
                 continue
             if entry.get("report_file") != identity.report_filename:
                 continue
-            report_text = self._read_valid_report(self.output_dir / identity.report_filename)
+            report_text = self._read_valid_report(
+                self.output_dir / identity.report_filename
+            )
             if report_text is not None:
                 reports[identity.key] = report_text
         return reports
@@ -313,6 +338,14 @@ class AnalystCheckpointStore:
         return entry
 
     def _write_manifest(self, manifest: dict[str, Any]) -> None:
+        manifest.update(
+            {
+                "schema_version": CHECKPOINT_SCHEMA_VERSION,
+                "pdf_filename": self.pdf_filename,
+                "pdf_sha256": self.pdf_sha256,
+                "enabled_analysts": self.enabled_analysts,
+            }
+        )
         atomic_write_json(self.manifest_path, manifest)
 
 
