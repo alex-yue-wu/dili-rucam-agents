@@ -192,7 +192,7 @@ def run_end_to_end(
         completed_reports=completed_reports,
         max_restarts=max_restarts,
         on_attempt=(
-            lambda event: _handle_attempt_event(checkpoint_context, event)
+            (lambda event: _handle_attempt_event(checkpoint_context, event))
             if resolved_output_dir
             else None
         ),

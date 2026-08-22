@@ -381,6 +381,19 @@ def test_run_end_to_end_forwards_max_restarts(monkeypatch):
     assert captured_kwargs["max_restarts"] == 1
 
 
+def test_run_end_to_end_omits_attempt_handler_without_output_dir(monkeypatch):
+    captured_kwargs = {}
+
+    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
+    run_end_to_end("example.pdf")
+
+    assert captured_kwargs["on_attempt"] is None
+
+
 def test_later_failure_preserves_completed_alpha_checkpoint(tmp_path, monkeypatch):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
