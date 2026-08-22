@@ -7,13 +7,17 @@ import pytest
 
 import dili_rucam_agents.pipeline as pipeline_module
 from dili_rucam_agents.batch import (
+    PdfRunFailure,
+    PdfRunContext,
     _is_pdf_run_complete,
+    _run_pdf_analysis,
     _safe_batch_failure_diagnostic,
     extract_ground_truth_rucam_category,
     extract_ground_truth_rucam_score,
     extract_section_c_json,
     run_batch_folder,
 )
+from dili_rucam_agents.crew.config import get_enabled_analyst_configs
 from dili_rucam_agents.crew.crew import AnalystAttemptEvent, AnalystExecutionError
 from dili_rucam_agents.diagnostics import SafeValidationDiagnostic
 from dili_rucam_agents.pipeline import is_end_to_end_complete, run_end_to_end
@@ -62,6 +66,146 @@ def write_complete_reports(result_dir: Path) -> None:
         "analyst-gamma_report.md",
     ):
         (result_dir / report_name).write_text(complete_report(), encoding="utf-8")
+
+
+def test_shared_pdf_runner_returns_stable_analyst_keys_and_repeat_status(
+    tmp_path: Path, monkeypatch
+):
+    pdf_path = tmp_path / "case.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    result_dir = tmp_path / "case" / "case_2"
+    configs = get_enabled_analyst_configs()
+    for config in configs:
+        config["resolved_model_name"] = config["default_model"]
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.is_end_to_end_complete",
+        lambda *args, **kwargs: False,
+    )
+
+    def fake_run_end_to_end(pdf_path, output_dir=None, **kwargs):
+        write_complete_reports(Path(output_dir))
+        return "ok"
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
+    )
+
+    result = _run_pdf_analysis(
+        pdf_path=pdf_path,
+        pdf_output_dir=result_dir,
+        prompt_path=None,
+        enabled_analyst_configs=configs,
+        enable_score_masking=False,
+        strict_scoring=False,
+        use_analyst_delta=False,
+        use_analyst_epsilon=False,
+        use_analyst_zeta=False,
+        use_analyst_eta=False,
+        debug=False,
+        force_rerun=False,
+        max_restarts=2,
+        run_context=PdfRunContext(mode="reproducibility", repeat_index=2),
+    )
+
+    assert result.reused is False
+    assert result.row["analyst_alpha"] == 6
+    assert result.row["analyst_beta"] == 6
+    assert result.row["analyst_gamma"] == 6
+    assert "gpt-5.5" not in result.row
+    status = json.loads((result_dir / "run_status.json").read_text())
+    assert status["mode"] == "reproducibility"
+    assert status["repeat_index"] == 2
+    assert status["status"] == "completed"
+
+
+def test_repeat_completion_requires_matching_repeat_metadata(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "case.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    result_dir = tmp_path / "case_2"
+    result_dir.mkdir()
+    (result_dir / "run_status.json").write_text(
+        json.dumps(
+            {
+                "pdf_filename": "case.pdf",
+                "status": "completed",
+                "masking_enabled": False,
+                "strict_scoring": False,
+                "mode": "reproducibility",
+                "repeat_index": 1,
+            }
+        )
+    )
+    validator = Mock(return_value=True)
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.is_end_to_end_complete", validator
+    )
+
+    assert not _is_pdf_run_complete(
+        pdf_path=pdf_path,
+        pdf_output_dir=result_dir,
+        prompt_path=None,
+        enabled_analyst_configs=get_enabled_analyst_configs(),
+        enable_score_masking=False,
+        strict_scoring=False,
+        use_analyst_delta=False,
+        use_analyst_epsilon=False,
+        use_analyst_zeta=False,
+        use_analyst_eta=False,
+        run_context=PdfRunContext(mode="reproducibility", repeat_index=2),
+    )
+    validator.assert_not_called()
+
+
+def test_shared_pdf_runner_preserves_run_failure_when_partial_report_is_invalid(
+    tmp_path: Path, monkeypatch
+):
+    pdf_path = tmp_path / "case.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    result_dir = tmp_path / "case"
+    configs = get_enabled_analyst_configs()
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.is_end_to_end_complete",
+        lambda *args, **kwargs: False,
+    )
+
+    def fake_run_end_to_end(pdf_path, output_dir=None, **kwargs):
+        result_path = Path(output_dir)
+        result_path.mkdir(parents=True, exist_ok=True)
+        (result_path / "analyst-alpha_report.md").write_text(
+            complete_report(), encoding="utf-8"
+        )
+        (result_path / "analyst-beta_report.md").write_text(
+            "incomplete", encoding="utf-8"
+        )
+        raise RuntimeError("original analysis failure")
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
+    )
+
+    with pytest.raises(PdfRunFailure, match="RuntimeError") as exc_info:
+        _run_pdf_analysis(
+            pdf_path=pdf_path,
+            pdf_output_dir=result_dir,
+            prompt_path=None,
+            enabled_analyst_configs=configs,
+            enable_score_masking=False,
+            strict_scoring=False,
+            use_analyst_delta=False,
+            use_analyst_epsilon=False,
+            use_analyst_zeta=False,
+            use_analyst_eta=False,
+            debug=False,
+            force_rerun=False,
+            max_restarts=2,
+        )
+
+    assert "RuntimeError" in exc_info.value.diagnostic
+    assert "analyst-beta_report.md" not in exc_info.value.diagnostic
+    assert exc_info.value.row["analyst_alpha"] == 6
+    assert exc_info.value.row["analyst_beta"] is None
 
 
 def test_extract_section_c_json_parses_last_json_block():

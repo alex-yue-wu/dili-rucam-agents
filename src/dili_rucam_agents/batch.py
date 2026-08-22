@@ -4,9 +4,10 @@ import argparse
 import contextlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from openpyxl import Workbook
 
@@ -32,6 +33,37 @@ from dili_rucam_agents.validators.analyst_report import (
 
 
 _RUN_STATUS_FILENAME = "run_status.json"
+
+
+@dataclass(frozen=True)
+class PdfRunContext:
+    mode: Literal["batch", "reproducibility"] = "batch"
+    repeat_index: int | None = None
+
+    def status_fields(self) -> dict[str, str | int]:
+        if self.mode == "batch":
+            if self.repeat_index is not None:
+                raise ValueError("batch mode cannot have a repeat index")
+            return {}
+        if type(self.repeat_index) is not int or self.repeat_index < 1:
+            raise ValueError("reproducibility repeat index must be at least 1")
+        return {"mode": self.mode, "repeat_index": self.repeat_index}
+
+
+@dataclass(frozen=True)
+class PdfRunResult:
+    row: dict[str, Any]
+    reused: bool
+
+
+class PdfRunFailure(RuntimeError):
+    def __init__(
+        self, *, pdf_path: Path, row: dict[str, Any], diagnostic: str
+    ) -> None:
+        self.pdf_path = pdf_path
+        self.row = dict(row)
+        self.diagnostic = diagnostic
+        super().__init__(f"{pdf_path.name}: {diagnostic}")
 
 
 class _AnalystReportFileValidationError(ValueError):
@@ -65,7 +97,7 @@ def run_batch_folder(
     results_dir = Path(output_dir).expanduser().resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    enabled_analyst_configs = get_enabled_analyst_configs(
+    enabled_analyst_configs = _get_resolved_analyst_configs(
         use_analyst_delta=use_analyst_delta,
         use_analyst_epsilon=use_analyst_epsilon,
         use_analyst_zeta=use_analyst_zeta,
@@ -78,124 +110,38 @@ def run_batch_folder(
             f"\n===================== Analyzing PDF: {pdf_path} =====================\n"
         )
         pdf_output_dir = results_dir / pdf_path.stem
-        pdf_output_dir.mkdir(parents=True, exist_ok=True)
-        row = _initialize_summary_row(pdf_path, pdf_output_dir, enabled_analyst_configs)
-        if not force_rerun and _is_pdf_run_complete(
-            pdf_path=pdf_path,
-            pdf_output_dir=pdf_output_dir,
-            prompt_path=prompt_path,
-            enabled_analyst_configs=enabled_analyst_configs,
-            enable_score_masking=enable_score_masking,
-            strict_scoring=strict_scoring,
-            use_analyst_delta=use_analyst_delta,
-            use_analyst_epsilon=use_analyst_epsilon,
-            use_analyst_zeta=use_analyst_zeta,
-            use_analyst_eta=use_analyst_eta,
-        ):
-            print(f"Skipping completed PDF: {pdf_path.name}")
-            _populate_row_from_reports(
-                row, pdf_output_dir, enabled_analyst_configs, enable_score_masking
+        try:
+            result = _run_pdf_analysis(
+                pdf_path=pdf_path,
+                pdf_output_dir=pdf_output_dir,
+                prompt_path=prompt_path,
+                enabled_analyst_configs=enabled_analyst_configs,
+                enable_score_masking=enable_score_masking,
+                strict_scoring=strict_scoring,
+                use_analyst_delta=use_analyst_delta,
+                use_analyst_epsilon=use_analyst_epsilon,
+                use_analyst_zeta=use_analyst_zeta,
+                use_analyst_eta=use_analyst_eta,
+                debug=debug,
+                force_rerun=force_rerun,
+                max_restarts=max_restarts,
             )
+        except PdfRunFailure as exc:
+            row = dict(exc.row)
+            row["masked_rucam_score"] = f"ERROR: {exc.diagnostic}"
+            row["masked_rucam_category"] = f"ERROR: {exc.diagnostic}"
             summary_rows.append(row)
-            continue
-
-        stdout_cm: contextlib.AbstractContextManager[object]
-        stderr_cm: contextlib.AbstractContextManager[object]
-        log_file = None
-        if debug:
-            log_path = pdf_output_dir / f"{pdf_path.stem}.log"
-            log_file = log_path.open("w", encoding="utf-8")
-            stdout_cm = contextlib.redirect_stdout(log_file)
-            stderr_cm = contextlib.redirect_stderr(log_file)
-        else:
-            stdout_cm = contextlib.nullcontext()
-            stderr_cm = contextlib.nullcontext()
-
-        with contextlib.ExitStack() as stack:
-            if log_file is not None:
-                stack.callback(log_file.close)
-            stack.enter_context(stdout_cm)
-            stack.enter_context(stderr_cm)
-            try:
-                _write_pdf_run_status(
-                    pdf_output_dir=pdf_output_dir,
-                    payload={
-                        "pdf_filename": pdf_path.name,
-                        "status": "running",
-                        "masking_enabled": enable_score_masking,
-                        "strict_scoring": strict_scoring,
-                        "enabled_analysts": [
-                            config["key"] for config in enabled_analyst_configs
-                        ],
-                        "started_at": _utc_now_isoformat(),
-                    },
-                )
-                if debug:
-                    print(f"Running PDF: {pdf_path}")
-                run_end_to_end(
-                    str(pdf_path),
-                    prompt_path=prompt_path,
-                    output_dir=str(pdf_output_dir),
-                    enable_score_masking=enable_score_masking,
-                    strict_scoring=strict_scoring,
-                    use_analyst_delta=use_analyst_delta,
-                    use_analyst_epsilon=use_analyst_epsilon,
-                    use_analyst_zeta=use_analyst_zeta,
-                    use_analyst_eta=use_analyst_eta,
-                    max_restarts=max_restarts,
-                    resume=not force_rerun,
-                )
-                _populate_row_from_reports(
-                    row, pdf_output_dir, enabled_analyst_configs, enable_score_masking
-                )
-                _write_pdf_run_status(
-                    pdf_output_dir=pdf_output_dir,
-                    payload={
-                        "pdf_filename": pdf_path.name,
-                        "status": "completed",
-                        "masking_enabled": enable_score_masking,
-                        "strict_scoring": strict_scoring,
-                        "enabled_analysts": [
-                            config["key"] for config in enabled_analyst_configs
-                        ],
-                        "completed_at": _utc_now_isoformat(),
-                    },
-                )
-                if debug:
-                    print("Completed successfully.")
-            except AnalystExecutionError as exc:  # pragma: no cover - real batch runs
-                _stop_batch_after_failure(
-                    exc=exc,
-                    pdf_path=pdf_path,
-                    pdf_output_dir=pdf_output_dir,
-                    enable_score_masking=enable_score_masking,
-                    strict_scoring=strict_scoring,
-                    enabled_analyst_configs=enabled_analyst_configs,
-                    row=row,
-                    summary_rows=summary_rows,
-                    results_dir=results_dir,
-                    debug=debug,
-                    analyst_failure={
-                        "failed_analyst": exc.analyst_key,
-                        "attempts": exc.attempts,
-                        "failure_kind": exc.failure_kind,
-                    },
-                )
-            except Exception as exc:  # pragma: no cover - exercised in real batch runs
-                _stop_batch_after_failure(
-                    exc=exc,
-                    pdf_path=pdf_path,
-                    pdf_output_dir=pdf_output_dir,
-                    enable_score_masking=enable_score_masking,
-                    strict_scoring=strict_scoring,
-                    enabled_analyst_configs=enabled_analyst_configs,
-                    row=row,
-                    summary_rows=summary_rows,
-                    results_dir=results_dir,
-                    debug=debug,
-                )
-
-        summary_rows.append(row)
+            _write_summary_workbook(
+                summary_rows,
+                enabled_analyst_configs,
+                results_dir / "batch_summary.xlsx",
+            )
+            raise RuntimeError(
+                f"Batch stopped at {pdf_path.name}: {exc.diagnostic}"
+            ) from exc
+        if result.reused:
+            print(f"Skipping completed PDF: {pdf_path.name}")
+        summary_rows.append(result.row)
 
     summary_path = results_dir / "batch_summary.xlsx"
     _write_summary_workbook(summary_rows, enabled_analyst_configs, summary_path)
@@ -205,7 +151,6 @@ def run_batch_folder(
 
 def _initialize_summary_row(
     pdf_path: Path,
-    pdf_output_dir: Path,
     enabled_analyst_configs: list[dict[str, Any]],
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
@@ -214,14 +159,30 @@ def _initialize_summary_row(
         "masked_rucam_category": "None",
     }
     for config in enabled_analyst_configs:
-        model_name = resolve_rucam_model(
+        row[config["key"]] = None
+    return row
+
+
+def _get_resolved_analyst_configs(
+    *,
+    use_analyst_delta: bool,
+    use_analyst_epsilon: bool,
+    use_analyst_zeta: bool,
+    use_analyst_eta: bool,
+) -> list[dict[str, Any]]:
+    configs = get_enabled_analyst_configs(
+        use_analyst_delta=use_analyst_delta,
+        use_analyst_epsilon=use_analyst_epsilon,
+        use_analyst_zeta=use_analyst_zeta,
+        use_analyst_eta=use_analyst_eta,
+    )
+    for config in configs:
+        config["resolved_model_name"] = resolve_rucam_model(
             model_env=config["model_env"],
             fallback_envs=config["fallback_envs"],
             default_model=config["default_model"],
         )
-        config["resolved_model_name"] = model_name
-        row[model_name] = None
-    return row
+    return configs
 
 
 def _status_path(pdf_output_dir: Path) -> Path:
@@ -257,6 +218,7 @@ def _is_pdf_run_complete(
     use_analyst_epsilon: bool,
     use_analyst_zeta: bool,
     use_analyst_eta: bool,
+    run_context: PdfRunContext = PdfRunContext(),
 ) -> bool:
     status = _read_pdf_run_status(pdf_output_dir)
     if not status or status.get("status") != "completed":
@@ -267,6 +229,9 @@ def _is_pdf_run_complete(
         return False
     if status.get("strict_scoring") != strict_scoring:
         return False
+    for key, value in run_context.status_fields().items():
+        if status.get(key) != value:
+            return False
     return is_end_to_end_complete(
         str(pdf_path),
         str(pdf_output_dir),
@@ -280,43 +245,147 @@ def _is_pdf_run_complete(
     )
 
 
-def _stop_batch_after_failure(
+def _run_pdf_analysis(
     *,
-    exc: Exception,
     pdf_path: Path,
     pdf_output_dir: Path,
+    prompt_path: str | None,
+    enabled_analyst_configs: list[dict[str, Any]],
     enable_score_masking: bool,
     strict_scoring: bool,
-    enabled_analyst_configs: list[dict[str, Any]],
-    row: dict[str, Any],
-    summary_rows: list[dict[str, Any]],
-    results_dir: Path,
+    use_analyst_delta: bool,
+    use_analyst_epsilon: bool,
+    use_analyst_zeta: bool,
+    use_analyst_eta: bool,
     debug: bool,
-    analyst_failure: dict[str, Any] | None = None,
-) -> None:
-    diagnostic = _safe_batch_failure_diagnostic(exc)
-    if debug:
-        print(f"Run failed: {diagnostic}")
-    row["masked_rucam_score"] = f"ERROR: {diagnostic}"
-    row["masked_rucam_category"] = f"ERROR: {diagnostic}"
-    _write_pdf_run_status(
+    force_rerun: bool,
+    max_restarts: int,
+    run_context: PdfRunContext = PdfRunContext(),
+) -> PdfRunResult:
+    pdf_output_dir.mkdir(parents=True, exist_ok=True)
+    row = _initialize_summary_row(pdf_path, enabled_analyst_configs)
+    if not force_rerun and _is_pdf_run_complete(
+        pdf_path=pdf_path,
         pdf_output_dir=pdf_output_dir,
-        payload={
-            "pdf_filename": pdf_path.name,
-            "status": "failed",
-            "masking_enabled": enable_score_masking,
-            "strict_scoring": strict_scoring,
-            "enabled_analysts": [config["key"] for config in enabled_analyst_configs],
-            "failed_at": _utc_now_isoformat(),
-            "error": diagnostic,
-            **(analyst_failure or {}),
-        },
-    )
-    summary_rows.append(row)
-    _write_summary_workbook(
-        summary_rows, enabled_analyst_configs, results_dir / "batch_summary.xlsx"
-    )
-    raise RuntimeError(f"Batch stopped at {pdf_path.name}: {diagnostic}") from exc
+        prompt_path=prompt_path,
+        enabled_analyst_configs=enabled_analyst_configs,
+        enable_score_masking=enable_score_masking,
+        strict_scoring=strict_scoring,
+        use_analyst_delta=use_analyst_delta,
+        use_analyst_epsilon=use_analyst_epsilon,
+        use_analyst_zeta=use_analyst_zeta,
+        use_analyst_eta=use_analyst_eta,
+        run_context=run_context,
+    ):
+        _populate_row_from_reports(
+            row,
+            pdf_output_dir,
+            enabled_analyst_configs,
+            enable_score_masking,
+        )
+        return PdfRunResult(row=row, reused=True)
+
+    base_status = {
+        "pdf_filename": pdf_path.name,
+        "masking_enabled": enable_score_masking,
+        "strict_scoring": strict_scoring,
+        "enabled_analysts": [config["key"] for config in enabled_analyst_configs],
+        **run_context.status_fields(),
+    }
+    log_file = None
+    stdout_cm: contextlib.AbstractContextManager[object] = contextlib.nullcontext()
+    stderr_cm: contextlib.AbstractContextManager[object] = contextlib.nullcontext()
+    if debug:
+        log_file = (pdf_output_dir / f"{pdf_path.stem}.log").open(
+            "w", encoding="utf-8"
+        )
+        stdout_cm = contextlib.redirect_stdout(log_file)
+        stderr_cm = contextlib.redirect_stderr(log_file)
+
+    with contextlib.ExitStack() as stack:
+        if log_file is not None:
+            stack.callback(log_file.close)
+        stack.enter_context(stdout_cm)
+        stack.enter_context(stderr_cm)
+        try:
+            _write_pdf_run_status(
+                pdf_output_dir=pdf_output_dir,
+                payload={
+                    **base_status,
+                    "status": "running",
+                    "started_at": _utc_now_isoformat(),
+                },
+            )
+            if debug:
+                print(f"Running PDF: {pdf_path}")
+            run_end_to_end(
+                str(pdf_path),
+                prompt_path=prompt_path,
+                output_dir=str(pdf_output_dir),
+                enable_score_masking=enable_score_masking,
+                strict_scoring=strict_scoring,
+                use_analyst_delta=use_analyst_delta,
+                use_analyst_epsilon=use_analyst_epsilon,
+                use_analyst_zeta=use_analyst_zeta,
+                use_analyst_eta=use_analyst_eta,
+                max_restarts=max_restarts,
+                resume=not force_rerun,
+            )
+            _populate_row_from_reports(
+                row,
+                pdf_output_dir,
+                enabled_analyst_configs,
+                enable_score_masking,
+            )
+            _write_pdf_run_status(
+                pdf_output_dir=pdf_output_dir,
+                payload={
+                    **base_status,
+                    "status": "completed",
+                    "completed_at": _utc_now_isoformat(),
+                },
+            )
+            if debug:
+                print("Completed successfully.")
+            return PdfRunResult(row=row, reused=False)
+        except Exception as exc:
+            diagnostic = _safe_batch_failure_diagnostic(exc)
+            try:
+                _populate_row_from_reports(
+                    row,
+                    pdf_output_dir,
+                    enabled_analyst_configs,
+                    enable_score_masking,
+                    tolerate_invalid=True,
+                )
+            except OSError:
+                pass
+            analyst_failure = (
+                {
+                    "failed_analyst": exc.analyst_key,
+                    "attempts": exc.attempts,
+                    "failure_kind": exc.failure_kind,
+                }
+                if isinstance(exc, AnalystExecutionError)
+                else {}
+            )
+            _write_pdf_run_status(
+                pdf_output_dir=pdf_output_dir,
+                payload={
+                    **base_status,
+                    "status": "failed",
+                    "failed_at": _utc_now_isoformat(),
+                    "error": diagnostic,
+                    **analyst_failure,
+                },
+            )
+            if debug:
+                print(f"Run failed: {diagnostic}")
+            raise PdfRunFailure(
+                pdf_path=pdf_path,
+                row=row,
+                diagnostic=diagnostic,
+            ) from exc
 
 
 def _safe_batch_failure_diagnostic(exc: Exception) -> str:
@@ -347,6 +416,8 @@ def _populate_row_from_reports(
     pdf_output_dir: Path,
     enabled_analyst_configs: list[dict[str, Any]],
     enable_score_masking: bool,
+    *,
+    tolerate_invalid: bool = False,
 ) -> None:
     if enable_score_masking:
         ground_truth_report_path = pdf_output_dir / "ground-truth-rucam-score_report.md"
@@ -365,11 +436,13 @@ def _populate_row_from_reports(
         try:
             validated = validate_analyst_report(report_text, allow_legacy_json=True)
         except AnalystReportValidationError as exc:
+            if tolerate_invalid:
+                continue
             raise _AnalystReportFileValidationError(
                 report_filename=report_path.name,
                 diagnostic=exc.diagnostic,
             ) from exc
-        row[config["resolved_model_name"]] = validated.payload.total_score
+        row[config["key"]] = validated.payload.total_score
 
 
 def extract_section_c_json(report_text: str) -> dict[str, Any]:
@@ -405,15 +478,16 @@ def _write_summary_workbook(
     sheet = workbook.active
     sheet.title = "Batch Summary"
 
-    headers = ["pdf_filename"]
-    for config in enabled_analyst_configs:
-        headers.append(config["resolved_model_name"])
-    headers.append("masked_rucam_score")
-    headers.append("masked_rucam_category")
+    headers = ["pdf_filename"] + [
+        config["resolved_model_name"] for config in enabled_analyst_configs
+    ] + ["masked_rucam_score", "masked_rucam_category"]
+    row_keys = ["pdf_filename"] + [
+        config["key"] for config in enabled_analyst_configs
+    ] + ["masked_rucam_score", "masked_rucam_category"]
 
     sheet.append(headers)
     for row in rows:
-        sheet.append([row.get(header, "") for header in headers])
+        sheet.append([row.get(key, "") for key in row_keys])
 
     for column_cells in sheet.columns:
         max_length = max(len(str(cell.value or "")) for cell in column_cells)
