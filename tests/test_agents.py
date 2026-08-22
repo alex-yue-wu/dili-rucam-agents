@@ -7,6 +7,7 @@ from dili_rucam_agents.crew.agents import (
     build_rucam_agent,
     build_score_masking_agent,
     resolve_analyst_max_output_tokens,
+    resolve_ground_truth_score_finder_model,
 )
 from dili_rucam_agents.crew.config import get_enabled_analyst_configs
 
@@ -49,6 +50,19 @@ def test_ground_truth_score_finder_agent_uses_tool_and_default_routing(monkeypat
 
     assert agent.llm.model == "gpt-5.4"
     assert agent.tools == []
+
+
+def test_ground_truth_model_resolution_matches_agent_fallbacks(monkeypatch):
+    monkeypatch.delenv("GROUND_TRUTH_SCORE_FINDER_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    assert resolve_ground_truth_score_finder_model() == "gpt-5.4"
+
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5.5")
+    assert resolve_ground_truth_score_finder_model() == "gpt-5.5"
+
+    monkeypatch.setenv("GROUND_TRUTH_SCORE_FINDER_MODEL", "gpt-5.6")
+    assert resolve_ground_truth_score_finder_model() == "gpt-5.6"
+    assert resolve_ground_truth_score_finder_model("explicit-model") == "explicit-model"
 
 
 def test_litellm_runtime_disables_standard_logging_payload():

@@ -235,14 +235,20 @@ def build_score_masking_agent(model: Optional[str] = None) -> Agent:
     )
 
 
-def build_ground_truth_rucam_score_finder_agent(model: Optional[str] = None) -> Agent:
-    """Agent responsible for identifying the author-reported RUCAM outcome in the raw PDF extraction."""
+def resolve_ground_truth_score_finder_model(model: Optional[str] = None) -> str:
+    """Resolve the model used by the ground-truth RUCAM score finder."""
 
-    finder_model = (
+    return (
         model
         or os.getenv("GROUND_TRUTH_SCORE_FINDER_MODEL")
         or os.getenv("OPENAI_MODEL", "gpt-5.4")
     )
+
+
+def build_ground_truth_rucam_score_finder_agent(model: Optional[str] = None) -> Agent:
+    """Agent responsible for identifying the author-reported RUCAM outcome in the raw PDF extraction."""
+
+    finder_model = resolve_ground_truth_score_finder_model(model)
     llm_kwargs = _build_routed_llm_kwargs(
         model=finder_model,
         max_output_tokens=_read_int_env(
@@ -268,5 +274,6 @@ __all__ = [
     "build_rucam_agent",
     "build_score_masking_agent",
     "resolve_analyst_max_output_tokens",
+    "resolve_ground_truth_score_finder_model",
     "resolve_rucam_model",
 ]
