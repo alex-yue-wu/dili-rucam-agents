@@ -208,6 +208,53 @@ def test_shared_pdf_runner_preserves_run_failure_when_partial_report_is_invalid(
     assert exc_info.value.row["analyst_beta"] is None
 
 
+def test_shared_pdf_runner_preserves_run_failure_with_malformed_ground_truth(
+    tmp_path: Path, monkeypatch
+):
+    pdf_path = tmp_path / "case.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    result_dir = tmp_path / "case"
+    configs = get_enabled_analyst_configs()
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.is_end_to_end_complete",
+        lambda *args, **kwargs: False,
+    )
+
+    def fake_run_end_to_end(pdf_path, output_dir=None, **kwargs):
+        result_path = Path(output_dir)
+        result_path.mkdir(parents=True, exist_ok=True)
+        (result_path / "ground-truth-rucam-score_report.md").write_text(
+            "GROUND_TRUTH_RUCAM_SCORE: not-a-score\n", encoding="utf-8"
+        )
+        raise RuntimeError("original analysis failure")
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
+    )
+
+    with pytest.raises(PdfRunFailure, match="RuntimeError") as exc_info:
+        _run_pdf_analysis(
+            pdf_path=pdf_path,
+            pdf_output_dir=result_dir,
+            prompt_path=None,
+            enabled_analyst_configs=configs,
+            enable_score_masking=True,
+            strict_scoring=False,
+            use_analyst_delta=False,
+            use_analyst_epsilon=False,
+            use_analyst_zeta=False,
+            use_analyst_eta=False,
+            debug=False,
+            force_rerun=False,
+            max_restarts=2,
+        )
+
+    assert "RuntimeError" in exc_info.value.diagnostic
+    status = json.loads((result_dir / "run_status.json").read_text())
+    assert status["status"] == "failed"
+
+
 def test_extract_section_c_json_parses_last_json_block():
     report_text = """
 Intro

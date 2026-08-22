@@ -358,7 +358,7 @@ def _run_pdf_analysis(
                     enable_score_masking,
                     tolerate_invalid=True,
                 )
-            except OSError:
+            except (OSError, ValueError):
                 pass
             analyst_failure = (
                 {
