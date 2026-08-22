@@ -85,7 +85,10 @@ def parse_section_c_payload(
         raise _validation_error("SECTION_C", "json_fence_count")
     invalid_json = False
     try:
-        payload = json.loads(json_text)
+        payload = json.loads(
+            json_text,
+            parse_constant=_reject_non_standard_json_constant,
+        )
     except json.JSONDecodeError:
         recovered = _recover_section_c_payload(json_text) if allow_legacy_json else None
         if recovered is None:
@@ -93,6 +96,9 @@ def parse_section_c_payload(
             payload = {}
         else:
             payload = recovered
+    except ValueError:
+        invalid_json = True
+        payload = {}
     if invalid_json:
         raise _validation_error("SECTION_C", "invalid_json")
     if not isinstance(payload, dict):
@@ -272,6 +278,7 @@ def _pydantic_diagnostic(exc: ValidationError) -> SafeValidationDiagnostic:
                 "less_than_equal": "integer_too_large",
                 "float_parsing": "invalid_number",
                 "float_type": "invalid_number",
+                "finite_number": "invalid_number",
                 "literal_error": "invalid_literal",
             }.get(issue_type, "invalid_value")
         try:
@@ -340,6 +347,10 @@ def _extract_notes(json_block: str) -> list[str]:
         return []
     notes = re.findall(r'"([^"\n]+)"', notes_match.group(1))
     return [note.strip().rstrip(",)") for note in notes if note.strip().rstrip(",)")]
+
+
+def _reject_non_standard_json_constant(_constant: str) -> None:
+    raise ValueError("non-standard JSON numeric constants are not allowed")
 
 
 __all__ = [

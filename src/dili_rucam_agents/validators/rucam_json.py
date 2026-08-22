@@ -64,6 +64,8 @@ class RucamScores(BaseModel):
 
 
 class RucamReport(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     injury_pattern: InjuryPattern
     R_ratio: float | None = Field(ge=0)
     rucam_scores: RucamScores
@@ -84,7 +86,10 @@ def validate_rucam_json(payload: dict[str, Any] | str) -> RucamReport:
     """Validate final SECTION C output and raise helpful errors on mismatch."""
 
     if isinstance(payload, str):
-        payload = json.loads(payload)
+        payload = json.loads(
+            payload,
+            parse_constant=_reject_non_standard_json_constant,
+        )
 
     try:
         return RucamReport.model_validate(payload)
@@ -98,6 +103,10 @@ def validate_rucam_json(payload: dict[str, Any] | str) -> RucamReport:
             location = ".".join(str(part) for part in error["loc"]) or "report"
             diagnostics.append(f"{location}: {error['msg']}")
         raise ValueError(f"Invalid RUCAM JSON: {'; '.join(diagnostics)}") from exc
+
+
+def _reject_non_standard_json_constant(_constant: str) -> None:
+    raise ValueError("non-standard JSON numeric constants are not allowed")
 
 
 __all__ = [

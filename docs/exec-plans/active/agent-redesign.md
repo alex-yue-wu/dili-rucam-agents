@@ -77,6 +77,11 @@ structure containing only allowlisted field paths and issue codes. Retry prompts
 public events, terminal errors, manifests, batch status/logs, and workbook cells
 render fixed messages only from that structure; raw invalid report text is confined
 to its audit artifact.
+Diagnostic revalidation performs exact-type checks before any iterable,
+materialization, stringification, or representation hook can run. Strict Section C
+JSON rejects `NaN`, `Infinity`, and `-Infinity` during parsing, while the RUCAM model
+independently requires every reported R-ratio to be finite and non-negative; `null`
+remains valid when the ratio is not reported.
 The public `run_crew` boundary also validates supplied completed reports before
 allowing them to skip execution. Existing-manifest writes refresh the enabled
 analyst topology metadata during normal resume, while read-only completion checks
@@ -121,10 +126,10 @@ All checks were offline; no live model provider was invoked.
   tests` — both report the same three baseline findings already present at the
   feature starting commit `0a1dad6`: F541 in `batch.py`, F821 in `agents.py`, and
   F541 in `tasks.py`. The feature-introduced E402 was removed.
-- `uv run ruff format --check <Task 8 touched Python files>` — all 10 files are
+- `uv run ruff format --check <Task 9 touched Python files>` — all 8 files are
   formatted. No unrelated Python files were reformatted.
-- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 157 passed.
-- `uv run pytest -q` — 182 passed, with five pre-existing PyMuPDF/SWIG deprecation
+- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 180 passed.
+- `uv run pytest -q` — 205 passed, with five pre-existing PyMuPDF/SWIG deprecation
   warnings from the ingestion smoke tests.
 - `git diff --check`, `git status --short`, and `git diff --stat 0a1dad6..HEAD` —
   run during the final scope inspection; no whitespace errors or generated files

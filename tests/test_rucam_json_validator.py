@@ -1,6 +1,9 @@
-import pytest
+import json
 
-from dili_rucam_agents.validators.rucam_json import validate_rucam_json
+import pytest
+from pydantic import ValidationError
+
+from dili_rucam_agents.validators.rucam_json import RucamReport, validate_rucam_json
 
 
 def valid_payload() -> dict:
@@ -63,3 +66,30 @@ def test_validate_rucam_json_rejects_bad_total():
 
     with pytest.raises(ValueError):
         validate_rucam_json(payload)
+
+
+@pytest.mark.parametrize("ratio", (float("nan"), float("inf"), float("-inf")))
+def test_validator_rejects_non_finite_ratio_from_direct_dictionary(ratio):
+    payload = valid_payload()
+    payload["R_ratio"] = ratio
+
+    with pytest.raises(ValueError, match="R_ratio"):
+        validate_rucam_json(payload)
+
+
+@pytest.mark.parametrize("ratio", (float("nan"), float("inf"), float("-inf")))
+def test_rucam_model_independently_rejects_non_finite_ratio(ratio):
+    payload = valid_payload()
+    payload["R_ratio"] = ratio
+
+    with pytest.raises(ValidationError):
+        RucamReport.model_validate(payload)
+
+
+@pytest.mark.parametrize("constant", ("NaN", "Infinity", "-Infinity"))
+def test_validator_rejects_non_standard_constants_in_json_text(constant):
+    payload = valid_payload()
+    json_text = json.dumps(payload).replace("3.2", constant, 1)
+
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        validate_rucam_json(json_text)

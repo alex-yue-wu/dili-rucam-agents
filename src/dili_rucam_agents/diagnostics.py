@@ -108,7 +108,7 @@ def validate_validation_diagnostic(diagnostic: object) -> SafeValidationDiagnost
 
     if type(diagnostic) is not SafeValidationDiagnostic:
         raise ValueError("validation_diagnostic must be a SafeValidationDiagnostic")
-    return SafeValidationDiagnostic(tuple(diagnostic.issues))
+    return SafeValidationDiagnostic(diagnostic.issues)
 
 
 def render_validation_diagnostic(diagnostic: object) -> str:

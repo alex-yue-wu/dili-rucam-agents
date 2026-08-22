@@ -1485,6 +1485,46 @@ def test_batch_validation_sink_rejects_forged_structured_diagnostic():
     assert secret not in str(exc_info.value)
 
 
+def test_batch_validation_sink_never_executes_hostile_issues_hooks():
+    secret = "HOSTILE-BATCH-ISSUES-SECRET"
+
+    class HostileIssues:
+        def __init__(self):
+            self.invoked = []
+
+        def _raise(self, hook):
+            self.invoked.append(hook)
+            raise RuntimeError(f"{hook}: {secret}")
+
+        def __iter__(self):
+            return self._raise("__iter__")
+
+        def __len__(self):
+            return self._raise("__len__")
+
+        def __repr__(self):
+            return self._raise("__repr__")
+
+    error = AnalystExecutionError(
+        analyst_key="analyst_alpha",
+        attempts=1,
+        failure_kind="validation",
+        validation_diagnostic=SafeValidationDiagnostic(
+            (("total_score", "score_sum_mismatch"),)
+        ),
+    )
+    issues = HostileIssues()
+    forged = object.__new__(SafeValidationDiagnostic)
+    object.__setattr__(forged, "issues", issues)
+    error.validation_diagnostic = forged
+
+    with pytest.raises(ValueError) as exc_info:
+        _safe_batch_failure_diagnostic(error)
+
+    assert issues.invoked == []
+    assert secret not in str(exc_info.value)
+
+
 def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(
     tmp_path: Path, monkeypatch
 ):

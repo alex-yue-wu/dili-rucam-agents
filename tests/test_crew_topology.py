@@ -190,6 +190,33 @@ def test_run_crew_does_not_skip_invalid_supplied_completed_report(monkeypatch):
     assert reports == {"analyst_alpha": replacement}
 
 
+def test_non_finite_supplied_and_attempt_reports_never_complete_analyst(monkeypatch):
+    non_finite_report = complete_report().replace("6.4", "Infinity", 1)
+    replacement = complete_report(narrative="finite replacement")
+    constructed_keys = install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter((non_finite_report, replacement))},
+    )
+    events = []
+
+    _, reports = run_crew(
+        "dummy.pdf",
+        capture_reports=True,
+        completed_reports={"analyst_alpha": non_finite_report},
+        max_restarts=1,
+        on_attempt=events.append,
+    )
+
+    assert constructed_keys == ["analyst_alpha", "analyst_alpha"]
+    assert [event.status for event in events] == [
+        "running",
+        "validation_failed",
+        "running",
+        "completed",
+    ]
+    assert reports == {"analyst_alpha": replacement}
+
+
 def test_run_crew_restarts_after_execution_exception(monkeypatch):
     install_retry_scenario(
         monkeypatch,
@@ -492,6 +519,52 @@ def test_direct_validation_event_rejects_forged_diagnostic():
             validation_diagnostic=forged,
         )
     assert secret not in str(exc_info.value)
+
+
+def test_event_and_terminal_boundaries_do_not_execute_hostile_issues_hooks():
+    secret = "HOSTILE-EVENT-TERMINAL-SECRET"
+
+    class HostileIssues:
+        def __init__(self):
+            self.invoked = []
+
+        def _raise(self, hook):
+            self.invoked.append(hook)
+            raise RuntimeError(f"{hook}: {secret}")
+
+        def __iter__(self):
+            return self._raise("__iter__")
+
+        def __len__(self):
+            return self._raise("__len__")
+
+        def __repr__(self):
+            return self._raise("__repr__")
+
+    for constructor in (
+        lambda diagnostic: AnalystAttemptEvent(
+            "analyst_alpha",
+            1,
+            1,
+            "validation_failed",
+            validation_diagnostic=diagnostic,
+        ),
+        lambda diagnostic: AnalystExecutionError(
+            analyst_key="analyst_alpha",
+            attempts=1,
+            failure_kind="validation",
+            validation_diagnostic=diagnostic,
+        ),
+    ):
+        issues = HostileIssues()
+        forged = object.__new__(SafeValidationDiagnostic)
+        object.__setattr__(forged, "issues", issues)
+
+        with pytest.raises(ValueError) as exc_info:
+            constructor(forged)
+
+        assert issues.invoked == []
+        assert secret not in str(exc_info.value)
 
 
 class _HostileExceptionType(type):

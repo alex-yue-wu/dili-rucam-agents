@@ -42,6 +42,40 @@ def report_for(payload: dict = VALID_PAYLOAD) -> str:
     )
 
 
+class HostileValidationIssues:
+    def __init__(self, secret: str) -> None:
+        self.secret = secret
+        self.invoked: list[str] = []
+
+    def _raise(self, hook: str):
+        self.invoked.append(hook)
+        raise RuntimeError(f"{hook}: {self.secret}")
+
+    def __iter__(self):
+        return self._raise("__iter__")
+
+    def __len__(self):
+        return self._raise("__len__")
+
+    def __getitem__(self, key):
+        return self._raise("__getitem__")
+
+    def __bool__(self):
+        return self._raise("__bool__")
+
+    def __str__(self):
+        return self._raise("__str__")
+
+    def __repr__(self):
+        return self._raise("__repr__")
+
+
+def forged_diagnostic_with_issues(issues: object) -> SafeValidationDiagnostic:
+    forged = object.__new__(SafeValidationDiagnostic)
+    object.__setattr__(forged, "issues", issues)
+    return forged
+
+
 def test_validate_analyst_report_returns_typed_payload():
     result = validate_analyst_report(report_for())
     assert result.payload.total_score == 6
@@ -149,6 +183,32 @@ def test_legacy_parser_selects_last_unfenced_json_object():
     assert parse_section_c_payload(report, allow_legacy_json=True) == VALID_PAYLOAD
 
 
+@pytest.mark.parametrize("constant", ("NaN", "Infinity", "-Infinity"))
+@pytest.mark.parametrize("allow_legacy_json", (False, True))
+def test_section_c_parser_rejects_non_standard_numeric_constants_at_parse_time(
+    constant, allow_legacy_json
+):
+    report = report_for().replace("6.4", constant, 1)
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        parse_section_c_payload(report, allow_legacy_json=allow_legacy_json)
+
+    assert exc_info.value.diagnostic == SafeValidationDiagnostic(
+        (("SECTION_C", "invalid_json"),)
+    )
+
+
+def test_schema_reports_overflowed_standard_json_ratio_as_invalid_number():
+    report = report_for().replace("6.4", "1e999", 1)
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report(report)
+
+    assert exc_info.value.diagnostic == SafeValidationDiagnostic(
+        (("R_ratio", "invalid_number"),)
+    )
+
+
 def test_validation_diagnostic_omits_model_controlled_values_and_urls():
     secret = "MODEL-CONTROLLED-SECRET"
     payload = {
@@ -207,3 +267,27 @@ def test_validation_diagnostic_is_structured_allowlisted_and_forge_resistant():
     object.__setattr__(forged, "issues", (("total_score", secret),))
     with pytest.raises(ValueError):
         validate_validation_diagnostic(forged)
+
+
+def test_validation_diagnostic_revalidation_never_executes_hostile_issues_hooks():
+    secret = "HOSTILE-VALIDATION-ITERABLE-SECRET"
+    issues = HostileValidationIssues(secret)
+    forged = forged_diagnostic_with_issues(issues)
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_validation_diagnostic(forged)
+
+    assert issues.invoked == []
+    assert secret not in str(exc_info.value)
+
+
+def test_validation_error_constructor_canonicalizes_hostile_issues_without_hooks():
+    secret = "HOSTILE-VALIDATOR-ERROR-SECRET"
+    issues = HostileValidationIssues(secret)
+    forged = forged_diagnostic_with_issues(issues)
+
+    error = AnalystReportValidationError(forged)
+
+    assert issues.invoked == []
+    assert error.diagnostic == SafeValidationDiagnostic((("report", "invalid_report"),))
+    assert secret not in str(error)

@@ -498,6 +498,78 @@ def test_checkpoint_store_revalidates_validation_diagnostic_before_any_write(
     assert secret in artifact_text
 
 
+def test_checkpoint_store_never_executes_hostile_validation_issues_before_write(
+    tmp_path: Path,
+):
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    store.record_running(identity(), attempt=1)
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    manifest_before = manifest_path.read_bytes()
+    secret = "HOSTILE-CHECKPOINT-ISSUES-SECRET"
+
+    class HostileIssues:
+        def __init__(self):
+            self.invoked = []
+
+        def _raise(self, hook):
+            self.invoked.append(hook)
+            raise RuntimeError(f"{hook}: {secret}")
+
+        def __iter__(self):
+            return self._raise("__iter__")
+
+        def __len__(self):
+            return self._raise("__len__")
+
+        def __repr__(self):
+            return self._raise("__repr__")
+
+    issues = HostileIssues()
+    forged = object.__new__(SafeValidationDiagnostic)
+    object.__setattr__(forged, "issues", issues)
+
+    with pytest.raises(ValueError) as exc_info:
+        store.record_failure(
+            identity(),
+            attempt=1,
+            failure_kind="validation",
+            error=f"caller text {secret}",
+            report_text=f"invalid report {secret}",
+            validation_diagnostic=forged,
+        )
+
+    assert issues.invoked == []
+    assert secret not in str(exc_info.value)
+    assert manifest_path.read_bytes() == manifest_before
+    assert not (tmp_path / "attempts").exists()
+
+
+def test_checkpoint_store_rejects_non_finite_report_before_any_mutation(
+    tmp_path: Path,
+):
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    store.record_running(identity(), attempt=1)
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    manifest_before = manifest_path.read_bytes()
+    non_finite_report = complete_report().replace("6.4", "Infinity", 1)
+
+    with pytest.raises(ValueError):
+        store.record_completed(identity(), attempt=1, report_text=non_finite_report)
+
+    assert manifest_path.read_bytes() == manifest_before
+    assert not (tmp_path / identity().report_filename).exists()
+
+
 def test_checkpoint_store_rejects_invalid_failure_kind_before_any_write(
     tmp_path: Path,
 ):

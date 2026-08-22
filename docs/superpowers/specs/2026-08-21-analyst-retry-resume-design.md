@@ -72,6 +72,9 @@ The RUCAM schema must be aligned with the production prompts before it is used a
 - `other_causes_excluded` is the canonical emitted field.
 - `alternative_causes_excluded` is accepted as a legacy input alias.
 - The allowed injury-pattern and R-ratio missing-value policy must match the production contract: `"Not reported"` and `null` are accepted when the case bundle lacks the evidence needed to calculate them.
+- A reported R-ratio must be finite and non-negative. Strict JSON parsing rejects
+  the non-standard constants `NaN`, `Infinity`, and `-Infinity`, and the model
+  boundary independently rejects non-finite direct Python inputs.
 - Canonical persisted payloads use `other_causes_excluded`.
 
 `batch.py`, `pipeline.py`, and analyst retry handling all consume this validator. No component implements a separate definition of report success.
@@ -156,6 +159,11 @@ An analyst fingerprint includes:
 The enabled analyst set is stored for observability but is not included in an individual analyst fingerprint. Enabling Delta later must not invalidate successful Alpha, Beta, and Gamma reports.
 
 Runtime case-bundle content and transient retry diagnostics are excluded from the instruction-contract hash. PDF bytes remain a separate fingerprint input, and retry diagnostics are sanitized to stable Pydantic field paths and messages before they enter retry prompts or manifest history.
+
+Validation diagnostics are revalidated without materializing, iterating, or
+rendering their untrusted `issues` value before exact-type checks. A low-level
+forged diagnostic therefore cannot execute iterable or representation hooks at a
+public, terminal, persistence, or batch-rendering boundary.
 
 A checkpoint is reusable only when:
 
