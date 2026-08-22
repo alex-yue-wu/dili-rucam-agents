@@ -13,30 +13,51 @@ from dili_rucam_agents.batch import (
 )
 from dili_rucam_agents.crew.crew import AnalystAttemptEvent, AnalystExecutionError
 from dili_rucam_agents.pipeline import is_end_to_end_complete, run_end_to_end
-from dili_rucam_agents.validators.analyst_report import validate_analyst_report
+from dili_rucam_agents.validators.analyst_report import (
+    AnalystReportValidationError,
+    validate_analyst_report,
+)
 
 
-def complete_report() -> str:
+def complete_report(total_score: int = 6) -> str:
+    rucam_scores = {
+        "time_to_onset": 2,
+        "course": 1,
+        "risk_factors": 0,
+        "concomitant_drugs": 0,
+        "other_causes_excluded": 2,
+        "known_hepatotoxicity": 1,
+        "rechallenge": 0,
+    }
+    if total_score == 7:
+        rucam_scores["known_hepatotoxicity"] = 2
+    elif total_score == 8:
+        rucam_scores["course"] = 2
+        rucam_scores["known_hepatotoxicity"] = 2
+    elif total_score != 6:
+        raise ValueError("complete_report only supports scores from 6 through 8")
     payload = {
         "injury_pattern": "hepatocellular",
         "R_ratio": 6.4,
-        "rucam_scores": {
-            "time_to_onset": 2,
-            "course": 1,
-            "risk_factors": 0,
-            "concomitant_drugs": 0,
-            "other_causes_excluded": 2,
-            "known_hepatotoxicity": 1,
-            "rechallenge": 0,
-        },
-        "total_score": 6,
+        "rucam_scores": rucam_scores,
+        "total_score": total_score,
         "category": "Probable",
     }
     return (
         "## SECTION A\n\nClinical summary\n\n"
-        "## SECTION B\n\n| Item | Score |\n| --- | --- |\n| Total | 6 |\n\n"
+        f"## SECTION B\n\n| Item | Score |\n| --- | --- |\n| Total | {total_score} |\n\n"
         f"## SECTION C\n\n```json\n{json.dumps(payload)}\n```\n"
     )
+
+
+def write_complete_reports(result_dir: Path) -> None:
+    result_dir.mkdir(parents=True, exist_ok=True)
+    for report_name in (
+        "analyst-alpha_report.md",
+        "analyst-beta_report.md",
+        "analyst-gamma_report.md",
+    ):
+        (result_dir / report_name).write_text(complete_report(), encoding="utf-8")
 
 
 def test_extract_section_c_json_parses_last_json_block():
@@ -102,6 +123,10 @@ def test_extract_section_c_json_recovers_common_malformed_llm_json():
         "Course inferred from qualitative description (no numeric trajectory reported",
     ]
 
+    strict_report = "## SECTION A\n\nSummary\n\n## SECTION B\n\nTable\n\n" + report_text
+    with pytest.raises(AnalystReportValidationError, match="Invalid SECTION C JSON"):
+        validate_analyst_report(strict_report)
+
 
 def test_extract_section_c_json_parses_unfenced_json_below_section_c():
     report_text = """
@@ -142,7 +167,7 @@ def test_extract_section_c_json_raises_helpful_error_for_summary_placeholder():
         extract_section_c_json(report_text)
         assert False, "expected ValueError"
     except ValueError as exc:
-        assert "summary placeholder" in str(exc)
+        assert "Unable to locate SECTION C" in str(exc)
 
 
 def test_extract_section_c_json_raises_helpful_error_for_truncated_report():
@@ -162,7 +187,7 @@ Complete narrative.
         extract_section_c_json(report_text)
         assert False, "expected ValueError"
     except ValueError as exc:
-        assert "truncated before SECTION C" in str(exc)
+        assert "Unable to locate SECTION C" in str(exc)
 
 
 def test_extract_ground_truth_rucam_score_reads_stable_field():
@@ -214,7 +239,7 @@ def test_run_batch_folder_writes_summary_workbook(tmp_path: Path, monkeypatch):
             "analyst-gamma_report.md",
         ):
             result_dir.joinpath(report_name).write_text(
-                '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+                complete_report(7),
                 encoding="utf-8",
             )
         if kwargs.get("enable_score_masking"):
@@ -259,6 +284,148 @@ def test_run_batch_folder_writes_summary_workbook(tmp_path: Path, monkeypatch):
     assert not log_path.exists()
 
 
+def test_run_batch_folder_forwards_restart_limit_and_resume(tmp_path, monkeypatch):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+    captured_kwargs = {}
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.is_end_to_end_complete", lambda *args, **kwargs: False
+    )
+
+    def fake_run_end_to_end(pdf_path, output_dir=None, **kwargs):
+        captured_kwargs.update(kwargs)
+        write_complete_reports(Path(output_dir))
+        return "ok"
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
+    )
+    run_batch_folder(
+        input_dir=str(input_dir), output_dir=str(output_dir), max_restarts=1
+    )
+    assert captured_kwargs["max_restarts"] == 1
+    assert captured_kwargs["resume"] is True
+
+
+def test_force_rerun_disables_pipeline_resume(tmp_path, monkeypatch):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+    captured_kwargs = {}
+
+    def fake_run_end_to_end(pdf_path, output_dir=None, **kwargs):
+        captured_kwargs.update(kwargs)
+        write_complete_reports(Path(output_dir))
+        return "ok"
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
+    )
+    run_batch_folder(
+        input_dir=str(input_dir), output_dir=str(output_dir), force_rerun=True
+    )
+    assert captured_kwargs["resume"] is False
+
+
+def test_rerun_skips_completed_pdf_then_runs_failed_pdf(tmp_path, monkeypatch):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    for name in ("case-a.pdf", "case-b.pdf"):
+        (input_dir / name).write_bytes(b"%PDF-1.4")
+    case_a_dir = output_dir / "case-a"
+    write_complete_reports(case_a_dir)
+    (case_a_dir / "run_status.json").write_text(
+        json.dumps(
+            {
+                "pdf_filename": "case-a.pdf",
+                "status": "completed",
+                "masking_enabled": False,
+                "strict_scoring": False,
+                "enabled_analysts": [
+                    "analyst_alpha",
+                    "analyst_beta",
+                    "analyst_gamma",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.is_end_to_end_complete",
+        lambda pdf_path, *args, **kwargs: Path(pdf_path).name == "case-a.pdf",
+    )
+
+    def fake_run_end_to_end(pdf_path, output_dir=None, **kwargs):
+        calls.append(Path(pdf_path).name)
+        write_complete_reports(Path(output_dir))
+        return "ok"
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
+    )
+    summary_path = run_batch_folder(
+        input_dir=str(input_dir), output_dir=str(output_dir)
+    )
+    workbook = load_workbook(summary_path)
+    summary_workbook_rows = [
+        workbook.active.cell(row=index, column=1).value for index in (2, 3)
+    ]
+    assert calls == ["case-b.pdf"]
+    assert summary_workbook_rows == ["case-a.pdf", "case-b.pdf"]
+
+
+def test_run_batch_folder_rejects_more_than_two_restarts(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end",
+        lambda *args, **kwargs: calls.append("called"),
+    )
+    with pytest.raises(ValueError, match="0 through 2"):
+        run_batch_folder(
+            input_dir=str(tmp_path / "input"),
+            output_dir=str(tmp_path / "output"),
+            max_restarts=3,
+        )
+    assert calls == []
+
+
+def test_run_batch_folder_records_analyst_failure_details(tmp_path, monkeypatch):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+
+    def fake_run_end_to_end(*args, **kwargs):
+        raise AnalystExecutionError(
+            analyst_key="analyst_beta",
+            attempts=3,
+            failure_kind="validation",
+            last_error="Invalid SECTION C JSON",
+        )
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
+    )
+
+    with pytest.raises(RuntimeError, match="case.pdf"):
+        run_batch_folder(input_dir=str(input_dir), output_dir=str(output_dir))
+
+    status = json.loads(
+        (output_dir / "case" / "run_status.json").read_text(encoding="utf-8")
+    )
+    assert status["failed_analyst"] == "analyst_beta"
+    assert status["attempts"] == 3
+    assert status["failure_kind"] == "validation"
+
+
 def test_run_batch_folder_writes_log_only_in_debug_mode(tmp_path: Path, monkeypatch):
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -280,7 +447,7 @@ def test_run_batch_folder_writes_log_only_in_debug_mode(tmp_path: Path, monkeypa
             "analyst-gamma_report.md",
         ):
             result_dir.joinpath(report_name).write_text(
-                '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+                complete_report(7),
                 encoding="utf-8",
             )
         return "ok"
@@ -510,7 +677,7 @@ def test_run_batch_folder_skips_completed_pdf(tmp_path: Path, monkeypatch):
         "analyst-gamma_report.md",
     ):
         result_dir.joinpath(report_name).write_text(
-            '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+            complete_report(7),
             encoding="utf-8",
         )
     result_dir.joinpath("ground-truth-rucam-score_report.md").write_text(
@@ -531,6 +698,9 @@ def test_run_batch_folder_skips_completed_pdf(tmp_path: Path, monkeypatch):
         return "ok"
 
     monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.is_end_to_end_complete", lambda *args, **kwargs: True
+    )
 
     run_batch_folder(
         input_dir=str(input_dir),
@@ -568,7 +738,7 @@ def test_run_batch_folder_force_rerun_ignores_completed_status(tmp_path: Path, m
         "analyst-gamma_report.md",
     ):
         result_dir.joinpath(report_name).write_text(
-            '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+            complete_report(7),
             encoding="utf-8",
         )
 
@@ -588,7 +758,7 @@ def test_run_batch_folder_force_rerun_ignores_completed_status(tmp_path: Path, m
             "analyst-gamma_report.md",
         ):
             result_dir.joinpath(report_name).write_text(
-                '## SECTION C\n```json\n{"total_score": 8, "category": "Probable"}\n```\n',
+                complete_report(8),
                 encoding="utf-8",
             )
         return "ok"
@@ -607,15 +777,24 @@ def test_run_batch_folder_force_rerun_ignores_completed_status(tmp_path: Path, m
 def test_is_pdf_run_complete_requires_status_and_parseable_reports(tmp_path: Path):
     result_dir = tmp_path / "case-a"
     result_dir.mkdir()
+    pdf_path = tmp_path / "case-a.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
 
     assert not _is_pdf_run_complete(
+        pdf_path=pdf_path,
         pdf_output_dir=result_dir,
+        prompt_path=None,
         enabled_analyst_configs=[
             {"key": "analyst_alpha"},
             {"key": "analyst_beta"},
             {"key": "analyst_gamma"},
         ],
         enable_score_masking=True,
+        strict_scoring=False,
+        use_analyst_delta=False,
+        use_analyst_epsilon=False,
+        use_analyst_zeta=False,
+        use_analyst_eta=False,
     )
 
 
@@ -669,7 +848,7 @@ def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(tm
         result_dir = Path(output_dir)
         result_dir.mkdir(parents=True, exist_ok=True)
         result_dir.joinpath("analyst-alpha_report.md").write_text(
-            '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+            complete_report(7),
             encoding="utf-8",
         )
         result_dir.joinpath("analyst-beta_report.md").write_text(
@@ -677,7 +856,7 @@ def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(tm
             encoding="utf-8",
         )
         result_dir.joinpath("analyst-gamma_report.md").write_text(
-            '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+            complete_report(7),
             encoding="utf-8",
         )
         return "ok"
@@ -732,7 +911,7 @@ def test_run_batch_folder_reruns_failed_pdf_on_resume(tmp_path: Path, monkeypatc
             "analyst-gamma_report.md",
         ):
             result_dir.joinpath(report_name).write_text(
-                '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
+                complete_report(7),
                 encoding="utf-8",
             )
         return "ok"
