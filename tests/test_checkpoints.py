@@ -308,6 +308,41 @@ def test_reusing_contracted_topology_refreshes_manifest_metadata(tmp_path: Path)
     assert manifest["enabled_analysts"] == ["analyst_alpha"]
 
 
+def test_contracted_topology_read_only_loading_never_writes_manifest(
+    tmp_path: Path, monkeypatch
+):
+    expanded_store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha", "analyst_delta"),
+    )
+    alpha = identity()
+    delta = identity("analyst_delta", "fingerprint-d")
+    expanded_store.record_completed(alpha, attempt=1, report_text=complete_report())
+    expanded_store.record_completed(delta, attempt=1, report_text=complete_report())
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    manifest_before = manifest_path.read_bytes()
+
+    read_only_store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    writer = Mock(side_effect=AssertionError("read-only completion path wrote"))
+    monkeypatch.setattr(read_only_store, "_write_manifest", writer)
+
+    reports = read_only_store.load_compatible_reports(
+        [alpha], resume=True, adopt_legacy=False
+    )
+
+    assert reports == {"analyst_alpha": complete_report()}
+    assert read_only_store.all_completed([alpha])
+    writer.assert_not_called()
+    assert manifest_path.read_bytes() == manifest_before
+
+
 def test_store_adopts_valid_legacy_report(tmp_path: Path):
     report_path = tmp_path / "analyst-alpha_report.md"
     report_path.write_text(complete_report(), encoding="utf-8")

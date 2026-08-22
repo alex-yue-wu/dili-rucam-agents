@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 from openpyxl import load_workbook
 import pytest
@@ -747,6 +748,45 @@ def test_is_end_to_end_complete_uses_validated_checkpoint_manifest(
 
     assert is_end_to_end_complete(str(pdf_path), str(output_dir))
     assert manifest_path.read_text(encoding="utf-8") == manifest_before
+
+
+def test_is_end_to_end_complete_does_not_write_contracted_topology(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    analyst_keys = (
+        "analyst_alpha",
+        "analyst_beta",
+        "analyst_gamma",
+        "analyst_delta",
+    )
+
+    def seed_run(pdf_path, prompt_path=None, **kwargs):
+        for key in analyst_keys:
+            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
+            kwargs["on_attempt"](
+                AnalystAttemptEvent(
+                    key, 1, 3, "completed", report_text=complete_report()
+                )
+            )
+        return "ok", {key: complete_report() for key in analyst_keys}
+
+    monkeypatch.setattr(pipeline_module, "run_crew", seed_run)
+    run_end_to_end(
+        str(pdf_path),
+        output_dir=str(output_dir),
+        use_analyst_delta=True,
+    )
+    manifest_path = output_dir / "analyst_checkpoints.json"
+    manifest_before = manifest_path.read_bytes()
+    writer = Mock(side_effect=AssertionError("completion check wrote manifest"))
+    monkeypatch.setattr("dili_rucam_agents.checkpoints.atomic_write_json", writer)
+
+    assert is_end_to_end_complete(str(pdf_path), str(output_dir))
+    writer.assert_not_called()
+    assert manifest_path.read_bytes() == manifest_before
 
 
 def test_run_batch_folder_skips_completed_pdf(tmp_path: Path, monkeypatch):

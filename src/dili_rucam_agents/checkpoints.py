@@ -126,9 +126,14 @@ class AnalystCheckpointStore:
         resume: bool,
         legacy_context: LegacyRunContext | None = None,
         adopt_legacy: bool = True,
+        allow_manifest_updates: bool | None = None,
     ) -> dict[str, str]:
         if not resume:
             return {}
+        if not adopt_legacy:
+            allow_manifest_updates = False
+        elif allow_manifest_updates is None:
+            allow_manifest_updates = True
 
         manifest = self._read_manifest()
         if manifest is not None:
@@ -137,6 +142,7 @@ class AnalystCheckpointStore:
             if (
                 set(reports) == expected_keys
                 and manifest.get("enabled_analysts") != self.enabled_analysts
+                and allow_manifest_updates
             ):
                 self._write_manifest(manifest)
             return reports
@@ -147,7 +153,7 @@ class AnalystCheckpointStore:
             return {}
 
         reports = self._valid_legacy_reports(identities)
-        if adopt_legacy:
+        if adopt_legacy and allow_manifest_updates:
             for identity in identities:
                 report_text = reports.get(identity.key)
                 if report_text is not None:
@@ -244,6 +250,7 @@ class AnalystCheckpointStore:
             resume=True,
             legacy_context=legacy_context,
             adopt_legacy=False,
+            allow_manifest_updates=False,
         )
         return len(reports) == len(identities)
 

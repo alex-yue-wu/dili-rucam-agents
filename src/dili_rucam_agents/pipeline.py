@@ -271,6 +271,7 @@ def is_end_to_end_complete(
         resume=True,
         legacy_context=context.legacy_context,
         adopt_legacy=False,
+        allow_manifest_updates=False,
     )
     if set(reports) != set(context.identities):
         return False
