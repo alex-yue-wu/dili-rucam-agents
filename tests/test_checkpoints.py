@@ -200,6 +200,57 @@ def test_store_reuses_only_matching_completed_valid_report(tmp_path: Path):
     )
 
 
+def test_read_only_loading_rejects_schema_v2_without_mutation(tmp_path: Path):
+    secret = "MODEL-CONTROLLED-V2-MANIFEST-SECRET"
+    report = complete_report()
+    (tmp_path / "analyst-alpha_report.md").write_text(report, encoding="utf-8")
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "pdf_filename": "case.pdf",
+                "pdf_sha256": "pdf",
+                "enabled_analysts": ["analyst_alpha"],
+                "analysts": {
+                    "analyst_alpha": {
+                        "status": "completed",
+                        "report_file": "analyst-alpha_report.md",
+                        "fingerprint": "fingerprint-a",
+                        "last_error": secret,
+                        "attempt_history": [
+                            {
+                                "failure_kind": "validation",
+                                "error": secret,
+                            }
+                        ],
+                    }
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    manifest_before = manifest_path.read_bytes()
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+
+    reports = store.load_compatible_reports(
+        [identity()],
+        resume=True,
+        adopt_legacy=False,
+        allow_manifest_updates=False,
+    )
+
+    assert reports == {}
+    assert not store.all_completed([identity()])
+    assert manifest_path.read_bytes() == manifest_before
+
+
 def test_store_rejects_invalid_report_even_when_manifest_says_completed(tmp_path: Path):
     store = AnalystCheckpointStore(
         tmp_path,

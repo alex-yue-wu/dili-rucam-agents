@@ -104,6 +104,12 @@ pass strict canonical validation and their existing batch context, when present,
 remains compatible. A manifestless completed batch enters normal resume once to
 create the versioned manifest; only a compatible versioned manifest may satisfy the
 read-only batch completion gate.
+Schema v3 is the first manifest version covered by the structured validation-
+diagnostic boundary. Pre-v3 manifests are rejected rather than migrated because
+schema v2 allowed arbitrary validation-error strings in current and historical
+fields. Read-only completion returns incomplete without mutation; normal execution
+reruns analysts and creates a clean v3 manifest with no inherited error text or
+attempt history.
 `--force-rerun` disables all report and manifest reuse for a batch invocation,
 including legacy-output adoption.
 
@@ -117,8 +123,8 @@ All checks were offline; no live model provider was invoked.
   F541 in `tasks.py`. The feature-introduced E402 was removed.
 - `uv run ruff format --check <Task 8 touched Python files>` — all 10 files are
   formatted. No unrelated Python files were reformatted.
-- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 155 passed.
-- `uv run pytest -q` — 180 passed, with five pre-existing PyMuPDF/SWIG deprecation
+- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 157 passed.
+- `uv run pytest -q` — 182 passed, with five pre-existing PyMuPDF/SWIG deprecation
   warnings from the ingestion smoke tests.
 - `git diff --check`, `git status --short`, and `git diff --stat 0a1dad6..HEAD` —
   run during the final scope inspection; no whitespace errors or generated files

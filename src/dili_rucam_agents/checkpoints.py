@@ -25,7 +25,7 @@ from dili_rucam_agents.diagnostics import (
 from dili_rucam_agents.validators.analyst_report import validate_analyst_report
 
 
-CHECKPOINT_SCHEMA_VERSION = 2
+CHECKPOINT_SCHEMA_VERSION = 3
 CHECKPOINT_FILENAME = "analyst_checkpoints.json"
 
 

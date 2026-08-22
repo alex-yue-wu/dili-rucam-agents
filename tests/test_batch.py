@@ -755,6 +755,65 @@ def test_is_end_to_end_complete_uses_validated_checkpoint_manifest(
     assert manifest_path.read_text(encoding="utf-8") == manifest_before
 
 
+def test_schema_v2_manifest_cannot_skip_execution_and_is_replaced_cleanly(
+    tmp_path, monkeypatch
+):
+    secret = "MODEL-CONTROLLED-V2-MANIFEST-SECRET"
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    analyst_keys = ("analyst_alpha", "analyst_beta", "analyst_gamma")
+
+    def seed_run(pdf_path, prompt_path=None, **kwargs):
+        for key in analyst_keys:
+            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
+            kwargs["on_attempt"](
+                AnalystAttemptEvent(
+                    key, 1, 3, "completed", report_text=complete_report()
+                )
+            )
+        return "ok", {key: complete_report() for key in analyst_keys}
+
+    monkeypatch.setattr(pipeline_module, "run_crew", seed_run)
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+    manifest_path = output_dir / "analyst_checkpoints.json"
+    legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    legacy_manifest["schema_version"] = 2
+    for entry in legacy_manifest["analysts"].values():
+        entry["last_error"] = secret
+        entry["attempt_history"] = [{"failure_kind": "validation", "error": secret}]
+    manifest_path.write_text(json.dumps(legacy_manifest, indent=2), encoding="utf-8")
+    manifest_before = manifest_path.read_bytes()
+
+    assert not is_end_to_end_complete(str(pdf_path), str(output_dir))
+    assert manifest_path.read_bytes() == manifest_before
+
+    captured_completed_reports = []
+
+    def replacement_run(pdf_path, prompt_path=None, **kwargs):
+        captured_completed_reports.append(dict(kwargs["completed_reports"]))
+        for key in analyst_keys:
+            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
+            kwargs["on_attempt"](
+                AnalystAttemptEvent(
+                    key, 1, 3, "completed", report_text=complete_report()
+                )
+            )
+        return "ok", {key: complete_report() for key in analyst_keys}
+
+    monkeypatch.setattr(pipeline_module, "run_crew", replacement_run)
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+
+    current_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert captured_completed_reports == [{}]
+    assert current_manifest["schema_version"] == 3
+    assert secret not in json.dumps(current_manifest)
+    assert all(
+        entry["status"] == "completed"
+        for entry in current_manifest["analysts"].values()
+    )
+
+
 def test_is_end_to_end_complete_does_not_write_contracted_topology(
     tmp_path, monkeypatch
 ):

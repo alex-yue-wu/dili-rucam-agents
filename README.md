@@ -250,6 +250,12 @@ current versioned manifest, provided any existing `run_status.json` matches the 
 filename, masking mode, and strict-scoring mode. A later compatible batch may then
 skip normally. Invalid or incompatible legacy reports are run again.
 
+Current checkpoint manifests use schema v3. Schema-v2 manifests predate the
+structured diagnostic boundary and can contain arbitrary validation-error text, so
+they are strictly incompatible: read-only completion does not skip or rewrite
+them, and a normal resume reruns analysts before replacing the file with a clean v3
+manifest. No schema-v2 diagnostic or attempt history is migrated.
+
 `--force-rerun` is a batch CLI control that bypasses every analyst checkpoint,
 including legacy-output adoption, for that invocation. Invalid model outputs are
 retained under `attempts/`, and `analyst_checkpoints.json` records per-analyst

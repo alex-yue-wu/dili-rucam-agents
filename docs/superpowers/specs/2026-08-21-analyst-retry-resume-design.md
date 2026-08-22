@@ -116,7 +116,7 @@ The manifest has a versioned structure:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "pdf_sha256": "...",
   "analysts": {
     "analyst_alpha": {
@@ -133,6 +133,13 @@ The manifest has a versioned structure:
 ```
 
 Manifest writes are atomic. Status values are `pending`, `running`, `completed`, and `failed`.
+
+Schema v3 is the first manifest version whose validation diagnostics are
+independently structured and rendered from fixed messages at every public and
+persistence boundary. Earlier schema-v2 manifests may contain model-controlled
+free-text errors, so they are never reusable or migrated in place. Read-only
+completion treats them as incomplete without mutation; normal execution reruns the
+analysts and replaces the old manifest with a clean v3 manifest.
 
 An analyst fingerprint includes:
 
