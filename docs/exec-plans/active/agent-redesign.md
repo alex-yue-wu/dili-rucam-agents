@@ -109,8 +109,8 @@ All checks were offline; no live model provider was invoked.
   F541 in `tasks.py`. The feature-introduced E402 was removed.
 - `uv run ruff format --check <Task 7 touched Python files>` — all 6 files are
   formatted. No unrelated Python files were reformatted.
-- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 134 passed.
-- `uv run pytest -q` — 159 passed, with five pre-existing PyMuPDF/SWIG deprecation
+- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 141 passed.
+- `uv run pytest -q` — 166 passed, with five pre-existing PyMuPDF/SWIG deprecation
   warnings from the ingestion smoke tests.
 - `git diff --check`, `git status --short`, and `git diff --stat 0a1dad6..HEAD` —
   run during the final scope inspection; no whitespace errors or generated files

@@ -52,16 +52,21 @@ def format_execution_error(exc: BaseException) -> str:
 def build_execution_diagnostic(exc: BaseException) -> SafeExecutionDiagnostic:
     """Extract allowlisted execution metadata without consulting exception text."""
 
-    exception_type = type(exc).__name__
-    if not _SAFE_TYPE_RE.fullmatch(exception_type):
-        exception_type = "Exception"
-    return SafeExecutionDiagnostic(
-        exception_type=exception_type,
-        status_code=_safe_integer_attribute(
-            exc, "status_code", minimum=100, maximum=599
-        ),
-        errno=_safe_integer_attribute(exc, "errno", minimum=-9999, maximum=9999),
-    )
+    try:
+        exception_type = type(exc).__name__
+        if type(exception_type) is not str or not _SAFE_TYPE_RE.fullmatch(
+            exception_type
+        ):
+            return SafeExecutionDiagnostic("Exception")
+        return SafeExecutionDiagnostic(
+            exception_type=exception_type,
+            status_code=_safe_integer_attribute(
+                exc, "status_code", minimum=100, maximum=599
+            ),
+            errno=_safe_integer_attribute(exc, "errno", minimum=-9999, maximum=9999),
+        )
+    except BaseException:
+        return SafeExecutionDiagnostic("Exception")
 
 
 def validate_execution_diagnostic(
@@ -117,13 +122,12 @@ def _safe_integer_attribute(
     minimum: int,
     maximum: int,
 ) -> int | None:
-    try:
-        value = getattr(exc, attribute, None)
-    except Exception:
+    value = getattr(exc, attribute, None)
+    if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return int(value) if minimum <= value <= maximum else None
+    if type(value) is not int:
+        raise ValueError("unsafe numeric diagnostic value")
+    return value if minimum <= value <= maximum else None
 
 
 __all__ = [

@@ -42,6 +42,9 @@ from .tasks import (
 TaskMap = Dict[str, Task]
 
 AttemptStatus = Literal["running", "validation_failed", "execution_failed", "completed"]
+_ATTEMPT_STATUSES = frozenset(
+    ("running", "validation_failed", "execution_failed", "completed")
+)
 
 
 @dataclass(frozen=True)
@@ -55,20 +58,64 @@ class AnalystAttemptEvent:
     execution_diagnostic: SafeExecutionDiagnostic | None = None
 
     def __post_init__(self) -> None:
-        if self.status == "execution_failed":
-            if self.error is not None:
+        if type(self.analyst_key) is not str:
+            raise TypeError("analyst_key must be a string")
+        if not self.analyst_key:
+            raise ValueError("analyst_key must not be empty")
+        if type(self.attempt) is not int:
+            raise TypeError("attempt must be an integer")
+        if type(self.max_attempts) is not int:
+            raise TypeError("max_attempts must be an integer")
+        if (
+            self.attempt < 1
+            or self.max_attempts < 1
+            or self.attempt > self.max_attempts
+        ):
+            raise ValueError("attempt must be between 1 and max_attempts")
+        if type(self.status) is not str or self.status not in _ATTEMPT_STATUSES:
+            raise ValueError("status must be a supported analyst attempt status")
+        if self.error is not None and type(self.error) is not str:
+            raise TypeError("error must be a string or None")
+        if self.report_text is not None and type(self.report_text) is not str:
+            raise TypeError("report_text must be a string or None")
+
+        if self.status == "running":
+            if (
+                self.error is not None
+                or self.report_text is not None
+                or self.execution_diagnostic is not None
+            ):
+                raise ValueError("running events cannot carry result data")
+            return
+        if self.status == "validation_failed":
+            if self.error is None or self.report_text is None:
                 raise ValueError(
-                    "execution failure events cannot carry free-form error text"
+                    "validation failure events require error and report_text"
+                )
+            if self.execution_diagnostic is not None:
+                raise ValueError(
+                    "validation failure events cannot carry execution diagnostics"
+                )
+            return
+        if self.status == "execution_failed":
+            if self.error is not None or self.report_text is not None:
+                raise ValueError(
+                    "execution failure events cannot carry error or report_text"
+                )
+            if self.execution_diagnostic is None:
+                raise ValueError(
+                    "execution failure events require an execution diagnostic"
                 )
             object.__setattr__(
                 self,
                 "execution_diagnostic",
                 validate_execution_diagnostic(self.execution_diagnostic),
             )
-        elif self.execution_diagnostic is not None:
-            raise ValueError(
-                "execution_diagnostic is only valid for execution failure events"
-            )
+            return
+        if self.error is not None or self.report_text is None:
+            raise ValueError("completed events require report_text and no error")
+        if self.execution_diagnostic is not None:
+            raise ValueError("completed events cannot carry execution diagnostics")
 
 
 class AnalystExecutionError(RuntimeError):

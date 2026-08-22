@@ -7,11 +7,16 @@ import pytest
 
 from dili_rucam_agents.checkpoints import AnalystCheckpointStore, AnalystIdentity
 from dili_rucam_agents.crew.crew import (
+    AnalystAttemptEvent,
     AnalystExecutionError,
     _prepare_case_bundle_json,
     build_crew,
     run_crew,
     validate_max_restarts,
+)
+from dili_rucam_agents.diagnostics import (
+    SafeExecutionDiagnostic,
+    build_execution_diagnostic,
 )
 from dili_rucam_agents.ground_truth import load_ground_truth_prompt
 from dili_rucam_agents.crew.tasks import (
@@ -285,6 +290,200 @@ def test_execution_exception_diagnostics_are_safe_across_retry_sinks(
     assert "ProviderRequestError" in manifest_text
     assert "status_code=503" in manifest_text
     assert exc_info.value.__cause__ is original_error
+
+
+def test_attempt_event_constructor_rejects_objects_in_shared_fields():
+    secret = "sk-live-CONSTRUCTOR-SECRET"
+    original_error = RuntimeError(f"patient text and credential {secret}")
+    valid_fields = {
+        "analyst_key": "analyst_alpha",
+        "attempt": 1,
+        "max_attempts": 3,
+        "status": "running",
+    }
+
+    for field_name in (
+        "analyst_key",
+        "attempt",
+        "max_attempts",
+        "status",
+        "error",
+        "report_text",
+    ):
+        with pytest.raises((TypeError, ValueError)) as exc_info:
+            AnalystAttemptEvent(**(valid_fields | {field_name: original_error}))
+        assert secret not in str(exc_info.value)
+
+
+def test_attempt_event_constructor_enforces_status_specific_invariants():
+    safe_diagnostic = SafeExecutionDiagnostic("ProviderError", status_code=503)
+
+    AnalystAttemptEvent("analyst_alpha", 1, 3, "running")
+    AnalystAttemptEvent(
+        "analyst_alpha",
+        1,
+        3,
+        "validation_failed",
+        error="SECTION C: invalid JSON",
+        report_text="incomplete",
+    )
+    AnalystAttemptEvent(
+        "analyst_alpha", 1, 3, "completed", report_text=complete_report()
+    )
+    AnalystAttemptEvent(
+        "analyst_alpha",
+        1,
+        3,
+        "execution_failed",
+        execution_diagnostic=safe_diagnostic,
+    )
+
+    invalid_events = (
+        {"status": "running", "error": "unexpected"},
+        {"status": "running", "report_text": "unexpected"},
+        {"status": "validation_failed", "error": None, "report_text": "bad"},
+        {"status": "validation_failed", "error": "bad", "report_text": None},
+        {"status": "completed", "report_text": None},
+        {"status": "completed", "report_text": complete_report(), "error": "bad"},
+        {
+            "status": "execution_failed",
+            "report_text": "unsafe",
+            "execution_diagnostic": safe_diagnostic,
+        },
+        {
+            "status": "execution_failed",
+            "error": "unsafe",
+            "execution_diagnostic": safe_diagnostic,
+        },
+        {"status": "execution_failed", "execution_diagnostic": RuntimeError("bad")},
+    )
+    for overrides in invalid_events:
+        with pytest.raises((TypeError, ValueError)):
+            AnalystAttemptEvent(
+                analyst_key="analyst_alpha",
+                attempt=1,
+                max_attempts=3,
+                **overrides,
+            )
+
+
+def test_direct_execution_event_serialization_contains_only_safe_diagnostic():
+    secret = "sk-live-DIRECT-CONSTRUCTOR-SECRET"
+
+    class ProviderRequestError(RuntimeError):
+        status_code = 503
+
+    original_error = ProviderRequestError(f"patient text and credential {secret}")
+    event = AnalystAttemptEvent(
+        "analyst_alpha",
+        1,
+        3,
+        "execution_failed",
+        execution_diagnostic=build_execution_diagnostic(original_error),
+    )
+
+    serialized = (
+        repr(event),
+        repr(asdict(event)),
+        repr(vars(event)),
+        pickle.dumps(event),
+    )
+    for value in serialized:
+        encoded = value if isinstance(value, bytes) else value.encode()
+        assert secret.encode() not in encoded
+        assert b"patient text" not in encoded
+    assert asdict(event)["execution_diagnostic"] == {
+        "exception_type": "ProviderRequestError",
+        "status_code": 503,
+        "errno": None,
+    }
+
+
+class _HostileExceptionType(type):
+    @property
+    def __name__(cls):
+        raise RuntimeError("hostile metaclass secret")
+
+
+class _HostileTypeNameError(RuntimeError, metaclass=_HostileExceptionType):
+    pass
+
+
+class _HostileStatusError(RuntimeError):
+    @property
+    def status_code(self):
+        raise RuntimeError("hostile status property secret")
+
+
+class _HostileInt(int):
+    def __int__(self):
+        raise RuntimeError("hostile integer conversion secret")
+
+
+class _HostileConversionError(RuntimeError):
+    status_code = _HostileInt(503)
+
+
+@pytest.mark.parametrize(
+    "hostility",
+    ("type_name", "status_property", "integer_conversion"),
+)
+def test_run_crew_retries_after_hostile_execution_metadata(monkeypatch, hostility):
+    error_types = {
+        "type_name": _HostileTypeNameError,
+        "status_property": _HostileStatusError,
+        "integer_conversion": _HostileConversionError,
+    }
+    hostile_error = error_types[hostility]("provider secret")
+    install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter((hostile_error, complete_report()))},
+    )
+    events = []
+
+    result = None
+    raised = False
+    try:
+        result = run_crew(
+            "dummy.pdf",
+            capture_reports=True,
+            max_restarts=1,
+            on_attempt=events.append,
+        )
+    except BaseException:
+        raised = True
+
+    assert raised is False
+    assert result is not None
+    _, reports = result
+    assert reports["analyst_alpha"] == complete_report()
+    assert [event.status for event in events] == [
+        "running",
+        "execution_failed",
+        "running",
+        "completed",
+    ]
+    assert events[1].execution_diagnostic == SafeExecutionDiagnostic("Exception")
+
+
+def test_terminal_error_chains_original_hostile_execution_exception(monkeypatch):
+    original_error = _HostileStatusError("patient and credential secret")
+    install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter((original_error,))},
+    )
+
+    execution_error = None
+    try:
+        run_crew("dummy.pdf", capture_reports=True, max_restarts=0)
+    except AnalystExecutionError as exc:
+        execution_error = exc
+    except BaseException:
+        pass
+
+    assert execution_error is not None
+    assert execution_error.last_error == "Execution error [type=Exception]"
+    assert execution_error.__cause__ is original_error
 
 
 def test_execution_error_constructor_drops_untrusted_last_error():
