@@ -27,10 +27,13 @@ def _read_int_env(*names: str) -> int | None:
     return None
 
 
-def _resolve_analyst_max_output_tokens(max_tokens_env: str) -> int | None:
+def resolve_analyst_max_output_tokens(max_tokens_env: str) -> int | None:
     return (
         _read_int_env(max_tokens_env, "ANALYST_MAX_TOKENS", "LLM_MAX_TOKENS") or 12000
     )
+
+
+_resolve_analyst_max_output_tokens = resolve_analyst_max_output_tokens
 
 
 def _build_routed_llm_kwargs(
@@ -158,7 +161,7 @@ def build_rucam_agent(
     )
     llm_kwargs = _build_routed_llm_kwargs(
         model=analyst_model,
-        max_output_tokens=_resolve_analyst_max_output_tokens(max_tokens_env),
+        max_output_tokens=resolve_analyst_max_output_tokens(max_tokens_env),
     )
 
     return Agent(
@@ -251,5 +254,6 @@ __all__ = [
     "build_ingestion_agent",
     "build_rucam_agent",
     "build_score_masking_agent",
+    "resolve_analyst_max_output_tokens",
     "resolve_rucam_model",
 ]

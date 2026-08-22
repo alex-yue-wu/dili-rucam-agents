@@ -3,10 +3,10 @@ from litellm.litellm_core_utils import litellm_logging
 
 from dili_rucam_agents.crew.agents import (
     _build_routed_llm_kwargs,
-    _resolve_analyst_max_output_tokens,
     build_ground_truth_rucam_score_finder_agent,
     build_rucam_agent,
     build_score_masking_agent,
+    resolve_analyst_max_output_tokens,
 )
 from dili_rucam_agents.crew.config import get_enabled_analyst_configs
 
@@ -238,7 +238,7 @@ def test_resolve_analyst_max_output_tokens_prefers_specific_env(monkeypatch):
     monkeypatch.setenv("ANALYST_GAMMA_MAX_TOKENS", "16000")
     monkeypatch.setenv("ANALYST_MAX_TOKENS", "8000")
 
-    assert _resolve_analyst_max_output_tokens("ANALYST_GAMMA_MAX_TOKENS") == 16000
+    assert resolve_analyst_max_output_tokens("ANALYST_GAMMA_MAX_TOKENS") == 16000
 
 
 def test_resolve_analyst_max_output_tokens_defaults_to_12000(monkeypatch):
@@ -246,7 +246,7 @@ def test_resolve_analyst_max_output_tokens_defaults_to_12000(monkeypatch):
     monkeypatch.delenv("ANALYST_MAX_TOKENS", raising=False)
     monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
 
-    assert _resolve_analyst_max_output_tokens("ANALYST_GAMMA_MAX_TOKENS") == 12000
+    assert resolve_analyst_max_output_tokens("ANALYST_GAMMA_MAX_TOKENS") == 12000
 
 
 def test_openrouter_model_with_free_suffix_is_normalized_correctly(monkeypatch):
