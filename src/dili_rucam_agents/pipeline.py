@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import argparse
-import json
-import re
+from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Optional
 
 from dili_rucam_agents.crew.config import get_enabled_analyst_configs
-from dili_rucam_agents.crew.crew import run_crew
+from dili_rucam_agents.crew.crew import (
+    AnalystAttemptEvent,
+    run_crew,
+    validate_max_restarts,
+)
+from dili_rucam_agents.crew.tasks import load_rucam_prompt
+from dili_rucam_agents.checkpoints import (
+    AnalystCheckpointStore,
+    AnalystIdentity,
+    LegacyRunContext,
+    atomic_write_text,
+    build_analyst_identities,
+)
 from dili_rucam_agents.masking import (
     MASK_TOKEN,
     extract_patient_specific_rucam_scores,
@@ -15,7 +27,6 @@ from dili_rucam_agents.masking import (
     parse_case_bundle_json,
 )
 
-_JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 _REPORT_FILENAME_MAP = {
     "masked_case_bundle": "masked-case-bundle_report.md",
     "ground_truth_rucam_score": "ground-truth-rucam-score_report.md",
@@ -29,6 +40,91 @@ _REPORT_FILENAME_MAP = {
 }
 
 
+@dataclass(frozen=True)
+class PipelineCheckpointContext:
+    store: AnalystCheckpointStore
+    identities: dict[str, AnalystIdentity]
+    legacy_context: LegacyRunContext
+
+
+def _build_checkpoint_context(
+    *,
+    pdf_path: Path,
+    output_dir: Path,
+    prompt_path: Path | None,
+    enable_score_masking: bool,
+    strict_scoring: bool,
+    analyst_flags: dict[str, bool],
+) -> PipelineCheckpointContext:
+    prompt_text = load_rucam_prompt(prompt_path, strict_scoring=strict_scoring)
+    pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+    configs = get_enabled_analyst_configs(**analyst_flags)
+    identities = build_analyst_identities(
+        configs=configs,
+        report_filename_map=_REPORT_FILENAME_MAP,
+        pdf_sha256=pdf_sha256,
+        prompt_sha256=hashlib.sha256(prompt_text.encode()).hexdigest(),
+        enable_score_masking=enable_score_masking,
+        strict_scoring=strict_scoring,
+    )
+    return PipelineCheckpointContext(
+        store=AnalystCheckpointStore(
+            output_dir,
+            pdf_filename=pdf_path.name,
+            pdf_sha256=pdf_sha256,
+            enabled_analysts=tuple(identities),
+        ),
+        identities=identities,
+        legacy_context=LegacyRunContext(
+            pdf_filename=pdf_path.name,
+            masking_enabled=enable_score_masking,
+            strict_scoring=strict_scoring,
+        ),
+    )
+
+
+def _handle_attempt_event(
+    context: PipelineCheckpointContext, event: AnalystAttemptEvent
+) -> None:
+    identity = context.identities[event.analyst_key]
+    if event.status == "running":
+        context.store.record_running(identity, attempt=event.attempt)
+        return
+    if event.status == "validation_failed":
+        if event.report_text:
+            attempt_filename = (
+                f"{event.analyst_key.replace('_', '-')}_attempt-"
+                f"{event.attempt}.invalid.md"
+            )
+            atomic_write_text(
+                context.store.output_dir / "attempts" / attempt_filename,
+                event.report_text,
+            )
+        context.store.record_failure(
+            identity,
+            attempt=event.attempt,
+            failure_kind="validation",
+            error=event.error or "Unknown validation error",
+        )
+        return
+    if event.status == "execution_failed":
+        context.store.record_failure(
+            identity,
+            attempt=event.attempt,
+            failure_kind="execution",
+            error=event.error or "Unknown execution error",
+        )
+        return
+    if event.status == "completed":
+        if event.report_text is None:
+            raise ValueError("completed analyst attempt is missing report text")
+        context.store.record_completed(
+            identity, attempt=event.attempt, report_text=event.report_text
+        )
+        return
+    raise ValueError(f"Unsupported analyst attempt status: {event.status}")
+
+
 def run_end_to_end(
     pdf_path: str,
     prompt_path: Optional[str] = None,
@@ -40,9 +136,12 @@ def run_end_to_end(
     use_analyst_epsilon: bool = False,
     use_analyst_zeta: bool = False,
     use_analyst_eta: bool = False,
+    max_restarts: int = 2,
+    resume: bool = True,
 ) -> str:
     """Public helper used by scripts/tests to run the full pipeline."""
 
+    max_restarts = validate_max_restarts(max_restarts)
     resolved_pdf = str(Path(pdf_path).expanduser().resolve())
     resolved_prompt = Path(prompt_path).expanduser().resolve() if prompt_path else None
     resolved_output_dir = (
@@ -52,13 +151,29 @@ def run_end_to_end(
     if resolved_output_dir:
         resolved_output_dir.mkdir(parents=True, exist_ok=True)
 
+    analyst_flags = {
+        "use_analyst_delta": use_analyst_delta,
+        "use_analyst_epsilon": use_analyst_epsilon,
+        "use_analyst_zeta": use_analyst_zeta,
+        "use_analyst_eta": use_analyst_eta,
+    }
+    checkpoint_context = (
+        _build_checkpoint_context(
+            pdf_path=Path(resolved_pdf),
+            output_dir=resolved_output_dir,
+            prompt_path=resolved_prompt,
+            enable_score_masking=enable_score_masking,
+            strict_scoring=strict_scoring,
+            analyst_flags=analyst_flags,
+        )
+        if resolved_output_dir
+        else {}
+    )
     completed_reports = (
-        _load_completed_analyst_reports(
-            resolved_output_dir,
-            use_analyst_delta=use_analyst_delta,
-            use_analyst_epsilon=use_analyst_epsilon,
-            use_analyst_zeta=use_analyst_zeta,
-            use_analyst_eta=use_analyst_eta,
+        checkpoint_context.store.load_compatible_reports(
+            list(checkpoint_context.identities.values()),
+            resume=resume,
+            legacy_context=checkpoint_context.legacy_context,
         )
         if resolved_output_dir
         else {}
@@ -75,8 +190,9 @@ def run_end_to_end(
         use_analyst_zeta=use_analyst_zeta,
         use_analyst_eta=use_analyst_eta,
         completed_reports=completed_reports,
-        on_report=(
-            (lambda key, content: _persist_reports({key: content}, resolved_output_dir))
+        max_restarts=max_restarts,
+        on_attempt=(
+            lambda event: _handle_attempt_event(checkpoint_context, event)
             if resolved_output_dir
             else None
         ),
@@ -88,9 +204,65 @@ def run_end_to_end(
         final_output, reports = result, {}
 
     if resolved_output_dir and isinstance(reports, dict):
-        _persist_reports(reports, resolved_output_dir)
+        _persist_reports(
+            {
+                key: content
+                for key, content in reports.items()
+                if key not in checkpoint_context.identities
+            },
+            resolved_output_dir,
+        )
 
     return final_output
+
+
+def is_end_to_end_complete(
+    pdf_path: str,
+    output_dir: str,
+    prompt_path: str | None = None,
+    *,
+    enable_score_masking: bool = False,
+    strict_scoring: bool = False,
+    use_analyst_delta: bool = False,
+    use_analyst_epsilon: bool = False,
+    use_analyst_zeta: bool = False,
+    use_analyst_eta: bool = False,
+) -> bool:
+    """Return whether all enabled analyst checkpoints are compatible and valid."""
+
+    resolved_pdf = Path(pdf_path).expanduser().resolve()
+    resolved_output_dir = Path(output_dir).expanduser().resolve()
+    resolved_prompt = Path(prompt_path).expanduser().resolve() if prompt_path else None
+    context = _build_checkpoint_context(
+        pdf_path=resolved_pdf,
+        output_dir=resolved_output_dir,
+        prompt_path=resolved_prompt,
+        enable_score_masking=enable_score_masking,
+        strict_scoring=strict_scoring,
+        analyst_flags={
+            "use_analyst_delta": use_analyst_delta,
+            "use_analyst_epsilon": use_analyst_epsilon,
+            "use_analyst_zeta": use_analyst_zeta,
+            "use_analyst_eta": use_analyst_eta,
+        },
+    )
+    reports = context.store.load_compatible_reports(
+        list(context.identities.values()),
+        resume=True,
+        legacy_context=context.legacy_context,
+        adopt_legacy=False,
+    )
+    if set(reports) != set(context.identities):
+        return False
+    if enable_score_masking:
+        return all(
+            (resolved_output_dir / filename).exists()
+            for filename in (
+                "masked-case-bundle_report.md",
+                "ground-truth-rucam-score_report.md",
+            )
+        )
+    return True
 
 
 def _main() -> None:
@@ -144,6 +316,13 @@ def _main() -> None:
         action="store_true",
         help="Enable the optional Analyst Eta agent (ANALYST_ETA_MODEL).",
     )
+    parser.add_argument(
+        "--analyst-restarts",
+        type=int,
+        choices=range(0, 3),
+        default=2,
+        help="Number of restarts per incomplete analyst (0-2; default: 2).",
+    )
     args = parser.parse_args()
     print(
         run_end_to_end(
@@ -156,6 +335,7 @@ def _main() -> None:
             use_analyst_epsilon=args.use_analyst_epsilon,
             use_analyst_zeta=args.use_analyst_zeta,
             use_analyst_eta=args.use_analyst_eta,
+            max_restarts=args.analyst_restarts,
         )
     )
 
@@ -184,47 +364,7 @@ def _persist_reports(reports: dict[str, Optional[str]], output_dir: Path) -> Non
                 raw_case_bundle_payload=reports.get("raw_case_bundle"),
                 masked_case_bundle_payload=content,
             )
-        (output_dir / filename).write_text(content, encoding="utf-8")
-
-
-def _load_completed_analyst_reports(
-    output_dir: Path,
-    *,
-    use_analyst_delta: bool = False,
-    use_analyst_epsilon: bool = False,
-    use_analyst_zeta: bool = False,
-    use_analyst_eta: bool = False,
-) -> dict[str, str]:
-    reports: dict[str, str] = {}
-    analyst_configs = get_enabled_analyst_configs(
-        use_analyst_delta=use_analyst_delta,
-        use_analyst_epsilon=use_analyst_epsilon,
-        use_analyst_zeta=use_analyst_zeta,
-        use_analyst_eta=use_analyst_eta,
-    )
-    for config in analyst_configs:
-        key = config["key"]
-        filename = _REPORT_FILENAME_MAP.get(key)
-        if not filename:
-            continue
-        report_path = output_dir / filename
-        if not report_path.exists():
-            continue
-        report_text = report_path.read_text(encoding="utf-8")
-        if _has_parseable_section_c_json(report_text):
-            reports[key] = report_text
-    return reports
-
-
-def _has_parseable_section_c_json(report_text: str) -> bool:
-    for json_block in _JSON_BLOCK_RE.findall(report_text):
-        try:
-            payload = json.loads(json_block)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and "total_score" in payload:
-            return True
-    return False
+        atomic_write_text(output_dir / filename, content)
 
 
 def _render_masked_case_bundle_report(

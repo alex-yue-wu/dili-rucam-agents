@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from openpyxl import load_workbook
+import pytest
 
 from dili_rucam_agents.batch import (
     _is_pdf_run_complete,
@@ -10,7 +11,32 @@ from dili_rucam_agents.batch import (
     extract_section_c_json,
     run_batch_folder,
 )
-from dili_rucam_agents.pipeline import run_end_to_end
+from dili_rucam_agents.crew.crew import AnalystAttemptEvent, AnalystExecutionError
+from dili_rucam_agents.pipeline import is_end_to_end_complete, run_end_to_end
+from dili_rucam_agents.validators.analyst_report import validate_analyst_report
+
+
+def complete_report() -> str:
+    payload = {
+        "injury_pattern": "hepatocellular",
+        "R_ratio": 6.4,
+        "rucam_scores": {
+            "time_to_onset": 2,
+            "course": 1,
+            "risk_factors": 0,
+            "concomitant_drugs": 0,
+            "other_causes_excluded": 2,
+            "known_hepatotoxicity": 1,
+            "rechallenge": 0,
+        },
+        "total_score": 6,
+        "category": "Probable",
+    }
+    return (
+        "## SECTION A\n\nClinical summary\n\n"
+        "## SECTION B\n\n| Item | Score |\n| --- | --- |\n| Total | 6 |\n\n"
+        f"## SECTION C\n\n```json\n{json.dumps(payload)}\n```\n"
+    )
 
 
 def test_extract_section_c_json_parses_last_json_block():
@@ -287,53 +313,161 @@ def test_run_end_to_end_forwards_strict_scoring(monkeypatch):
     assert captured_kwargs["strict_scoring"] is True
 
 
-def test_run_end_to_end_supplies_existing_analyst_reports_for_retry(tmp_path: Path, monkeypatch):
-    output_dir = tmp_path / "output"
-    output_dir.mkdir()
-    output_dir.joinpath("analyst-alpha_report.md").write_text(
-        '## SECTION C\n```json\n{"total_score": 7, "category": "Probable"}\n```\n',
-        encoding="utf-8",
-    )
-    output_dir.joinpath("analyst-beta_report.md").write_text(
-        "See complete Sections A, B, and C above.\n",
-        encoding="utf-8",
-    )
+def test_run_end_to_end_persists_invalid_attempt_then_valid_report(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
 
+    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
+        callback = kwargs["on_attempt"]
+        callback(AnalystAttemptEvent("analyst_alpha", 1, 3, "running"))
+        callback(
+            AnalystAttemptEvent(
+                "analyst_alpha",
+                1,
+                3,
+                "validation_failed",
+                error="Missing SECTION C",
+                report_text="incomplete",
+            )
+        )
+        callback(AnalystAttemptEvent("analyst_alpha", 2, 3, "running"))
+        callback(
+            AnalystAttemptEvent(
+                "analyst_alpha", 2, 3, "completed", report_text=complete_report()
+            )
+        )
+        return "ok", {"analyst_alpha": complete_report()}
+
+    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+
+    assert (output_dir / "attempts/analyst-alpha_attempt-1.invalid.md").read_text() == "incomplete"
+    assert validate_analyst_report(
+        (output_dir / "analyst-alpha_report.md").read_text()
+    ).payload.total_score == 6
+
+
+def test_run_end_to_end_resume_false_supplies_no_completed_reports(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    output_dir.mkdir()
+    (output_dir / "analyst-alpha_report.md").write_text(
+        complete_report(), encoding="utf-8"
+    )
     captured_kwargs = {}
 
     def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
         captured_kwargs.update(kwargs)
-        return "ok", {
-            **kwargs["completed_reports"],
-            "analyst_beta": '## SECTION C\n```json\n{"total_score": 6, "category": "Probable"}\n```\n',
-            "analyst_gamma": '## SECTION C\n```json\n{"total_score": 5, "category": "Possible"}\n```\n',
-        }
+        return "ok", {}
 
     monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir), resume=False)
 
-    run_end_to_end("example.pdf", output_dir=str(output_dir))
-
-    assert set(captured_kwargs["completed_reports"]) == {"analyst_alpha"}
-    assert "total_score" in captured_kwargs["completed_reports"]["analyst_alpha"]
-    assert "analyst_beta" not in captured_kwargs["completed_reports"]
+    assert captured_kwargs["completed_reports"] == {}
 
 
-def test_run_end_to_end_persists_each_successful_analyst_before_later_failure(tmp_path: Path, monkeypatch):
-    output_dir = tmp_path / "output"
+def test_run_end_to_end_forwards_max_restarts(monkeypatch):
+    captured_kwargs = {}
 
     def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
-        kwargs["on_report"]("analyst_alpha", "alpha report")
-        raise RuntimeError("beta failed")
+        captured_kwargs.update(kwargs)
+        return "ok"
 
     monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
+    run_end_to_end("example.pdf", max_restarts=1)
 
-    try:
-        run_end_to_end("example.pdf", output_dir=str(output_dir))
-        assert False, "expected RuntimeError"
-    except RuntimeError as exc:
-        assert "beta failed" in str(exc)
+    assert captured_kwargs["max_restarts"] == 1
 
-    assert (output_dir / "analyst-alpha_report.md").read_text(encoding="utf-8") == "alpha report"
+
+def test_later_failure_preserves_completed_alpha_checkpoint(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+
+    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
+        callback = kwargs["on_attempt"]
+        callback(AnalystAttemptEvent("analyst_alpha", 1, 3, "running"))
+        callback(
+            AnalystAttemptEvent(
+                "analyst_alpha", 1, 3, "completed", report_text=complete_report()
+            )
+        )
+        callback(AnalystAttemptEvent("analyst_beta", 1, 3, "running"))
+        callback(
+            AnalystAttemptEvent(
+                "analyst_beta",
+                1,
+                3,
+                "validation_failed",
+                error="Missing SECTION C",
+                report_text="incomplete",
+            )
+        )
+        raise AnalystExecutionError(
+            analyst_key="analyst_beta",
+            attempts=3,
+            failure_kind="validation",
+            last_error="Missing SECTION C",
+        )
+
+    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
+    with pytest.raises(AnalystExecutionError):
+        run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+    assert validate_analyst_report(
+        (output_dir / "analyst-alpha_report.md").read_text()
+    ).payload.total_score == 6
+
+
+def test_second_invocation_supplies_all_checkpointed_reports(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    analyst_keys = ("analyst_alpha", "analyst_beta", "analyst_gamma")
+
+    def seed_run(pdf_path, prompt_path=None, **kwargs):
+        for key in analyst_keys:
+            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
+            kwargs["on_attempt"](
+                AnalystAttemptEvent(key, 1, 3, "completed", report_text=complete_report())
+            )
+        return "ok", {key: complete_report() for key in analyst_keys}
+
+    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", seed_run)
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+    captured_kwargs = {}
+
+    def resume_run(pdf_path, prompt_path=None, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "ok", dict(kwargs["completed_reports"])
+
+    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", resume_run)
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+    assert set(captured_kwargs["completed_reports"]) == set(analyst_keys)
+
+
+def test_is_end_to_end_complete_uses_validated_checkpoint_manifest(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    analyst_keys = ("analyst_alpha", "analyst_beta", "analyst_gamma")
+
+    def seed_run(pdf_path, prompt_path=None, **kwargs):
+        for key in analyst_keys:
+            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
+            kwargs["on_attempt"](
+                AnalystAttemptEvent(key, 1, 3, "completed", report_text=complete_report())
+            )
+        return "ok", {key: complete_report() for key in analyst_keys}
+
+    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", seed_run)
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+    manifest_path = output_dir / "analyst_checkpoints.json"
+    manifest_before = manifest_path.read_text(encoding="utf-8")
+
+    assert is_end_to_end_complete(str(pdf_path), str(output_dir))
+    assert manifest_path.read_text(encoding="utf-8") == manifest_before
 
 
 def test_run_batch_folder_skips_completed_pdf(tmp_path: Path, monkeypatch):
