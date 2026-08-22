@@ -241,6 +241,7 @@ def test_execution_exception_diagnostics_are_safe_across_retry_sinks(
                 attempt=event.attempt,
                 failure_kind="execution",
                 error=event.error,
+                execution_exception=event.execution_exception,
             )
 
     with pytest.raises(AnalystExecutionError) as exc_info:
@@ -269,6 +270,9 @@ def test_execution_exception_diagnostics_are_safe_across_retry_sinks(
         assert "request body" not in diagnostic
     assert "ProviderRequestError" in execution_event.error
     assert "status_code=503" in execution_event.error
+    assert "execution_exception" not in repr(execution_event)
+    assert secret not in repr(execution_event)
+    assert clinical_text not in repr(execution_event)
     assert exc_info.value.__cause__ is original_error
 
 

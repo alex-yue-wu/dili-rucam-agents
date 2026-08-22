@@ -196,7 +196,8 @@ When `--output-dir` is supplied, the pipeline writes artifacts for the enabled w
   cumulative and collision-resistant, so a later invocation cannot overwrite an
   earlier invalid output. An execution exception without a report has no markdown
   artifact; a bounded diagnostic containing the exception type and safe numeric
-  status identifiers is recorded without raw provider messages or request data.
+  status identifiers is rebuilt at the persistence boundary and recorded without
+  trusting caller-supplied text, raw provider messages, or request data.
 
 Only enabled workflow artifacts are persisted.
 

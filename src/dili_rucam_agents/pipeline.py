@@ -130,6 +130,7 @@ def _handle_attempt_event(
             attempt=event.attempt,
             failure_kind="execution",
             error=event.error or "Unknown execution error",
+            execution_exception=event.execution_exception,
         )
         return
     if event.status == "completed":

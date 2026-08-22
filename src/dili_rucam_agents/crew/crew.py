@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
 
 from crewai import Crew, Process, Task
 
-from dili_rucam_agents.diagnostics import format_execution_error
+from dili_rucam_agents.diagnostics import (
+    FailureKind,
+    format_execution_error,
+    validate_failure_kind,
+)
 from dili_rucam_agents.ingestion.build_bundle import build_case_bundle
 from dili_rucam_agents.masking import mask_case_bundle_payload
 from dili_rucam_agents.validators.analyst_report import (
@@ -45,6 +49,11 @@ class AnalystAttemptEvent:
     status: AttemptStatus
     error: str | None = None
     report_text: str | None = None
+    execution_exception: BaseException | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 class AnalystExecutionError(RuntimeError):
@@ -53,24 +62,24 @@ class AnalystExecutionError(RuntimeError):
         *,
         analyst_key: str,
         attempts: int,
-        failure_kind: Literal["execution", "validation"],
+        failure_kind: FailureKind,
         last_error: str,
         last_exception: BaseException | None = None,
     ) -> None:
         self.analyst_key = analyst_key
         self.attempts = attempts
-        self.failure_kind = failure_kind
+        self.failure_kind = validate_failure_kind(failure_kind)
         execution_exception = (
             last_exception if last_exception is not None else Exception()
         )
         self.last_error = (
             format_execution_error(execution_exception)
-            if failure_kind == "execution"
+            if self.failure_kind == "execution"
             else last_error
         )
         super().__init__(
             f"{analyst_key} failed after {attempts} attempts "
-            f"({failure_kind}): {self.last_error}"
+            f"({self.failure_kind}): {self.last_error}"
         )
 
 
@@ -222,7 +231,7 @@ def run_crew(
         retry_instruction: str | None = None
         last_error = ""
         last_exception: Exception | None = None
-        failure_kind: Literal["execution", "validation"] = "validation"
+        failure_kind: FailureKind = "validation"
         for attempt in range(1, max_attempts + 1):
             crew, task = _build_isolated_analyst_run(
                 config=config,
@@ -279,6 +288,7 @@ def run_crew(
                     max_attempts=max_attempts,
                     status="execution_failed",
                     error=last_error,
+                    execution_exception=exc,
                 )
                 if on_attempt:
                     on_attempt(execution_event)

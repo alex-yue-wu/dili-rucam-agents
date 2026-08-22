@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import dili_rucam_agents.diagnostics as diagnostics_module
 from dili_rucam_agents.checkpoints import (
     AnalystCheckpointStore,
     AnalystIdentity,
@@ -291,7 +292,7 @@ def test_completion_clears_current_failure_fields_but_retains_history(tmp_path: 
     assert entry["attempt_history"][0]["failed_at"]
 
 
-def test_checkpoint_store_rejects_untrusted_execution_diagnostic(tmp_path: Path):
+def test_checkpoint_store_canonicalizes_forged_execution_diagnostics(tmp_path: Path):
     store = AnalystCheckpointStore(
         tmp_path,
         pdf_filename="case.pdf",
@@ -299,19 +300,88 @@ def test_checkpoint_store_rejects_untrusted_execution_diagnostic(tmp_path: Path)
         enabled_analysts=("analyst_alpha",),
     )
     secret = "sk-live-TOKEN-DO-NOT-STORE"
-    store.record_running(identity(), attempt=1)
 
+    class SecretObject:
+        def __str__(self):
+            return f"provider object containing {secret}"
+
+    formatted_type = type(diagnostics_module.format_execution_error(Exception()))
+    forged_marker = formatted_type(
+        f"Execution error [type=ForgedError; token={secret}]"
+    )
+    for attempt, untrusted_error in enumerate((forged_marker, SecretObject()), start=1):
+        store.record_running(identity(), attempt=attempt)
+        store.record_failure(
+            identity(),
+            attempt=attempt,
+            failure_kind="execution",
+            error=untrusted_error,
+        )
+
+    manifest_text = (tmp_path / "analyst_checkpoints.json").read_text()
+    assert secret not in manifest_text
+    assert "ForgedError" not in manifest_text
+    assert "provider object" not in manifest_text
+    assert manifest_text.count("Execution error [type=Exception]") == 3
+
+
+def test_checkpoint_store_derives_execution_diagnostic_from_original_exception(
+    tmp_path: Path,
+):
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    secret = "sk-live-TOKEN-DO-NOT-STORE"
+
+    class ProviderRequestError(RuntimeError):
+        status_code = 503
+        errno = 54
+
+    original_error = ProviderRequestError(f"provider response with {secret}")
+    store.record_running(identity(), attempt=1)
     store.record_failure(
         identity(),
         attempt=1,
         failure_kind="execution",
-        error=f"raw provider response with {secret}",
+        error=f"forged display string with {secret}",
+        execution_exception=original_error,
     )
 
     manifest_text = (tmp_path / "analyst_checkpoints.json").read_text()
     assert secret not in manifest_text
-    assert "raw provider response" not in manifest_text
-    assert "type=Exception" in manifest_text
+    assert "forged display string" not in manifest_text
+    assert "type=ProviderRequestError" in manifest_text
+    assert "status_code=503" in manifest_text
+    assert "errno=54" in manifest_text
+
+
+def test_checkpoint_store_rejects_invalid_failure_kind_before_any_write(
+    tmp_path: Path,
+):
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    store.record_running(identity(), attempt=1)
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    manifest_before = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="failure_kind"):
+        store.record_failure(
+            identity(),
+            attempt=1,
+            failure_kind="execuiton",
+            error="unsafe",
+            report_text="must not be written",
+        )
+
+    assert manifest_path.read_bytes() == manifest_before
+    assert not (tmp_path / "attempts").exists()
 
 
 def test_existing_manifest_write_refreshes_enabled_analysts(tmp_path: Path):
