@@ -64,8 +64,11 @@ export ANTHROPIC_API_KEY=...
 export DEEPSEEK_API_KEY=...
 export OPENROUTER_API_KEY=...
 
-# default: 3 analysts
-uv run python -m dili_rucam_agents.pipeline examples/3568943.pdf
+# default: 3 analysts; up to two restarts after an initial attempt
+uv run python -m dili_rucam_agents.pipeline \
+    examples/3568943.pdf \
+    --output-dir results/3568943 \
+    --analyst-restarts 2
 
 # enable score masking and all 4 optional analysts, and persist reports
 uv run python -m dili_rucam_agents.pipeline \
@@ -81,7 +84,8 @@ uv run python -m dili_rucam_agents.pipeline \
 uv run python scripts/run_batch.py \
     examples \
     results \
-    --mask-scores
+    --mask-scores \
+    --analyst-restarts 2
 ```
 
 ## Docker
@@ -171,7 +175,7 @@ Validation warning:
 
 ## Output Reports
 
-When `--output-dir` is supplied, the pipeline writes markdown artifacts for the enabled workflow:
+When `--output-dir` is supplied, the pipeline writes artifacts for the enabled workflow:
 
 - `masked-case-bundle_report.md` when `--mask-scores` is enabled. This is rendered from the same deterministic masked bundle JSON used for downstream analyst input, and includes a stable summary, extraction notes, masked text only, and masked table previews only.
 
@@ -182,6 +186,15 @@ When `--output-dir` is supplied, the pipeline writes markdown artifacts for the 
 - `analyst-epsilon_report.md`
 - `analyst-zeta_report.md`
 - `analyst-eta_report.md`
+
+- Once analyst execution starts, `analyst_checkpoints.json` records the
+  per-analyst checkpoint state, compatible fingerprint, completed-report filename,
+  attempt counts, and failure diagnostics.
+
+- `attempts/` contains invalid model outputs as
+  `analyst-<name>_attempt-<number>.invalid.md`. An execution exception without a
+  report has no markdown artifact; its diagnostic is recorded in the checkpoint
+  manifest.
 
 Only enabled workflow artifacts are persisted.
 
@@ -194,7 +207,37 @@ Use [scripts/run_batch.py](/Users/alexwu/Documents/GitHub/dili-rucam-agents/scri
 - The workbook includes:
   - the PDF filename in the first column
   - one column per enabled model, containing that model's computed total RUCAM score
-  - `masked_rucam_scores` in the last column, using comma-separated ints or `None`
+  - `masked_rucam_score` and `masked_rucam_category` as the final columns when
+    score masking is enabled
+
+### Analyst retries and resume
+
+Each analyst receives one initial attempt and, by default, up to two restarts when
+execution fails or the report is incomplete. `--analyst-restarts` accepts `0`, `1`,
+or `2`; its value counts restarts after the initial attempt, so the default permits
+three total attempts per analyst in one invocation. The single-PDF and batch CLIs
+both accept this option.
+
+Validated analyst reports are checkpointed independently in each PDF result
+directory. Re-running a single PDF with the same `--output-dir` or re-running a
+batch reuses compatible completed analyst reports. A batch skips a PDF only when
+its completed status and every enabled analyst checkpoint remain compatible and
+validate; a failed or incomplete PDF resumes at the first analyst without a
+compatible validated report. Compatible successful analysts are skipped before the
+failed analyst is retried.
+
+PDF content, prompt content, masking mode, strict-scoring mode, resolved model, or
+effective max-output-token changes invalidate only the affected analyst checkpoint.
+Old output directories without `analyst_checkpoints.json` are handled as legacy
+checkpoints during a normal resume: valid legacy reports are adopted into the
+manifest, provided any existing `run_status.json` matches the PDF filename,
+masking mode, and strict-scoring mode. Invalid or incompatible legacy reports are
+run again.
+
+`--force-rerun` is a batch CLI control that bypasses every analyst checkpoint,
+including legacy-output adoption, for that invocation. Invalid model outputs are
+retained under `attempts/`, and `analyst_checkpoints.json` records per-analyst
+status and attempt diagnostics.
 
 ## Tests
 
