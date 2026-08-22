@@ -15,6 +15,10 @@ from dili_rucam_agents.checkpoints import (
     build_analyst_identities,
 )
 from dili_rucam_agents.crew.tasks import build_analyst_instruction_contract
+from dili_rucam_agents.diagnostics import (
+    SafeExecutionDiagnostic,
+    build_execution_diagnostic,
+)
 
 
 def complete_report() -> str:
@@ -347,7 +351,7 @@ def test_checkpoint_store_derives_execution_diagnostic_from_original_exception(
         attempt=1,
         failure_kind="execution",
         error=f"forged display string with {secret}",
-        execution_exception=original_error,
+        execution_diagnostic=build_execution_diagnostic(original_error),
     )
 
     manifest_text = (tmp_path / "analyst_checkpoints.json").read_text()
@@ -356,6 +360,43 @@ def test_checkpoint_store_derives_execution_diagnostic_from_original_exception(
     assert "type=ProviderRequestError" in manifest_text
     assert "status_code=503" in manifest_text
     assert "errno=54" in manifest_text
+
+
+def test_checkpoint_store_rejects_forged_structured_diagnostic_before_any_write(
+    tmp_path: Path,
+):
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    store.record_running(identity(), attempt=1)
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    manifest_before = manifest_path.read_bytes()
+    secret = "sk-live-TOKEN-DO-NOT-STORE"
+    forged = object.__new__(SafeExecutionDiagnostic)
+    object.__setattr__(forged, "exception_type", f"ProviderError; token={secret}")
+    object.__setattr__(forged, "status_code", 503)
+    object.__setattr__(forged, "errno", None)
+
+    invalid_diagnostics = (
+        (forged, "exception_type"),
+        ({"exception_type": f"ProviderError; token={secret}"}, "execution_diagnostic"),
+    )
+    for invalid_diagnostic, expected_error in invalid_diagnostics:
+        with pytest.raises(ValueError, match=expected_error):
+            store.record_failure(
+                identity(),
+                attempt=1,
+                failure_kind="execution",
+                error=f"forged display string with {secret}",
+                report_text=f"provider request containing {secret}",
+                execution_diagnostic=invalid_diagnostic,
+            )
+
+        assert manifest_path.read_bytes() == manifest_before
+        assert not (tmp_path / "attempts").exists()
 
 
 def test_checkpoint_store_rejects_invalid_failure_kind_before_any_write(

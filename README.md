@@ -195,9 +195,12 @@ When `--output-dir` is supplied, the pipeline writes artifacts for the enabled w
   `analyst-<name>_attempt-<cumulative-number>-<unique-id>.invalid.md`. Names are
   cumulative and collision-resistant, so a later invocation cannot overwrite an
   earlier invalid output. An execution exception without a report has no markdown
-  artifact; a bounded diagnostic containing the exception type and safe numeric
-  status identifiers is rebuilt at the persistence boundary and recorded without
-  trusting caller-supplied text, raw provider messages, or request data.
+  artifact. Public attempt callbacks receive only a validated structured
+  diagnostic containing the exception type and allowlisted numeric status
+  identifiers; raw exception objects remain local for terminal exception chaining.
+  The persistence boundary validates and renders that structure again without
+  trusting caller-supplied text, arbitrary objects, raw provider messages, or
+  request data.
 
 Only enabled workflow artifacts are persisted.
 

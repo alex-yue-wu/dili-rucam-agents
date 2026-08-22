@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
@@ -10,7 +10,10 @@ from crewai import Crew, Process, Task
 
 from dili_rucam_agents.diagnostics import (
     FailureKind,
+    SafeExecutionDiagnostic,
+    build_execution_diagnostic,
     format_execution_error,
+    validate_execution_diagnostic,
     validate_failure_kind,
 )
 from dili_rucam_agents.ingestion.build_bundle import build_case_bundle
@@ -49,11 +52,23 @@ class AnalystAttemptEvent:
     status: AttemptStatus
     error: str | None = None
     report_text: str | None = None
-    execution_exception: BaseException | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
+    execution_diagnostic: SafeExecutionDiagnostic | None = None
+
+    def __post_init__(self) -> None:
+        if self.status == "execution_failed":
+            if self.error is not None:
+                raise ValueError(
+                    "execution failure events cannot carry free-form error text"
+                )
+            object.__setattr__(
+                self,
+                "execution_diagnostic",
+                validate_execution_diagnostic(self.execution_diagnostic),
+            )
+        elif self.execution_diagnostic is not None:
+            raise ValueError(
+                "execution_diagnostic is only valid for execution failure events"
+            )
 
 
 class AnalystExecutionError(RuntimeError):
@@ -287,8 +302,7 @@ def run_crew(
                     attempt=attempt,
                     max_attempts=max_attempts,
                     status="execution_failed",
-                    error=last_error,
-                    execution_exception=exc,
+                    execution_diagnostic=build_execution_diagnostic(exc),
                 )
                 if on_attempt:
                     on_attempt(execution_event)

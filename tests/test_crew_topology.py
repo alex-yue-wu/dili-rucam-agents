@@ -1,5 +1,7 @@
 import json
+from dataclasses import asdict
 from pathlib import Path
+import pickle
 
 import pytest
 
@@ -241,7 +243,7 @@ def test_execution_exception_diagnostics_are_safe_across_retry_sinks(
                 attempt=event.attempt,
                 failure_kind="execution",
                 error=event.error,
-                execution_exception=event.execution_exception,
+                execution_diagnostic=event.execution_diagnostic,
             )
 
     with pytest.raises(AnalystExecutionError) as exc_info:
@@ -256,23 +258,32 @@ def test_execution_exception_diagnostics_are_safe_across_retry_sinks(
         event for event in events if event.status == "execution_failed"
     )
     manifest_text = (tmp_path / "analyst_checkpoints.json").read_text()
+    serialized_event_views = (
+        repr(execution_event),
+        repr(asdict(execution_event)),
+        repr(vars(execution_event)),
+        pickle.dumps(execution_event),
+    )
     diagnostics = (
-        execution_event.error,
         exc_info.value.last_error,
         str(exc_info.value),
         manifest_text,
         capsys.readouterr().out,
+        *serialized_event_views,
     )
     for diagnostic in diagnostics:
-        assert secret not in diagnostic
-        assert clinical_text not in diagnostic
-        assert "Authorization" not in diagnostic
-        assert "request body" not in diagnostic
-    assert "ProviderRequestError" in execution_event.error
-    assert "status_code=503" in execution_event.error
-    assert "execution_exception" not in repr(execution_event)
-    assert secret not in repr(execution_event)
-    assert clinical_text not in repr(execution_event)
+        encoded = diagnostic if isinstance(diagnostic, bytes) else diagnostic.encode()
+        assert secret.encode() not in encoded
+        assert clinical_text.encode() not in encoded
+        assert b"Authorization" not in encoded
+        assert b"request body" not in encoded
+    assert execution_event.error is None
+    assert execution_event.execution_diagnostic.exception_type == "ProviderRequestError"
+    assert execution_event.execution_diagnostic.status_code == 503
+    assert execution_event.execution_diagnostic.errno is None
+    assert not hasattr(execution_event, "execution_exception")
+    assert "ProviderRequestError" in manifest_text
+    assert "status_code=503" in manifest_text
     assert exc_info.value.__cause__ is original_error
 
 

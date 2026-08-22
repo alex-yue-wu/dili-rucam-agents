@@ -87,10 +87,13 @@ the first incomplete analyst. Strict validation requires exactly one SECTION A,
 SECTION B, and SECTION C in order and exactly one fenced JSON object in SECTION C;
 legacy parsing deliberately retains last-JSON-block recovery. Execution diagnostics
 persist only bounded exception types and safe numeric identifiers, not raw provider
-messages, credentials, request fragments, or patient text; persistence independently
-rebuilds them from in-memory exception structure and rejects unknown failure kinds
-before writing. Successful completion clears stale current failure fields while
-preserving attempt history.
+messages, credentials, request fragments, or patient text. Public analyst-attempt
+events carry a validated structured diagnostic instead of the raw exception and are
+safe under ordinary dataclass and pickle serialization; the original exception stays
+local for terminal chaining. Persistence independently validates and renders the
+structured diagnostic and rejects invalid diagnostics or unknown failure kinds before
+writing. Successful completion clears stale current failure fields while preserving
+attempt history.
 Legacy report directories without a manifest can be adopted only when their reports
 validate and their existing batch context, when present, remains compatible.
 `--force-rerun` disables all report and manifest reuse for a batch invocation,
@@ -104,10 +107,10 @@ All checks were offline; no live model provider was invoked.
   tests` — both report the same three baseline findings already present at the
   feature starting commit `0a1dad6`: F541 in `batch.py`, F821 in `agents.py`, and
   F541 in `tasks.py`. The feature-introduced E402 was removed.
-- `uv run ruff format --check <feature-changed Python files>` — all 15 files are
+- `uv run ruff format --check <Task 7 touched Python files>` — all 6 files are
   formatted. No unrelated Python files were reformatted.
-- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 133 passed.
-- `uv run pytest -q` — 158 passed, with five pre-existing PyMuPDF/SWIG deprecation
+- `uv run pytest tests/test_analyst_report_validator.py tests/test_rucam_json_validator.py tests/test_checkpoints.py tests/test_crew_topology.py tests/test_batch.py tests/test_agents.py -q` — 134 passed.
+- `uv run pytest -q` — 159 passed, with five pre-existing PyMuPDF/SWIG deprecation
   warnings from the ingestion smoke tests.
 - `git diff --check`, `git status --short`, and `git diff --stat 0a1dad6..HEAD` —
   run during the final scope inspection; no whitespace errors or generated files
