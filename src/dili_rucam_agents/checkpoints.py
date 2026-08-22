@@ -132,7 +132,14 @@ class AnalystCheckpointStore:
 
         manifest = self._read_manifest()
         if manifest is not None:
-            return self._reports_from_manifest(manifest, identities)
+            reports = self._reports_from_manifest(manifest, identities)
+            expected_keys = {identity.key for identity in identities}
+            if (
+                set(reports) == expected_keys
+                and manifest.get("enabled_analysts") != self.enabled_analysts
+            ):
+                self._write_manifest(manifest)
+            return reports
 
         if self.manifest_path.exists() or legacy_context is None:
             return {}

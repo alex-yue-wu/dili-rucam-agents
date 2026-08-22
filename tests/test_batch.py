@@ -4,6 +4,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 import pytest
 
+import dili_rucam_agents.pipeline as pipeline_module
 from dili_rucam_agents.batch import (
     _is_pdf_run_complete,
     extract_ground_truth_rucam_category,
@@ -602,6 +603,39 @@ def test_run_end_to_end_forwards_max_restarts(monkeypatch):
     run_end_to_end("example.pdf", max_restarts=1)
 
     assert captured_kwargs["max_restarts"] == 1
+
+
+def test_run_end_to_end_passes_fingerprinted_instruction_contracts_unchanged(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    checkpoint_contexts = []
+    captured_kwargs = {}
+    original_builder = pipeline_module._build_checkpoint_context
+
+    def capture_checkpoint_context(**kwargs):
+        context = original_builder(**kwargs)
+        checkpoint_contexts.append(context)
+        return context
+
+    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "ok", dict(kwargs["completed_reports"])
+
+    monkeypatch.setattr(
+        pipeline_module, "_build_checkpoint_context", capture_checkpoint_context
+    )
+    monkeypatch.setattr(pipeline_module, "run_crew", fake_run_crew)
+
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+
+    assert len(checkpoint_contexts) == 1
+    assert (
+        captured_kwargs["instruction_contracts"]
+        is checkpoint_contexts[0].instruction_contracts
+    )
 
 
 def test_run_end_to_end_omits_attempt_handler_without_output_dir(monkeypatch):

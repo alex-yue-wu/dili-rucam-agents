@@ -283,6 +283,31 @@ def test_existing_manifest_write_refreshes_enabled_analysts(tmp_path: Path):
     assert manifest["enabled_analysts"] == ["analyst_alpha", "analyst_delta"]
 
 
+def test_reusing_contracted_topology_refreshes_manifest_metadata(tmp_path: Path):
+    expanded_store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha", "analyst_delta"),
+    )
+    alpha = identity()
+    delta = identity("analyst_delta", "fingerprint-d")
+    expanded_store.record_completed(alpha, attempt=1, report_text=complete_report())
+    expanded_store.record_completed(delta, attempt=1, report_text=complete_report())
+
+    contracted_store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    reports = contracted_store.load_compatible_reports([alpha], resume=True)
+
+    assert reports == {"analyst_alpha": complete_report()}
+    manifest = json.loads((tmp_path / "analyst_checkpoints.json").read_text())
+    assert manifest["enabled_analysts"] == ["analyst_alpha"]
+
+
 def test_store_adopts_valid_legacy_report(tmp_path: Path):
     report_path = tmp_path / "analyst-alpha_report.md"
     report_path.write_text(complete_report(), encoding="utf-8")
