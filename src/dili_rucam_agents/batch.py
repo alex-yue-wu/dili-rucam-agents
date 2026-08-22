@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Sequence
 
 from openpyxl import Workbook
 
@@ -498,7 +498,7 @@ def _write_summary_workbook(
     workbook.save(output_path)
 
 
-def _main() -> None:
+def _main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Run dili_rucam_agents across a folder of PDFs."
     )
@@ -524,6 +524,17 @@ def _main() -> None:
     )
     parser.add_argument("--analyst-zeta", dest="use_analyst_zeta", action="store_true")
     parser.add_argument("--analyst-eta", dest="use_analyst_eta", action="store_true")
+    parser.add_argument(
+        "--reproducibility",
+        action="store_true",
+        help="Run independent repeated analyses for every PDF.",
+    )
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=None,
+        help="Positive repeat count for reproducibility mode (default: 5).",
+    )
     parser.add_argument("--debug", dest="debug", action="store_true")
     parser.add_argument("--force-rerun", dest="force_rerun", action="store_true")
     parser.add_argument(
@@ -533,7 +544,34 @@ def _main() -> None:
         default=2,
         help="Number of restarts per incomplete analyst (0-2; default: 2).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if args.repeats is not None and not args.reproducibility:
+        parser.error("--repeats requires --reproducibility")
+    if args.reproducibility and args.repeats is not None and args.repeats < 1:
+        parser.error("--repeats must be a positive integer")
+
+    if args.reproducibility:
+        from dili_rucam_agents import reproducibility as reproducibility_module
+
+        summary_paths = reproducibility_module.run_reproducibility_folder(
+            input_dir=args.input_dir,
+            output_dir=args.output_dir,
+            repeats=args.repeats if args.repeats is not None else 5,
+            prompt_path=args.prompt_path,
+            enable_score_masking=args.enable_score_masking,
+            strict_scoring=args.strict_scoring,
+            use_analyst_delta=args.use_analyst_delta,
+            use_analyst_epsilon=args.use_analyst_epsilon,
+            use_analyst_zeta=args.use_analyst_zeta,
+            use_analyst_eta=args.use_analyst_eta,
+            debug=args.debug,
+            force_rerun=args.force_rerun,
+            max_restarts=args.analyst_restarts,
+        )
+        for summary_path in summary_paths:
+            print(summary_path)
+        return
 
     summary_path = run_batch_folder(
         input_dir=args.input_dir,

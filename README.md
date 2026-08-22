@@ -86,6 +86,15 @@ uv run python scripts/run_batch.py \
     results \
     --mask-scores \
     --analyst-restarts 2
+
+# reproducibility mode: five independent full analyses per PDF
+uv run python scripts/run_batch.py \
+    examples \
+    results/results_reproducibility \
+    --reproducibility \
+    --repeats 5 \
+    --mask-scores \
+    --analyst-restarts 2
 ```
 
 ## Docker
@@ -217,6 +226,67 @@ Use [scripts/run_batch.py](/Users/alexwu/Documents/GitHub/dili-rucam-agents/scri
   - one column per enabled model, containing that model's computed total RUCAM score
   - `masked_rucam_score` and `masked_rucam_category` as the final columns when
     score masking is enabled
+
+### Reproducibility mode
+
+`--reproducibility` runs the same unchanged full analysis several times per PDF so
+run-to-run score variation can be measured. It keeps the same two positional
+arguments as a regular batch, `INPUT_DIR` and `OUTPUT_DIR`, and adds `--repeats N`.
+
+`--repeats` defaults to `5`, must be an integer `>= 1`, and is rejected without
+`--reproducibility`. Every other batch flag (`--prompt-path`, `--mask-scores`,
+`--strict-scoring`, the optional-analyst flags, `--debug`, `--force-rerun`, and
+`--analyst-restarts`) behaves exactly as it does in a regular batch.
+
+Each PDF gets one output directory named after its stem, holding one isolated
+directory per repeat plus that PDF's summary workbook:
+
+```
+OUTPUT_DIR/
+  case-a/
+    case-a_1/          # full analysis artifacts for repeat 1
+    case-a_2/
+    ...
+    summary.xlsx
+  case-b/
+    case-b_1/
+    ...
+    summary.xlsx
+```
+
+The source PDF is not copied, no nested `batch_summary.xlsx` is written inside a
+repeat directory, and no reproducibility workbook is written at the output root.
+
+PDFs run sequentially in sorted filename order, and each PDF's repeats run in
+ascending repeat index. Execution is fail-fast: when a repeat fails, that failed
+repeat is recorded in the current PDF's `summary.xlsx`, the run stops immediately,
+and no later repeat or PDF is started.
+
+Checkpoint reuse is repeat-local. Each repeat directory carries its own analyst
+checkpoints and its own `run_status.json` recording the reproducibility mode and
+repeat index, so a completed repeat is skipped only when its own status matches
+that same repeat; artifacts are never reused across repeats. Re-running with a
+larger `--repeats` therefore executes only the newly added repeats, and re-running
+with a smaller `--repeats` simply ignores the higher-numbered repeat directories
+without deleting them. `--force-rerun` bypasses every checkpoint and completion
+skip for that invocation, rerunning all requested repeats from scratch.
+
+Each PDF's `summary.xlsx` is rewritten atomically after every visited repeat and
+contains two sheets:
+
+- `Runs` — one row per repeat, with the repeat index, repeat directory name,
+  `completed`/`failed` status, PDF filename, one score column per enabled analyst,
+  `masked_rucam_score` and `masked_rucam_category` when `--mask-scores` is on, and
+  the safe error diagnostic for a failed repeat.
+- `Reproducibility` — one aggregate row per enabled analyst, plus a
+  `ground_truth_rucam` row when `--mask-scores` is on, reporting the scorer, its
+  resolved model, `valid_repeats`, `mean`, `sample_standard_deviation` (Bessel-
+  corrected; blank for fewer than two values), `minimum`, `maximum`, `range`,
+  `mode` (tied modes are listed together), and `exact_mode_agreement` (the share of
+  valid repeats equal to the mode).
+
+Only `completed` repeats contribute to the aggregate statistics. A failed repeat is
+excluded even when its `Runs` row shows partial validated analyst scores.
 
 ### Analyst retries and resume
 

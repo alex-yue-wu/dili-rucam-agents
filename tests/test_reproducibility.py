@@ -5,7 +5,7 @@ from unittest.mock import Mock
 from openpyxl import load_workbook
 import pytest
 
-from dili_rucam_agents.batch import PdfRunFailure, PdfRunResult
+from dili_rucam_agents.batch import PdfRunFailure, PdfRunResult, _main
 from dili_rucam_agents.reproducibility import (
     ReproducibilityRunRecord,
     _score_statistics,
@@ -520,3 +520,110 @@ def test_reproducibility_success_has_no_log_without_debug(tmp_path: Path, monkey
     )
 
     assert not (output_dir / "case" / "case_1" / "case.log").exists()
+
+
+def test_batch_cli_dispatches_reproducibility_with_default_five(
+    tmp_path: Path, monkeypatch, capsys
+):
+    captured = {}
+
+    def fake_run_reproducibility_folder(**kwargs):
+        captured.update(kwargs)
+        return [Path(kwargs["output_dir"]) / "case" / "summary.xlsx"]
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility.run_reproducibility_folder",
+        fake_run_reproducibility_folder,
+    )
+
+    _main(
+        [
+            str(tmp_path / "input"),
+            str(tmp_path / "output"),
+            "--reproducibility",
+            "--mask-scores",
+            "--analyst-delta",
+            "--analyst-restarts",
+            "1",
+        ]
+    )
+
+    assert captured["repeats"] == 5
+    assert captured["enable_score_masking"] is True
+    assert captured["use_analyst_delta"] is True
+    assert captured["max_restarts"] == 1
+    assert "summary.xlsx" in capsys.readouterr().out
+
+
+def test_batch_cli_forwards_explicit_repeat_count(tmp_path: Path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility.run_reproducibility_folder",
+        lambda **kwargs: captured.update(kwargs) or [],
+    )
+    _main(
+        [
+            str(tmp_path / "input"),
+            str(tmp_path / "output"),
+            "--reproducibility",
+            "--repeats",
+            "7",
+        ]
+    )
+    assert captured["repeats"] == 7
+
+
+def test_batch_cli_rejects_repeats_without_reproducibility(tmp_path: Path, capsys):
+    with pytest.raises(SystemExit, match="2"):
+        _main(
+            [
+                str(tmp_path / "input"),
+                str(tmp_path / "output"),
+                "--repeats",
+                "3",
+            ]
+        )
+    assert "--repeats requires --reproducibility" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ("0", "-1", "not-an-integer"))
+def test_batch_cli_rejects_invalid_repeat_values(tmp_path: Path, value: str):
+    with pytest.raises(SystemExit, match="2"):
+        _main(
+            [
+                str(tmp_path / "input"),
+                str(tmp_path / "output"),
+                "--reproducibility",
+                "--repeats",
+                value,
+            ]
+        )
+
+
+def test_batch_cli_keeps_regular_dispatch_unchanged(tmp_path: Path, monkeypatch):
+    captured = {}
+
+    def fake_run_batch_folder(**kwargs):
+        captured.update(kwargs)
+        return Path(kwargs["output_dir"]) / "batch_summary.xlsx"
+
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_batch_folder", fake_run_batch_folder
+    )
+
+    _main([str(tmp_path / "input"), str(tmp_path / "output")])
+
+    assert captured == {
+        "input_dir": str(tmp_path / "input"),
+        "output_dir": str(tmp_path / "output"),
+        "prompt_path": None,
+        "enable_score_masking": False,
+        "strict_scoring": False,
+        "use_analyst_delta": False,
+        "use_analyst_epsilon": False,
+        "use_analyst_zeta": False,
+        "use_analyst_eta": False,
+        "debug": False,
+        "force_rerun": False,
+        "max_restarts": 2,
+    }
