@@ -11,7 +11,14 @@ from typing import Any, Literal, Sequence
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from dili_rucam_agents.batch import (
+    PdfRunContext,
+    PdfRunFailure,
+    _get_resolved_analyst_configs,
+    _run_pdf_analysis,
+)
 from dili_rucam_agents.crew.agents import resolve_ground_truth_score_finder_model
+from dili_rucam_agents.crew.crew import validate_max_restarts
 
 
 @dataclass(frozen=True)
@@ -191,7 +198,132 @@ def _write_reproducibility_workbook(
     return output_path
 
 
+def validate_repeats(repeats: int) -> int:
+    if type(repeats) is not int or repeats < 1:
+        raise ValueError("repeats must be a positive integer")
+    return repeats
+
+
+def run_reproducibility_folder(
+    *,
+    input_dir: str,
+    output_dir: str,
+    repeats: int = 5,
+    prompt_path: str | None = None,
+    enable_score_masking: bool = False,
+    strict_scoring: bool = False,
+    use_analyst_delta: bool = False,
+    use_analyst_epsilon: bool = False,
+    use_analyst_zeta: bool = False,
+    use_analyst_eta: bool = False,
+    debug: bool = False,
+    force_rerun: bool = False,
+    max_restarts: int = 2,
+) -> list[Path]:
+    repeats = validate_repeats(repeats)
+    max_restarts = validate_max_restarts(max_restarts)
+    source_dir = Path(input_dir).expanduser().resolve()
+    results_dir = Path(output_dir).expanduser().resolve()
+    results_dir.mkdir(parents=True, exist_ok=True)
+    enabled_analyst_configs = _get_resolved_analyst_configs(
+        use_analyst_delta=use_analyst_delta,
+        use_analyst_epsilon=use_analyst_epsilon,
+        use_analyst_zeta=use_analyst_zeta,
+        use_analyst_eta=use_analyst_eta,
+    )
+    summary_paths: list[Path] = []
+
+    for pdf_path in sorted(source_dir.glob("*.pdf")):
+        print(
+            f"\n===================== Reproducibility PDF: {pdf_path} "
+            f"({repeats} repeats) =====================\n"
+        )
+        pdf_parent = results_dir / pdf_path.stem
+        pdf_parent.mkdir(parents=True, exist_ok=True)
+        summary_path = pdf_parent / "summary.xlsx"
+        records: list[ReproducibilityRunRecord] = []
+        for repeat_index in range(1, repeats + 1):
+            repeat_dir = pdf_parent / f"{pdf_path.stem}_{repeat_index}"
+            try:
+                result = _run_pdf_analysis(
+                    pdf_path=pdf_path,
+                    pdf_output_dir=repeat_dir,
+                    prompt_path=prompt_path,
+                    enabled_analyst_configs=enabled_analyst_configs,
+                    enable_score_masking=enable_score_masking,
+                    strict_scoring=strict_scoring,
+                    use_analyst_delta=use_analyst_delta,
+                    use_analyst_epsilon=use_analyst_epsilon,
+                    use_analyst_zeta=use_analyst_zeta,
+                    use_analyst_eta=use_analyst_eta,
+                    debug=debug,
+                    force_rerun=force_rerun,
+                    max_restarts=max_restarts,
+                    run_context=PdfRunContext(
+                        mode="reproducibility",
+                        repeat_index=repeat_index,
+                    ),
+                )
+            except PdfRunFailure as exc:
+                records.append(
+                    ReproducibilityRunRecord(
+                        repeat=repeat_index,
+                        repeat_directory=repeat_dir.name,
+                        status="failed",
+                        pdf_filename=pdf_path.name,
+                        analyst_scores={
+                            config["key"]: exc.row.get(config["key"])
+                            for config in enabled_analyst_configs
+                        },
+                        masked_rucam_score=exc.row.get("masked_rucam_score"),
+                        masked_rucam_category=exc.row.get("masked_rucam_category"),
+                        error=exc.diagnostic,
+                    )
+                )
+                _write_reproducibility_workbook(
+                    records=records,
+                    enabled_analyst_configs=enabled_analyst_configs,
+                    enable_score_masking=enable_score_masking,
+                    output_path=summary_path,
+                )
+                raise RuntimeError(
+                    f"Reproducibility batch stopped at {pdf_path.name} "
+                    f"repeat {repeat_index}: {exc.diagnostic}"
+                ) from exc
+
+            if result.reused:
+                print(f"Skipping completed repeat: {repeat_dir.name}")
+            records.append(
+                ReproducibilityRunRecord(
+                    repeat=repeat_index,
+                    repeat_directory=repeat_dir.name,
+                    status="completed",
+                    pdf_filename=pdf_path.name,
+                    analyst_scores={
+                        config["key"]: result.row.get(config["key"])
+                        for config in enabled_analyst_configs
+                    },
+                    masked_rucam_score=result.row.get("masked_rucam_score"),
+                    masked_rucam_category=result.row.get("masked_rucam_category"),
+                )
+            )
+            _write_reproducibility_workbook(
+                records=records,
+                enabled_analyst_configs=enabled_analyst_configs,
+                enable_score_masking=enable_score_masking,
+                output_path=summary_path,
+            )
+        summary_paths.append(summary_path)
+    print(
+        "\n===================== Reproducibility analysis completed "
+        "=====================\n"
+    )
+    return summary_paths
+
+
 __all__ = [
     "ReproducibilityRunRecord",
     "ScoreStatistics",
+    "run_reproducibility_folder",
+    "validate_repeats",
 ]
