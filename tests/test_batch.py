@@ -87,9 +87,7 @@ def test_shared_pdf_runner_returns_stable_analyst_keys_and_repeat_status(
         write_complete_reports(Path(output_dir))
         return "ok"
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
 
     result = _run_pdf_analysis(
         pdf_path=pdf_path,
@@ -137,9 +135,7 @@ def test_repeat_completion_requires_matching_repeat_metadata(tmp_path, monkeypat
         )
     )
     validator = Mock(return_value=True)
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.is_end_to_end_complete", validator
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.is_end_to_end_complete", validator)
 
     assert not _is_pdf_run_complete(
         pdf_path=pdf_path,
@@ -181,9 +177,7 @@ def test_shared_pdf_runner_preserves_run_failure_when_partial_report_is_invalid(
         )
         raise RuntimeError("original analysis failure")
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
 
     with pytest.raises(PdfRunFailure, match="RuntimeError") as exc_info:
         _run_pdf_analysis(
@@ -229,9 +223,7 @@ def test_shared_pdf_runner_preserves_run_failure_with_malformed_ground_truth(
         )
         raise RuntimeError("original analysis failure")
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
 
     with pytest.raises(PdfRunFailure, match="RuntimeError") as exc_info:
         _run_pdf_analysis(

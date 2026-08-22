@@ -45,9 +45,7 @@ def _write_complete_reports(result_dir: Path) -> None:
         "analyst-beta_report.md",
         "analyst-gamma_report.md",
     ):
-        (result_dir / report_name).write_text(
-            _complete_report(), encoding="utf-8"
-        )
+        (result_dir / report_name).write_text(_complete_report(), encoding="utf-8")
 
 
 def test_score_statistics_computes_sample_spread_and_agreement():
@@ -223,9 +221,12 @@ def test_validate_repeats_rejects_non_positive_integers(value):
 def test_reproducibility_empty_input_returns_no_summaries(tmp_path: Path):
     input_dir = tmp_path / "input"
     input_dir.mkdir()
-    assert run_reproducibility_folder(
-        input_dir=str(input_dir), output_dir=str(tmp_path / "output")
-    ) == []
+    assert (
+        run_reproducibility_folder(
+            input_dir=str(input_dir), output_dir=str(tmp_path / "output")
+        )
+        == []
+    )
 
 
 def test_reproducibility_persists_failed_repeat_then_stops(tmp_path: Path, monkeypatch):
@@ -338,9 +339,7 @@ def test_reproducibility_force_rerun_disables_skip_and_resume(
         _write_complete_reports(Path(output_dir))
         return "ok"
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
 
     run_reproducibility_folder(
         input_dir=str(input_dir),
@@ -388,9 +387,7 @@ def test_reproducibility_expansion_runs_only_the_new_repeat(
         _write_complete_reports(Path(output_dir))
         return "ok"
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
 
     run_reproducibility_folder(
         input_dir=str(input_dir), output_dir=str(output_dir), repeats=3
@@ -435,9 +432,7 @@ def test_reproducibility_contraction_ignores_and_preserves_higher_directories(
     )
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
-    workbook = load_workbook(
-        output_dir / "case" / "summary.xlsx", data_only=True
-    )
+    workbook = load_workbook(output_dir / "case" / "summary.xlsx", data_only=True)
     assert [row[0] for row in list(workbook["Runs"].values)[1:]] == [1, 2]
 
 
@@ -477,9 +472,7 @@ def test_reproducibility_failure_sinks_keep_raw_provider_text_private(
     repeat_dir = output_dir / "case" / "case_1"
     status_text = (repeat_dir / "run_status.json").read_text()
     log_text = (repeat_dir / "case.log").read_text()
-    workbook = load_workbook(
-        output_dir / "case" / "summary.xlsx", data_only=True
-    )
+    workbook = load_workbook(output_dir / "case" / "summary.xlsx", data_only=True)
     workbook_text = " ".join(
         str(cell.value)
         for sheet in workbook.worksheets
@@ -511,9 +504,7 @@ def test_reproducibility_success_has_no_log_without_debug(tmp_path: Path, monkey
         _write_complete_reports(Path(output_dir))
         return "ok"
 
-    monkeypatch.setattr(
-        "dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end
-    )
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
 
     run_reproducibility_folder(
         input_dir=str(input_dir), output_dir=str(output_dir), repeats=1

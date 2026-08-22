@@ -57,9 +57,7 @@ class PdfRunResult:
 
 
 class PdfRunFailure(RuntimeError):
-    def __init__(
-        self, *, pdf_path: Path, row: dict[str, Any], diagnostic: str
-    ) -> None:
+    def __init__(self, *, pdf_path: Path, row: dict[str, Any], diagnostic: str) -> None:
         self.pdf_path = pdf_path
         self.row = dict(row)
         self.diagnostic = diagnostic
@@ -296,9 +294,7 @@ def _run_pdf_analysis(
     stdout_cm: contextlib.AbstractContextManager[object] = contextlib.nullcontext()
     stderr_cm: contextlib.AbstractContextManager[object] = contextlib.nullcontext()
     if debug:
-        log_file = (pdf_output_dir / f"{pdf_path.stem}.log").open(
-            "w", encoding="utf-8"
-        )
+        log_file = (pdf_output_dir / f"{pdf_path.stem}.log").open("w", encoding="utf-8")
         stdout_cm = contextlib.redirect_stdout(log_file)
         stderr_cm = contextlib.redirect_stderr(log_file)
 
@@ -478,12 +474,16 @@ def _write_summary_workbook(
     sheet = workbook.active
     sheet.title = "Batch Summary"
 
-    headers = ["pdf_filename"] + [
-        config["resolved_model_name"] for config in enabled_analyst_configs
-    ] + ["masked_rucam_score", "masked_rucam_category"]
-    row_keys = ["pdf_filename"] + [
-        config["key"] for config in enabled_analyst_configs
-    ] + ["masked_rucam_score", "masked_rucam_category"]
+    headers = (
+        ["pdf_filename"]
+        + [config["resolved_model_name"] for config in enabled_analyst_configs]
+        + ["masked_rucam_score", "masked_rucam_category"]
+    )
+    row_keys = (
+        ["pdf_filename"]
+        + [config["key"] for config in enabled_analyst_configs]
+        + ["masked_rucam_score", "masked_rucam_category"]
+    )
 
     sheet.append(headers)
     for row in rows:
