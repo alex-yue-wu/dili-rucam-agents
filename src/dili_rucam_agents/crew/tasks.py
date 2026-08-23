@@ -74,6 +74,10 @@ def build_analyst_instruction_contract(
         Return a complete SECTION A, SECTION B, and fenced SECTION C JSON.
         Do not stop after SECTION A or partway through SECTION B; if space is constrained, prioritize completing
         SECTION B and the fenced SECTION C JSON over adding detail to SECTION A.
+        Head each of the three sections with a level-2 Markdown heading whose line begins with exactly two hash
+        marks: "## SECTION A", "## SECTION B", and "## SECTION C" (a trailing title after the letter is fine).
+        Do not nest them deeper as "###", do not use "#", and do not mark a section with bold text instead of a
+        heading; any other form is rejected even when the section content is complete.
 
         --- BEGIN CASE BUNDLE JSON ---
         {bundle_placeholder}
@@ -106,6 +110,8 @@ def build_analyst_instruction_contract(
             The previous attempt was rejected: {_RETRY_DIAGNOSTIC_SLOT}
             Return a fresh, complete report with non-empty SECTION A and SECTION B,
             followed by strict fenced SECTION C JSON.
+            Head the three sections with exactly two hash marks -- "## SECTION A", "## SECTION B",
+            and "## SECTION C" -- not "###", not "#", and not bold text alone.
             --- END RETRY REQUIREMENT ---
             """
         ).rstrip(),

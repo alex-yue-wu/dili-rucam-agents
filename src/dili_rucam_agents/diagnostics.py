@@ -34,6 +34,11 @@ _VALIDATION_ISSUE_MESSAGES = {
     "report_empty": "Report is empty.",
     "summary_placeholder": "Report is a summary placeholder.",
     "missing_section": "Missing {field}.",
+    "section_heading_level": (
+        "{field} was found but its heading is not a level-2 Markdown heading. "
+        "Start the line with exactly two hash marks, for example "
+        "'## {field} — ...'. Do not use '###', '#', or bold text alone."
+    ),
     "duplicate_section": "Report must contain exactly one {field}.",
     "section_order": "Sections must appear in A, B, C order.",
     "empty_section": "{field} is empty.",

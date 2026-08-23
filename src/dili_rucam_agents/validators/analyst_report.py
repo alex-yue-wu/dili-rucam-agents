@@ -19,6 +19,12 @@ from .rucam_json import RucamReport
 _SECTION_HEADING_RE = re.compile(
     r"(?im)^[ \t]{0,3}##(?!#)[ \t]+\*{0,2}SECTION[ \t]+([ABC])\b[^\n]*"
 )
+# Recognizes a section label rendered at any other heading level, or emphasized
+# instead of headed, so a wrong-level heading is reported as such rather than as
+# a missing section. Never widens what validates - only what the failure says.
+_MISLEVELED_SECTION_HEADING_RE = re.compile(
+    r"(?im)^[ \t]{0,3}(?:#{1,6}[ \t]*\*{0,2}|\*{1,2})[ \t]*SECTION[ \t]+([ABC])\b"
+)
 _FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\r\n]*)$")
 _FLOAT_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
 
@@ -51,10 +57,10 @@ class _MarkdownFence:
 def parse_section_c_payload(
     report_text: str, *, allow_legacy_json: bool = False
 ) -> dict[str, Any]:
-    headings, fences = _markdown_structure(report_text)
+    headings, fences, masked_text = _markdown_structure(report_text)
     section_c_headings = [match for match in headings if match.group(1).upper() == "C"]
     if not section_c_headings:
-        raise _validation_error("SECTION_C", "missing_section")
+        raise _validation_error("SECTION_C", _absent_section_code(masked_text, "C"))
     if not allow_legacy_json and len(section_c_headings) != 1:
         raise _validation_error("SECTION_C", "duplicate_section")
     section_c = section_c_headings[-1] if allow_legacy_json else section_c_headings[0]
@@ -116,14 +122,16 @@ def validate_analyst_report(
         raise _validation_error("report", "report_empty")
     if "see complete sections a, b, and c above." in stripped.lower():
         raise _validation_error("report", "summary_placeholder")
-    headings, _ = _markdown_structure(report_text)
+    headings, _, masked_text = _markdown_structure(report_text)
     by_name = {
         name: [match for match in headings if match.group(1).upper() == name]
         for name in ("A", "B", "C")
     }
     for required in ("A", "B", "C"):
         if not by_name[required]:
-            raise _validation_error(f"SECTION_{required}", "missing_section")
+            raise _validation_error(
+                f"SECTION_{required}", _absent_section_code(masked_text, required)
+            )
         if len(by_name[required]) != 1:
             raise _validation_error(f"SECTION_{required}", "duplicate_section")
     if tuple(match.group(1).upper() for match in headings) != ("A", "B", "C"):
@@ -152,7 +160,7 @@ def validate_analyst_report(
 
 def _markdown_structure(
     report_text: str,
-) -> tuple[list[re.Match[str]], list[_MarkdownFence]]:
+) -> tuple[list[re.Match[str]], list[_MarkdownFence], str]:
     fences: list[_MarkdownFence] = []
     masked_ranges: list[tuple[int, int]] = []
     active: tuple[str, int, int, int, str] | None = None
@@ -200,8 +208,18 @@ def _markdown_structure(
         for index in range(start, end):
             if masked[index] not in "\r\n":
                 masked[index] = " "
-    headings = list(_SECTION_HEADING_RE.finditer("".join(masked)))
-    return headings, fences
+    masked_text = "".join(masked)
+    headings = list(_SECTION_HEADING_RE.finditer(masked_text))
+    return headings, fences, masked_text
+
+
+def _absent_section_code(masked_text: str, name: str) -> str:
+    """Distinguish a mislevelled section heading from a genuinely absent section."""
+
+    for match in _MISLEVELED_SECTION_HEADING_RE.finditer(masked_text):
+        if match.group(1).upper() == name.upper():
+            return "section_heading_level"
+    return "missing_section"
 
 
 def _fence_language(info: str) -> str:

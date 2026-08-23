@@ -1483,3 +1483,22 @@ def test_load_rucam_prompt_uses_strict_mode_when_requested():
     prompt = load_rucam_prompt(strict_scoring=True)
 
     assert prompt == DEFAULT_RUCAM_STRICT_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def test_analyst_instruction_states_the_required_section_heading_level():
+    """Analysts must be told the exact heading form the strict validator requires."""
+    contract = build_analyst_instruction_contract(
+        analyst_label="Analyst Alpha",
+        prompt_text="PROMPT",
+        model_name="test-model",
+        bundle_input_name="prepared_case_bundle_json",
+    )
+
+    description = contract.render_task_description(retry_instruction=None)
+    for heading in ("## SECTION A", "## SECTION B", "## SECTION C"):
+        assert heading in description
+    assert "###" in description
+
+    retry = contract.render_task_description(retry_instruction="some diagnostic")
+    for heading in ("## SECTION A", "## SECTION B", "## SECTION C"):
+        assert heading in retry

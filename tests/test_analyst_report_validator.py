@@ -291,3 +291,52 @@ def test_validation_error_constructor_canonicalizes_hostile_issues_without_hooks
     assert issues.invoked == []
     assert error.diagnostic == SafeValidationDiagnostic((("report", "invalid_report"),))
     assert secret not in str(error)
+
+
+def test_wrong_heading_level_reports_actionable_heading_diagnostic():
+    """A section present at the wrong heading level must not be reported as missing."""
+    report = report_for().replace("## SECTION", "### SECTION")
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report(report)
+
+    assert exc_info.value.diagnostic.issues == (("SECTION_A", "section_heading_level"),)
+    message = str(exc_info.value)
+    assert "##" in message
+    assert "SECTION A" in message
+    assert "Missing SECTION A." != message
+
+
+def test_bold_only_section_heading_reports_actionable_heading_diagnostic():
+    report = report_for().replace(
+        "## SECTION A — HUMAN-READABLE FULL REPORT",
+        "**SECTION A — HUMAN-READABLE FULL REPORT**",
+    )
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report(report)
+
+    assert exc_info.value.diagnostic.issues == (("SECTION_A", "section_heading_level"),)
+
+
+def test_genuinely_absent_section_still_reports_missing_section():
+    report = "## SECTION B\n\nTable\n\n## SECTION C\n\n```json\n{}\n```\n"
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report(report)
+
+    assert exc_info.value.diagnostic.issues == (("SECTION_A", "missing_section"),)
+
+
+def test_heading_level_diagnostic_ignores_headings_inside_code_fences():
+    """A fenced '### SECTION A' example must not mask a genuinely absent section."""
+    report = (
+        "## SECTION B\n\nTable\n\n"
+        "````text\n### SECTION A\n````\n\n"
+        "## SECTION C\n\n```json\n{}\n```\n"
+    )
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report(report)
+
+    assert exc_info.value.diagnostic.issues == (("SECTION_A", "missing_section"),)
