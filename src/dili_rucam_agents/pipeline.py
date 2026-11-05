@@ -25,6 +25,8 @@ from dili_rucam_agents.checkpoints import (
     atomic_write_text,
     build_analyst_identities,
 )
+from dili_rucam_agents.hepatotoxicity.evidence import DEFAULT_EVIDENCE_AS_OF
+from dili_rucam_agents.hepatotoxicity.settings import HepatotoxicityEvidenceSettings
 from dili_rucam_agents.masking import (
     MASK_TOKEN,
     extract_patient_specific_rucam_scores,
@@ -33,6 +35,7 @@ from dili_rucam_agents.masking import (
 )
 
 _REPORT_FILENAME_MAP = {
+    "hepatotoxicity_evidence": "hepatotoxicity-evidence_report.md",
     "masked_case_bundle": "masked-case-bundle_report.md",
     "ground_truth_rucam_score": "ground-truth-rucam-score_report.md",
     "analyst_alpha": "analyst-alpha_report.md",
@@ -61,6 +64,7 @@ def _build_checkpoint_context(
     enable_score_masking: bool,
     strict_scoring: bool,
     analyst_flags: dict[str, bool],
+    hepatotoxicity_settings: HepatotoxicityEvidenceSettings,
 ) -> PipelineCheckpointContext:
     prompt_text = load_rucam_prompt(prompt_path, strict_scoring=strict_scoring)
     pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
@@ -90,6 +94,7 @@ def _build_checkpoint_context(
         },
         enable_score_masking=enable_score_masking,
         strict_scoring=strict_scoring,
+        hepatotoxicity_evidence_sha256=hepatotoxicity_settings.fingerprint(),
     )
     return PipelineCheckpointContext(
         store=AnalystCheckpointStore(
@@ -150,10 +155,12 @@ def run_end_to_end(
     use_analyst_eta: bool = False,
     max_restarts: int = 2,
     resume: bool = True,
+    hepatotoxicity_settings: HepatotoxicityEvidenceSettings | None = None,
 ) -> str:
     """Public helper used by scripts/tests to run the full pipeline."""
 
     max_restarts = validate_max_restarts(max_restarts)
+    evidence_settings = hepatotoxicity_settings or HepatotoxicityEvidenceSettings()
     resolved_pdf = str(Path(pdf_path).expanduser().resolve())
     resolved_prompt = Path(prompt_path).expanduser().resolve() if prompt_path else None
     resolved_output_dir = (
@@ -177,6 +184,7 @@ def run_end_to_end(
             enable_score_masking=enable_score_masking,
             strict_scoring=strict_scoring,
             analyst_flags=analyst_flags,
+            hepatotoxicity_settings=evidence_settings,
         )
         if resolved_output_dir
         else {}
@@ -225,6 +233,7 @@ def run_end_to_end(
         instruction_contracts=(
             checkpoint_context.instruction_contracts if resolved_output_dir else None
         ),
+        hepatotoxicity_settings=evidence_settings,
     )
 
     if isinstance(result, tuple):
@@ -256,6 +265,7 @@ def is_end_to_end_complete(
     use_analyst_epsilon: bool = False,
     use_analyst_zeta: bool = False,
     use_analyst_eta: bool = False,
+    hepatotoxicity_settings: HepatotoxicityEvidenceSettings | None = None,
 ) -> bool:
     """Return whether all enabled analyst checkpoints are compatible and valid."""
 
@@ -274,6 +284,9 @@ def is_end_to_end_complete(
             "use_analyst_zeta": use_analyst_zeta,
             "use_analyst_eta": use_analyst_eta,
         },
+        hepatotoxicity_settings=(
+            hepatotoxicity_settings or HepatotoxicityEvidenceSettings()
+        ),
     )
     reports = context.store.load_compatible_reports(
         list(context.identities.values()),
@@ -347,6 +360,53 @@ def _main() -> None:
         help="Enable the optional Analyst Eta agent (ANALYST_ETA_MODEL).",
     )
     parser.add_argument(
+        "--no-hepatotoxicity-evidence",
+        dest="hepatotoxicity_evidence",
+        action="store_false",
+        help=(
+            "Do not resolve RUCAM item 6 evidence into the case bundle "
+            "(analysts then score item 6 from the case text alone)."
+        ),
+    )
+    parser.add_argument(
+        "--hepatotoxicity-offline",
+        dest="hepatotoxicity_network",
+        action="store_false",
+        help=(
+            "Use only the pinned DILIrank workbook for item 6; "
+            "do not query DailyMed or PubMed."
+        ),
+    )
+    parser.add_argument(
+        "--drug",
+        dest="drug_names",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Resolve item 6 evidence for this drug name even if DILIrank does "
+            "not list it. Repeatable."
+        ),
+    )
+    parser.add_argument(
+        "--hepatotoxicity-cache",
+        dest="hepatotoxicity_cache",
+        help=(
+            "JSON cache for DailyMed and PubMed answers; reused on later runs "
+            "so a score never depends on the day it was computed."
+        ),
+    )
+    parser.add_argument(
+        "--hepatotoxicity-as-of",
+        dest="hepatotoxicity_as_of",
+        default=DEFAULT_EVIDENCE_AS_OF,
+        metavar="YYYY-MM-DD",
+        help=(
+            "Upper publication-date bound for the PubMed tier "
+            f"(default: {DEFAULT_EVIDENCE_AS_OF})."
+        ),
+    )
+    parser.add_argument(
         "--analyst-restarts",
         type=int,
         choices=range(0, 3),
@@ -366,6 +426,13 @@ def _main() -> None:
             use_analyst_zeta=args.use_analyst_zeta,
             use_analyst_eta=args.use_analyst_eta,
             max_restarts=args.analyst_restarts,
+            hepatotoxicity_settings=HepatotoxicityEvidenceSettings(
+                enabled=args.hepatotoxicity_evidence,
+                drug_names=tuple(args.drug_names),
+                network_enabled=args.hepatotoxicity_network,
+                as_of=args.hepatotoxicity_as_of,
+                cache_path=args.hepatotoxicity_cache,
+            ),
         )
     )
 

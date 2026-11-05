@@ -19,6 +19,11 @@ from dili_rucam_agents.diagnostics import (
     validate_failure_kind,
     validate_validation_diagnostic,
 )
+from dili_rucam_agents.hepatotoxicity.report import render_hepatotoxicity_report
+from dili_rucam_agents.hepatotoxicity.settings import (
+    HepatotoxicityEvidenceSettings,
+    apply_hepatotoxicity_evidence,
+)
 from dili_rucam_agents.ingestion.build_bundle import build_case_bundle
 from dili_rucam_agents.masking import mask_case_bundle_payload
 from dili_rucam_agents.validators.analyst_report import (
@@ -280,12 +285,18 @@ def run_crew(
         Callable[[str, int, str, SafeValidationDiagnostic], None] | None
     ) = None,
     instruction_contracts: Mapping[str, AnalystInstructionContract] | None = None,
+    hepatotoxicity_settings: HepatotoxicityEvidenceSettings | None = None,
     **kwargs,
 ) -> str | Tuple[str, Dict[str, Optional[str]]]:
     max_restarts = validate_max_restarts(max_restarts)
-    raw_case_bundle_json, masked_case_bundle_json = _prepare_case_bundle_json(
+    (
+        raw_case_bundle_json,
+        masked_case_bundle_json,
+        hepatotoxicity_evidence_markdown,
+    ) = _prepare_case_bundle_json(
         pdf_path=pdf_path,
         enable_score_masking=enable_score_masking,
+        hepatotoxicity_settings=hepatotoxicity_settings,
     )
     bundle_input_name = (
         "masked_case_bundle_json" if masked_case_bundle_json else "raw_case_bundle_json"
@@ -435,6 +446,9 @@ def run_crew(
             raw_case_bundle_json
         )
 
+    if hepatotoxicity_evidence_markdown:
+        reports["hepatotoxicity_evidence"] = hepatotoxicity_evidence_markdown
+
     return final_output, reports
 
 
@@ -512,15 +526,32 @@ def _prepare_case_bundle_json(
     *,
     pdf_path: str,
     enable_score_masking: bool,
-) -> tuple[str, Optional[str]]:
+    hepatotoxicity_settings: HepatotoxicityEvidenceSettings | None = None,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Build the bundle, resolve item 6 evidence into it, then optionally mask.
+
+    The evidence block is attached before masking so that the raw bundle, the
+    masked bundle and the persisted evidence report all describe one resolution.
+    Masking rewrites only the extracted text surfaces, never this block.
+    """
+
     raw_payload = build_case_bundle(Path(pdf_path)).to_dict()
+    settings = hepatotoxicity_settings or HepatotoxicityEvidenceSettings()
+    raw_payload, resolution = apply_hepatotoxicity_evidence(raw_payload, settings)
+    evidence_markdown = (
+        render_hepatotoxicity_report(resolution) if resolution is not None else None
+    )
     raw_case_bundle_json = json.dumps(raw_payload, indent=2)
 
     if not enable_score_masking:
-        return raw_case_bundle_json, None
+        return raw_case_bundle_json, None, evidence_markdown
 
     masked_payload = mask_case_bundle_payload(raw_payload)
-    return raw_case_bundle_json, json.dumps(masked_payload, indent=2)
+    return (
+        raw_case_bundle_json,
+        json.dumps(masked_payload, indent=2),
+        evidence_markdown,
+    )
 
 
 def _run_ground_truth_score_finder(raw_case_bundle_json: str) -> str:

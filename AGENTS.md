@@ -19,6 +19,7 @@ It guarantees:
 
 - Deterministic, auditable PDF ingestion
 - Optional deterministic masking of prior RUCAM scores and causality conclusions found in source text
+- Deterministic resolution of prior-hepatotoxicity evidence for RUCAM item 6
 - Independent multi-analyst RUCAM scoring
 - Strict structured JSON outputs suitable for automation
 
@@ -35,6 +36,8 @@ PDF
           ↓
      optional score masking
           ↓
+     item 6 evidence cascade (deterministic, no LLM)
+          ↓
      3 default analysts
           ↓
      up to 4 optional analysts
@@ -45,10 +48,12 @@ PDF
 ### Repository Layout
 
 ```text
+dilirank_v2/
 docs/
 src/dili_rucam_agents/
   crew/
   ingestion/
+  hepatotoxicity/
   masking.py
   pipeline.py
   prompts/
@@ -82,7 +87,38 @@ Responsibilities:
 
 This step is heuristic and deterministic. It is intended to reduce leakage from source documents that already contain RUCAM judgments, and the same masked bundle is used both for analyst input and for persisted masked-output reporting.
 
-## 5. RUCAM Analyst Agents
+## 5. Deterministic Item 6 Evidence Cascade
+
+RUCAM item 6 (previous information on hepatotoxicity) is resolved between
+masking and the analyst tier, never by an analyst from memory.
+
+Sources are consulted in a fixed order and the cascade stops at the first one
+that resolves the drug:
+
+1. `dilirank_v2/DILIrank_v2.xlsx` (FDA DILIrank v2), offline and pinned.
+   vMost- and vLess-DILI-concern score `+2`, Ambiguous-DILI-concern `+1`,
+   vNo-DILI-concern `0`.
+2. The current FDA label on DailyMed. Liver injury in a boxed warning or a
+   warnings-and-precautions section scores `+2`, in adverse reactions `+1`.
+3. PubMed case reports, with a fixed query bounded by an as-of publication date.
+   One or more reports score `+1`, none scores `0`.
+
+Responsibilities:
+
+- Resolve every DILIrank compound name occurring in the case bundle text, and
+  any drug name supplied explicitly by the caller.
+- Attach the result to the case bundle as `hepatotoxicity_evidence`, with the
+  deciding tier, the score and the provenance behind it.
+- Persist a markdown artifact for the resolution when an output directory is
+  supplied.
+- Cache every networked answer on disk so a score never depends on the day the
+  pipeline ran.
+
+The analyst prompt reads item 6 off this block (Appendix C) and may not move a
+resolved score. Where the cascade resolved nothing, the prompt falls back to
+rungs that require a labelling quote or a citation in the case text.
+
+## 6. RUCAM Analyst Agents
 
 ### Default analysts
 
@@ -128,7 +164,7 @@ Each analyst must:
 5. Score all 7 RUCAM items.
 6. Produce Sections A, B, and C exactly as specified by the production prompt.
 
-## 6. Required Output Format
+## 7. Required Output Format
 
 ### SECTION A
 
@@ -142,20 +178,26 @@ RUCAM scoring table.
 
 Strict JSON with injury pattern, R-ratio, itemized scores, total score, and category.
 
-## 7. Engineering Standards
+## 8. Engineering Standards
 
 - Temperature remains 0 for all configured models when supported; models that reject explicit temperature use the provider-required default.
-- Ingestion and masking must be testable without live API calls.
+- Ingestion, masking and the item 6 evidence cascade must be testable without
+  live API calls.
+- The DILIrank tier stays offline. The DailyMed and PubMed tiers are consulted
+  only for explicitly supplied drug names, are cached on disk, and are bounded by
+  an as-of date.
 - Optional agents are activated only by explicit configuration.
 - Persist one report per enabled analyst when an output directory is supplied.
 - When masking is enabled, persist a markdown artifact for the masked case bundle with a stable section layout.
 
-## 8. Definition Of Done
+## 9. Definition Of Done
 
 A run is valid if:
 
 - `case_bundle_json` is generated successfully
 - the optional masking step preserves schema and redacts targeted RUCAM content when enabled
+- `hepatotoxicity_evidence` resolves every drug it can and records the deciding
+  source for each score
 - the 3 default analysts complete Sections A, B, and C
 - any enabled optional analysts complete Sections A, B, and C
 - final JSON validates against schema

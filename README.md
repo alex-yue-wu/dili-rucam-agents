@@ -29,6 +29,11 @@ PDF
           ↓
      optional deterministic score masking
           ↓
+     deterministic item 6 evidence cascade (no LLM)
+     ├─ DILIrank v2 (offline, pinned)
+     ├─ DailyMed label sections (cached)
+     └─ PubMed case reports (cached, date-bounded)
+          ↓
  ┌───────────────────────────┐
  │ Analyst Alpha             │
  ├───────────────────────────┤
@@ -48,6 +53,8 @@ PDF
 - `docs/` - design docs and execution plans.
 - `src/dili_rucam_agents/ingestion/` - deterministic PDF ingestion stack.
 - `src/dili_rucam_agents/masking.py` - deterministic score masking utilities.
+- `src/dili_rucam_agents/hepatotoxicity/` - deterministic RUCAM item 6 evidence cascade.
+- `dilirank_v2/DILIrank_v2.xlsx` - pinned FDA DILIrank v2 workbook used by that cascade.
 - `src/dili_rucam_agents/prompts/` - production RUCAM prompt.
 - `src/dili_rucam_agents/crew/` - CrewAI agents, tasks, and crew builder.
 - `src/dili_rucam_agents/pipeline.py` - CLI/SDK entry point.
@@ -188,6 +195,11 @@ When `--output-dir` is supplied, the pipeline writes artifacts for the enabled w
 
 - `masked-case-bundle_report.md` when `--mask-scores` is enabled. This is rendered from the same deterministic masked bundle JSON used for downstream analyst input, and includes a stable summary, extraction notes, masked text only, and masked table previews only.
 
+- `hepatotoxicity-evidence_report.md` whenever the item 6 cascade runs. It states
+  the cascade version, the as-of date, whether the networked tiers were consulted,
+  one row per resolved drug, and the provenance behind each score (DILIrank row,
+  DailyMed SPL ids, or the PubMed query and PMIDs).
+
 - `analyst-alpha_report.md`
 - `analyst-beta_report.md`
 - `analyst-gamma_report.md`
@@ -214,6 +226,61 @@ When `--output-dir` is supplied, the pipeline writes artifacts for the enabled w
   caller-supplied text, arbitrary objects, raw provider messages, or request data.
 
 Only enabled workflow artifacts are persisted.
+
+## Item 6 Evidence Cascade
+
+RUCAM item 6 asks whether the drug's hepatotoxicity was already known. Answered
+from model memory it is a reproducibility hazard, so it is resolved before any
+analyst runs, by a deterministic cascade that stops at the first source which
+resolves the drug:
+
+| Order | Source | Resolves when | Points |
+| --- | --- | --- | --- |
+| 1 | DILIrank v2, pinned at `dilirank_v2/DILIrank_v2.xlsx` | the drug is listed | vMost/vLess-DILI-concern `+2`, Ambiguous `+1`, vNo `0` |
+| 2 | the current FDA label on DailyMed | a label section reports liver injury | boxed warning or warnings & precautions `+2`, adverse reactions `+1` |
+| 3 | PubMed case reports | the fixed query returns a report published on or before the as-of date | `+1`, otherwise `0` |
+
+The result is attached to the case bundle as `hepatotoxicity_evidence`, and
+Appendix C of the analyst prompt tells the analyst to read item 6 off that block
+rather than recall it. A score it did not resolve falls back to the prompt's own
+rungs, which require a labelling quote or a citation in the case text.
+
+Drug names come from two places. Every DILIrank compound name occurring in the
+case text is resolved automatically, which also means the table can list a drug
+the paper only mentions in its discussion: the block is a lookup index, not a
+list of suspects, and the analyst selects the row for the suspect drug it chose.
+A drug DILIrank does not list reaches the DailyMed and PubMed tiers only when it
+is named with `--drug`, because nothing else in the deterministic layer knows
+which words are drug names.
+
+```bash
+# default: DILIrank for everything the case text names, no network
+uv run python -m dili_rucam_agents.pipeline examples/3568943.pdf --output-dir results/x
+
+# resolve a drug DILIrank does not list (herbals, withdrawn drugs, new approvals)
+uv run python -m dili_rucam_agents.pipeline case.pdf --output-dir results/x \
+    --drug "Ashwagandha" --hepatotoxicity-cache dilirank_v2/evidence-cache.json
+
+# DILIrank only, never touch the network
+uv run python -m dili_rucam_agents.pipeline case.pdf --output-dir results/x \
+    --hepatotoxicity-offline
+
+# turn the cascade off and score item 6 from the case text alone
+uv run python -m dili_rucam_agents.pipeline case.pdf --output-dir results/x \
+    --no-hepatotoxicity-evidence
+```
+
+Reproducibility notes:
+
+- The DILIrank tier is offline and needs no cache.
+- The networked tiers are consulted only for `--drug` names, and every answer is
+  written to `--hepatotoxicity-cache`. Commit that file and later runs reproduce
+  the same scores without the network.
+- `--hepatotoxicity-as-of` bounds the PubMed publication date, so a growing
+  literature cannot move a score. Moving the date is a deliberate act, like
+  bumping the rules version.
+- The cascade settings are part of the analyst checkpoint fingerprint, so
+  changing them re-runs the analysts instead of resuming stale reports.
 
 ## Batch Runs
 

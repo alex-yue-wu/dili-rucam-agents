@@ -16,6 +16,8 @@ from dili_rucam_agents.crew.tasks import (
     DEFAULT_RUCAM_INFERRING_PROMPT_PATH,
     DEFAULT_RUCAM_STRICT_PROMPT_PATH,
 )
+from dili_rucam_agents.hepatotoxicity.dailymed import DAILYMED_SECTION_SCORES
+from dili_rucam_agents.hepatotoxicity.dilirank import DILIRANK_CONCERN_SCORES
 from dili_rucam_agents.validators.rucam_json import RucamReport, RucamScores
 
 RULES_VERSION = "RUCAM_DananBenichou1993_modified_sheet_v2"
@@ -141,3 +143,57 @@ def test_inferring_prompt_bounds_its_inferences():
     assert "# SCORING MODE -- INFERRING (bounded qualitative inference)" in inferring
     assert "**Never** infer +3." in inferring
     assert "Course inferred from qualitative description" in inferring
+
+
+def test_item_6_defers_to_the_evidence_cascade():
+    """Item 6 was the one rung an analyst could answer from model memory."""
+
+    for name, text in _prompt_texts().items():
+        assert "## APPENDIX C -- THE ITEM 6 EVIDENCE BLOCK" in text, name
+        for heading in (
+            "### C.1 What the block is",
+            "### C.2 Matching an entry to your suspect drug",
+            "### C.3 How each source maps to points",
+            "### C.4 Fallback rungs",
+        ):
+            assert heading in text, f"{name} omits {heading}"
+        assert "**Do not answer this item from memory.**" in text, name
+        assert "`case_bundle_json.hepatotoxicity_evidence`" in text, name
+        for tier in (
+            "dilirank_v2",
+            "dailymed_label",
+            "pubmed_case_reports",
+            "unresolved",
+        ):
+            assert tier in text, f"{name} omits tier {tier}"
+        # The retired rung let the analyst award +1 from recall alone.
+        assert "established in the published literature to" not in text, name
+
+
+def test_prompt_score_tables_match_the_resolver_constants():
+    """A mapping change in code must be mirrored in the prompt, and vice versa."""
+
+    concern_row = re.compile(r"^\| (v\w+-DILI-concern|Ambiguous-DILI-concern) \| \*\*([+-]?\d)\*\* \|$", re.MULTILINE)
+    section_row = re.compile(r"^\| (Boxed warning|Warnings & precautions|Adverse reactions) \| \*\*([+-]?\d)\*\* \|$", re.MULTILINE)
+    section_keys = {
+        "Boxed warning": "boxed_warning",
+        "Warnings & precautions": "warnings_and_precautions",
+        "Adverse reactions": "adverse_reactions",
+    }
+
+    for name, text in _prompt_texts().items():
+        documented_concerns = {
+            concern.lower(): int(points) for concern, points in concern_row.findall(text)
+        }
+        assert documented_concerns == dict(DILIRANK_CONCERN_SCORES), name
+
+        documented_sections = {
+            section_keys[label]: int(points) for label, points in section_row.findall(text)
+        }
+        assert documented_sections == dict(DAILYMED_SECTION_SCORES), name
+
+
+def test_pre_flight_check_covers_the_item_6_source():
+    for name, text in _prompt_texts().items():
+        assert "answer all eleven lines" in text, name
+        assert "6. Item 6 `tier` and `score` as read from the evidence block" in text, name

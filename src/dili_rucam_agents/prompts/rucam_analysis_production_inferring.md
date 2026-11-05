@@ -23,10 +23,15 @@ The user will supply:
 
 - One or more case reports (e.g., PDF text extracted automatically by the API).
 - Optional: supplemental clinical summaries.
+- Optional: `case_bundle_json.hepatotoxicity_evidence`. This is not case data. It
+  is reference evidence about the drugs named in the case, resolved
+  deterministically from fixed sources before you run, and it is the
+  authoritative answer for RUCAM item 6. Appendix C defines it.
 
 You must:
 
-- Parse _only information present in the document_.
+- Parse _only information present in the document_, the
+  `hepatotoxicity_evidence` block being the single exception.
 - If data is missing, state clearly: `"Not reported"` and apply RUCAM rules accordingly.
 - Never hallucinate values.
 
@@ -281,8 +286,9 @@ before `onset_date`.
 
 - "Compatible or suggestive time to onset" means applying item 1's bands to that
   co-drug would score >= +1.
-- "Known hepatotoxic" means that co-drug would itself reach rung +1 or +2 of
-  item 6.
+- "Known hepatotoxic" means that co-drug's own entry in
+  `hepatotoxicity_evidence` scores +1 or +2 (Appendix C); with no entry for it,
+  that it would itself reach rung +1 or +2 of item 6.
 - A co-drug later **readministered without recurrence** of the liver injury is
   removed from consideration in this item.
 
@@ -342,20 +348,25 @@ score, print the six Group I lines and the two Group II lines, each marked
 
 ### 6) Previous information on hepatotoxicity -- score one rung (0 to +2)
 
-- **+2** -- the case bundle states that this reaction appears in the product's
-  official labelling (SmPC, package insert, prescribing information, "labelled",
-  "listed in the product characteristics"). **Quote that phrase.** Without a
-  quoted labelling statement you may not use this rung.
-- **+1** -- the same reaction with the suspect drug is previously published or
-  recognised, either because the bundle cites or describes such reports, or
-  because the drug's hepatotoxicity is established in the published literature to
-  your knowledge. In the latter case write
-  `evidence source: prior literature (no labelling statement in the case bundle)`.
-- **0** -- neither.
+**Do not answer this item from memory.** It is resolved before you run, by a
+fixed cascade over three reference sources, and the result is in
+`case_bundle_json.hepatotoxicity_evidence`. Appendix C defines that block.
 
-Tie-breaks: weighing +2 against +1, choose **+1** unless a labelling phrase is
-quoted. Weighing +1 against 0, choose +1 only if you can name both the drug and
-the injury pattern it is known for; otherwise 0.
+Procedure:
+
+1. In `hepatotoxicity_evidence.drugs`, find the single entry that names your
+   suspect drug from D6. Appendix C.2 governs the match.
+2. Take that entry's `score` verbatim.
+3. Print one line in SECTION A: `item 6: <score> via <tier> -- <rationale>`,
+   copying `tier` and `rationale` from the entry.
+4. Only when the block is absent, holds no entry for your suspect drug, or holds
+   `score: null` for it, score the fallback rungs in Appendix C.4 and print
+   `item 6: <score> via case bundle text (no cascade entry)`.
+
+You may not move a resolved `score` because of what you know about the drug, and
+you may not read an entry belonging to a different drug. If your own knowledge
+disagrees with the entry, the score still stands and the disagreement goes in
+`notes`.
 
 ### 7) Response to readministration -- score one rung (-2 to +3)
 
@@ -472,7 +483,101 @@ These are the resolutions this rules version requires. Follow them exactly.
 | "Moderate social drinking", unquantified | threshold not shown -> **0** for the alcohol sub-item |
 | Group I: HAV, HBV and obstruction excluded; HCV, alcohol and ischaemia not mentioned | g1 = 3 -> **-2** |
 | Group I all six excluded; CMV/EBV/HSV not mentioned | g1 = 6, g2 false -> **+1** |
-| Drug called a "well-recognised" cause, no labelling quote | **+1**, not +2 |
+| Suspect drug entry: tier `dilirank_v2`, class vMost-DILI-concern | item 6 = **+2** |
+| Suspect drug entry: tier `dilirank_v2`, class Ambiguous-DILI-concern | item 6 = **+1** |
+| Suspect drug entry: tier `dailymed_label`, section Adverse reactions | item 6 = **+1** |
+| Suspect drug entry: tier `pubmed_case_reports`, 9 reports | item 6 = **+1** |
+| Suspect drug entry: tier `pubmed_case_reports`, 0 reports | item 6 = **0** |
+| Entry scores 0 but you recall published cases | item 6 = **0**; the recollection goes in `notes` |
+| One name matches two DILIrank rows scoring +1 and +2 | D4 -> **+1** |
+| No entry for the suspect drug, bundle quotes no labelling | item 6 = **0** (C.4) |
+| Drug called a "well-recognised" cause, no entry and no labelling quote | item 6 = **0** (C.4) |
+
+## APPENDIX C -- THE ITEM 6 EVIDENCE BLOCK
+
+### C.1 What the block is
+
+`case_bundle_json.hepatotoxicity_evidence` is produced before any analysis by a
+deterministic cascade over three sources, consulted in this order and stopping at
+the first one that resolves the drug:
+
+| Order | Source | Resolves the drug when |
+| --- | --- | --- |
+| 1 | DILIrank v2 (FDA), pinned offline | the drug is listed in it |
+| 2 | the current FDA label on DailyMed | a label section reports liver injury |
+| 3 | PubMed case reports | the fixed query returns at least one report |
+
+Its shape:
+
+```text
+hepatotoxicity_evidence
+  rules_version    version of the cascade
+  as_of            date bounding the PubMed tier
+  network_enabled  whether sources 2 and 3 were consulted at all
+  notes            anything that qualifies the whole resolution
+  drugs[]          one entry per drug the cascade resolved
+    drug_name      the name as found in the case text or supplied by the caller
+    matched_names  the canonical name(s) the deciding source holds
+    origin         case_bundle_text (found by scanning) or requested
+    tier           dilirank_v2 | dailymed_label | pubmed_case_reports | unresolved
+    score          the item 6 points, or null when nothing resolved the drug
+    rationale      one sentence naming the deciding evidence
+    notes          anything that qualifies this entry
+```
+
+### C.2 Matching an entry to your suspect drug
+
+An entry is your suspect drug's entry when its `drug_name`, or any of its
+`matched_names`, is the drug you chose under D6 -- compared case-insensitively
+and ignoring a trailing salt or hydrate word ("hydrochloride", "sodium",
+"sulfate", "hcl" and the like), so `Amiodarone hydrochloride` matches
+"amiodarone". A brand name in the case report matches a generic entry only when
+the bundle itself states the pairing. If two entries both match, D4 applies:
+take the lower `score`.
+
+`drugs[]` holds every drug the cascade could resolve, concomitant drugs and
+incidental mentions included. A name appearing there is **not** a statement that
+it is the suspect drug, and an `origin` of `case_bundle_text` means only that the
+name occurred somewhere in the case text.
+
+### C.3 How each source maps to points
+
+Printed so you can check an entry, not so you can re-decide it.
+
+DILIrank concern class:
+
+| vDILI-Concern | Points |
+| --- | --- |
+| vMost-DILI-concern | **+2** |
+| vLess-DILI-concern | **+2** |
+| Ambiguous-DILI-concern | **+1** |
+| vNo-DILI-concern | **0** |
+
+Strongest DailyMed label section that reports liver injury:
+
+| Section | Points |
+| --- | --- |
+| Boxed warning | **+2** |
+| Warnings & precautions | **+2** |
+| Adverse reactions | **+1** |
+
+PubMed: one or more case reports pairing the drug with liver injury and
+published on or before `as_of` -> **+1**; none -> **0**.
+
+### C.4 Fallback rungs
+
+Use these only in the case described by step 4 of item 6:
+
+- **+2** -- the case bundle quotes this reaction from the product's official
+  labelling (SmPC, package insert, prescribing information). **Quote that
+  phrase.**
+- **+1** -- the case bundle cites or describes previous published reports of this
+  reaction with this drug.
+- **0** -- neither.
+
+In the fallback your own recollection of the literature is **not** evidence: with
+no labelling quote and no citation in the bundle the rung is **0**. Name which of
+the three conditions applied in SECTION A.
 
 <!-- END SHARED RUCAM CORE v2 -->
 
@@ -555,6 +660,8 @@ For each drug, herb and supplement:
 - Whether it was continued after the liver abnormality appeared
 - Whether it was restarted later, and whether the injury recurred (feeds items
   4 and 7)
+- Its entry in `case_bundle_json.hepatotoxicity_evidence`, if it has one: the
+  `tier`, `score` and `rationale` verbatim (feeds items 4 and 6)
 
 ### Laboratory data
 
@@ -607,7 +714,7 @@ its score.
 
 ## 4. Pre-flight check
 
-Before writing SECTION B, answer all ten lines in SECTION A. Each must be
+Before writing SECTION B, answer all eleven lines in SECTION A. Each must be
 answered with the actual value, not "yes".
 
 1. Suspect drug (D6)
@@ -616,12 +723,14 @@ answered with the actual value, not "yes".
 4. Course analyte, `peak`, `t0`, the `percent_fall` and `days` that decided the
    rung
 5. `g1` count for item 5
-6. Every one of the seven scores is inside its D8 set
-7. Total equals the sum of the seven scores -- show the addition
-8. Category matches the total using the category table
-9. SECTION B scores are identical to the SECTION C JSON values
-10. `notes` contains every entry the rules require (default ULNs, inference
-    applied, interval resolution, D7)
+6. Item 6 `tier` and `score` as read from the evidence block, or the Appendix
+   C.4 rung and why the block did not resolve the drug
+7. Every one of the seven scores is inside its D8 set
+8. Total equals the sum of the seven scores -- show the addition
+9. Category matches the total using the category table
+10. SECTION B scores are identical to the SECTION C JSON values
+11. `notes` contains every entry the rules require (default ULNs, inference
+    applied, interval resolution, D7, item 6 fallback)
 
 If any line fails, correct the score before writing SECTION B. Never report a
 total that does not equal the sum of the seven items.

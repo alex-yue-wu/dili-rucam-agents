@@ -187,7 +187,9 @@ def test_run_crew_does_not_skip_invalid_supplied_completed_report(monkeypatch):
     )
 
     assert constructed_keys == ["analyst_alpha"]
-    assert reports == {"analyst_alpha": replacement}
+    assert reports["analyst_alpha"] == replacement
+    # Item 6 evidence is resolved by default, so its report rides along.
+    assert set(reports) == {"analyst_alpha", "hepatotoxicity_evidence"}
 
 
 def test_non_finite_supplied_and_attempt_reports_never_complete_analyst(monkeypatch):
@@ -214,7 +216,8 @@ def test_non_finite_supplied_and_attempt_reports_never_complete_analyst(monkeypa
         "running",
         "completed",
     ]
-    assert reports == {"analyst_alpha": replacement}
+    assert reports["analyst_alpha"] == replacement
+    assert set(reports) == {"analyst_alpha", "hepatotoxicity_evidence"}
 
 
 def test_run_crew_restarts_after_execution_exception(monkeypatch):
@@ -912,7 +915,7 @@ def test_prepare_case_bundle_json_masks_deterministically(monkeypatch):
         lambda _: DummyBundle(),
     )
 
-    raw_json, masked_json = _prepare_case_bundle_json(
+    raw_json, masked_json, evidence_markdown = _prepare_case_bundle_json(
         pdf_path="dummy.pdf",
         enable_score_masking=True,
     )
@@ -920,6 +923,15 @@ def test_prepare_case_bundle_json_masks_deterministically(monkeypatch):
     assert '"RUCAM score 8"' in raw_json
     assert masked_json is not None
     assert "RUCAM score [RUCAM_SCORE_MASKED]" in masked_json
+    # The item 6 evidence block is attached before masking and survives it, so
+    # the analyst and the artifact describe one resolution.
+    assert "hepatotoxicity_evidence" in json.loads(raw_json)
+    assert "hepatotoxicity_evidence" in json.loads(masked_json)
+    assert json.loads(raw_json)["hepatotoxicity_evidence"] == (
+        json.loads(masked_json)["hepatotoxicity_evidence"]
+    )
+    assert evidence_markdown is not None
+    assert evidence_markdown.startswith("# Hepatotoxicity Evidence Report")
 
 
 def test_run_crew_passes_masked_bundle_to_analysts(monkeypatch):

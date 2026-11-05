@@ -65,6 +65,7 @@ def build_analyst_fingerprint(
     strict_scoring: bool,
     model: str,
     max_output_tokens: int | None,
+    hepatotoxicity_evidence_sha256: str | None = None,
 ) -> str:
     payload = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
@@ -74,6 +75,9 @@ def build_analyst_fingerprint(
         "strict_scoring": strict_scoring,
         "model": model,
         "max_output_tokens": max_output_tokens,
+        # Item 6 evidence is resolved into the bundle, so a different cascade
+        # configuration means a different analyst input.
+        "hepatotoxicity_evidence_sha256": hepatotoxicity_evidence_sha256,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -87,6 +91,7 @@ def build_analyst_identities(
     analyst_instruction_sha256: Mapping[str, str],
     enable_score_masking: bool,
     strict_scoring: bool,
+    hepatotoxicity_evidence_sha256: str | None = None,
 ) -> dict[str, AnalystIdentity]:
     identities: dict[str, AnalystIdentity] = {}
     for config in configs:
@@ -107,6 +112,7 @@ def build_analyst_identities(
                 strict_scoring=strict_scoring,
                 model=model,
                 max_output_tokens=max_output_tokens,
+                hepatotoxicity_evidence_sha256=hepatotoxicity_evidence_sha256,
             ),
         )
     return identities
