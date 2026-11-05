@@ -14,6 +14,7 @@ import re
 from typing import Iterable, Mapping, Sequence
 import xml.etree.ElementTree as ElementTree
 
+from .names import drug_name_keys
 from .transport import JsonFetcher, TextFetcher, build_url
 
 DAILYMED_SEARCH_URL = "https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json"
@@ -139,6 +140,8 @@ class DailyMedFinding:
     labels: tuple[SplReference, ...]
     search_url: str
     total_labels: int
+    search_name: str | None = None
+    searched_names: tuple[str, ...] = ()
 
     @property
     def score(self) -> int | None:
@@ -156,6 +159,8 @@ class DailyMedFinding:
             "labels": [label.to_dict() for label in self.labels],
             "search_url": self.search_url,
             "total_labels": self.total_labels,
+            "search_name": self.search_name,
+            "searched_names": list(self.searched_names),
         }
 
 
@@ -260,15 +265,32 @@ def resolve_dailymed(
     fetch_json: JsonFetcher,
     fetch_text: TextFetcher,
     max_labels: int = 3,
+    max_queries: int = 4,
 ) -> DailyMedFinding:
     """Run the DailyMed tier for `drug_name`.
 
-    At most `max_labels` SPLs are read, chosen by ascending setid, and the
+    DailyMed matches substrings of the names a label itself carries, so it finds
+    "Amiodarone hydrochloride" from "amiodarone" but nothing at all from
+    "morphine sulphate" or "ciclosporin". The drug name is therefore expanded
+    into its salt-stripped, spelling and synonym variants, and at most
+    `max_queries` of them are searched in order until one returns a label.
+
+    At most `max_labels` SPLs are then read, chosen by ascending setid, and the
     strongest section found across them decides the score.
     """
 
-    search_url = build_search_url(drug_name)
-    references, total = parse_spl_search(fetch_json(search_url))
+    candidates = drug_name_keys(drug_name)[: max(1, max_queries)] or (drug_name,)
+    searched: list[str] = []
+    references: tuple[SplReference, ...] = ()
+    total = 0
+    search_url = build_search_url(candidates[0])
+    for candidate in candidates:
+        searched.append(candidate)
+        search_url = build_search_url(candidate)
+        references, total = parse_spl_search(fetch_json(search_url))
+        if references:
+            break
+
     if not references:
         return DailyMedFinding(
             drug_name=drug_name,
@@ -278,6 +300,8 @@ def resolve_dailymed(
             labels=(),
             search_url=search_url,
             total_labels=total,
+            search_name=None,
+            searched_names=tuple(searched),
         )
 
     inspected = references[: max(1, max_labels)]
@@ -303,6 +327,8 @@ def resolve_dailymed(
         labels=inspected,
         search_url=search_url,
         total_labels=total,
+        search_name=searched[-1],
+        searched_names=tuple(searched),
     )
 
 
@@ -329,6 +355,8 @@ def finding_from_cache(drug_name: str, entry: Mapping[str, object]) -> DailyMedF
         total = int(entry.get("total_labels") or 0)
     except (TypeError, ValueError):
         total = 0
+    searched_raw = entry.get("searched_names")
+    search_name = entry.get("search_name")
     return DailyMedFinding(
         drug_name=drug_name,
         label_found=bool(entry.get("label_found")),
@@ -344,6 +372,16 @@ def finding_from_cache(drug_name: str, entry: Mapping[str, object]) -> DailyMedF
         labels=tuple(labels),
         search_url=str(entry.get("search_url") or ""),
         total_labels=total,
+        search_name=str(search_name) if search_name else None,
+        searched_names=tuple(
+            str(name)
+            for name in (
+                searched_raw
+                if isinstance(searched_raw, Sequence)
+                and not isinstance(searched_raw, str)
+                else ()
+            )
+        ),
     )
 
 

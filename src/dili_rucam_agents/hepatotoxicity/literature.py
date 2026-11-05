@@ -13,6 +13,7 @@ from datetime import date
 import re
 from typing import Mapping, Sequence
 
+from .names import drug_name_keys
 from .transport import JsonFetcher, build_url
 
 PUBMED_ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
@@ -80,15 +81,27 @@ def as_pubmed_date(as_of: str) -> str:
     return f"{year:04d}/{month:02d}/{day:02d}"
 
 
-def build_pubmed_query(drug_name: str, *, as_of: str) -> str:
-    """Build the fixed-template, date-bounded PubMed query for `drug_name`."""
+def build_pubmed_query(drug_name: str, *, as_of: str, max_names: int = 4) -> str:
+    """Build the fixed-template, date-bounded PubMed query for `drug_name`.
+
+    A paper may use any of the drug's names, so the name clause ORs together the
+    salt-stripped, spelling and synonym variants -- "frusemide" also searches
+    "furosemide" -- rather than searching one spelling and reporting no reports.
+    """
 
     cleaned = _QUOTE_RE.sub(" ", str(drug_name)).strip()
     if not cleaned:
         raise ValueError("drug_name must not be blank")
     upper_bound = as_pubmed_date(as_of)
+    names: list[str] = [cleaned]
+    for variant in drug_name_keys(cleaned)[: max(1, max_names)]:
+        if variant.lower() not in {name.lower() for name in names}:
+            names.append(variant)
+    name_clause = " OR ".join(f'"{name}"[Title/Abstract]' for name in names)
+    if len(names) > 1:
+        name_clause = f"({name_clause})"
     return (
-        f'"{cleaned}"[Title/Abstract] '
+        f"{name_clause} "
         f"AND {LIVER_INJURY_CLAUSE} "
         f"AND {CASE_REPORT_CLAUSE} "
         f'AND ("{PUBMED_EARLIEST_DATE}"[PDAT] : "{upper_bound}"[PDAT])'

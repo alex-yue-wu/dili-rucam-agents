@@ -53,9 +53,13 @@ def _render_dilirank(rows: Sequence[Mapping[str, Any]]) -> list[str]:
 
 def _render_dailymed(payload: Mapping[str, Any]) -> list[str]:
     section = payload.get("section")
+    searched = payload.get("searched_names") or []
     lines = [
         "- DailyMed:",
         f"  - label found: {'yes' if payload.get('label_found') else 'no'}",
+        "  - names searched: "
+        + (", ".join(str(name) for name in searched) or "none"),
+        f"  - name that matched: {payload.get('search_name') or 'none'}",
         f"  - matching labels in DailyMed: {payload.get('total_labels', 0)}",
         f"  - strongest section mentioning liver injury: {section or 'none'}",
     ]

@@ -17,7 +17,7 @@ from typing import Mapping, Sequence
 
 from openpyxl import load_workbook
 
-from .names import drug_name_keys, normalize_drug_name
+from .names import drug_name_index_keys, drug_name_keys, normalize_drug_name
 
 #: Points awarded for each DILIrank concern class, keyed by lower-cased class.
 #: Most- and Less-DILI-concern both mean the FDA label carries hepatotoxicity
@@ -202,7 +202,7 @@ def build_dilirank_table(path: Path) -> DILIrankTable:
 
     grouped: dict[str, list[DILIrankRecord]] = {}
     for record in records:
-        for key in drug_name_keys(record.compound_name):
+        for key in drug_name_index_keys(record.compound_name):
             grouped.setdefault(key, []).append(record)
 
     index = {

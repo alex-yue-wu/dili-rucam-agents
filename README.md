@@ -270,6 +270,49 @@ uv run python -m dili_rucam_agents.pipeline case.pdf --output-dir results/x \
     --no-hepatotoxicity-evidence
 ```
 
+### Drug-name matching
+
+A case report names a drug the way its authors write it, which differs from US
+reference data in four ways. All four are expanded into lookup keys by
+`hepatotoxicity/names.py`, and the exact name is always tried before any
+variant:
+
+| Difference | Example | Handling |
+| --- | --- | --- |
+| salt, hydrate, formulation word | `Amiodarone hydrochloride`, `Tetracycline phosphate complex` | trailing modifier tokens stripped |
+| British spelling | `sulphasalazine`, `oestradiol`, `amoxycillin` | spelling rules applied in both directions |
+| INN against USAN | `paracetamol`, `ciclosporin`, `rifampicin`, `frusemide` | explicit one-to-one alias table |
+| salt written first | `sodium valproate` | reordered to `valproate sodium` |
+
+Measured against 31 forms as they appear in case reports, DILIrank lookup
+resolves 28 (90%); before variant expansion it resolved 12 (38%). The benchmark
+is `PUBLISHED_NAME_FORMS` in `tests/test_hepatotoxicity.py`, so a regression
+fails a test rather than quietly lowering a score. No variant key merges two
+different drugs, which is also asserted.
+
+Known gaps, each deliberate:
+
+- **Brand names** (`Augmentin`, `Tylenol`) are not in DILIrank, so the automatic
+  text scan does not find them. Supplied with `--drug` they resolve fine, because
+  DailyMed indexes brand names.
+- **Drugs absent from DILIrank v2** reach the networked tiers only when supplied
+  with `--drug`. Sulfamethoxazole has no row in version 2, and non-US agents such
+  as flucloxacillin and nimesulide are absent by construction.
+- **Combination products** (`co-amoxiclav`, `co-trimoxazole`) are not aliased to
+  one ingredient: that would attribute the injury to the wrong moiety. Name the
+  ingredient you are scoring.
+
+DailyMed matches substrings of the names a label carries, so the salt-stripped
+form finds more labels than the full one (62 against 58 for amiodarone) and a
+British spelling finds none at all (`morphine sulphate` returns 0). The tier
+therefore searches up to four variants in order and stops at the first that
+returns a label, recording which name matched. The PubMed tier ORs the variants
+into one query, so a paper using either spelling counts.
+
+Each matched label set is read to a depth of three SPLs, chosen by ascending
+setid. That depth was measured: one SPL misses the hepatic section for
+cyclosporine and amiodarone, while three and five agree on every drug tried.
+
 Reproducibility notes:
 
 - The DILIrank tier is offline and needs no cache.

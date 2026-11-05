@@ -30,7 +30,11 @@ from dili_rucam_agents.hepatotoxicity.evidence import (
     annotate_case_bundle_payload,
     resolve_case_evidence,
 )
-from dili_rucam_agents.hepatotoxicity.names import drug_name_keys, strip_salt_suffixes
+from dili_rucam_agents.hepatotoxicity.names import (
+    drug_name_index_keys,
+    drug_name_keys,
+    strip_salt_suffixes,
+)
 from dili_rucam_agents.hepatotoxicity.report import render_hepatotoxicity_report
 from dili_rucam_agents.hepatotoxicity.settings import (
     HepatotoxicityEvidenceSettings,
@@ -105,7 +109,6 @@ def table(tmp_path):
     [
         ("Amiodarone hydrochloride", ("amiodarone hydrochloride", "amiodarone")),
         ("Amiodarone HCl", ("amiodarone hcl", "amiodarone")),
-        ("AMOXICILLIN", ("amoxicillin",)),
         ("Valproic acid", ("valproic acid",)),
         ("  ", ()),
     ],
@@ -114,11 +117,47 @@ def test_drug_name_keys_offer_the_salt_stripped_form(raw, expected):
     assert drug_name_keys(raw) == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("sulphasalazine", "sulfasalazine"),
+        ("oestradiol", "estradiol"),
+        ("amoxycillin", "amoxicillin"),
+        ("cefalexin", "cephalexin"),
+        ("paracetamol", "acetaminophen"),
+        ("ciclosporin", "cyclosporine"),
+        ("rifampicin", "rifampin"),
+        ("frusemide", "furosemide"),
+        ("sodium valproate", "valproic acid"),
+        ("Tetracycline phosphate complex", "tetracycline"),
+        ("Morphine sulphate", "morphine sulfate"),
+    ],
+)
+def test_published_spellings_reach_the_us_reference_form(raw, expected):
+    """British spellings, INN names and formulation words must all resolve."""
+
+    assert expected in drug_name_keys(raw)
+
+
+def test_the_exact_name_is_always_tried_before_any_variant():
+    keys = drug_name_keys("Morphine sulphate")
+
+    assert keys[0] == "morphine sulphate"
+    assert keys.index("morphine sulphate") < keys.index("morphine")
+
+
+def test_a_reference_row_is_indexed_under_its_published_alternatives():
+    keys = drug_name_index_keys("Acetaminophen")
+
+    assert "acetaminophen" in keys and "paracetamol" in keys
+
+
 def test_a_bare_cation_is_never_offered_as_a_lookup_key():
     """"Sodium lactate" must not be findable as "sodium"."""
 
     assert strip_salt_suffixes("sodium lactate") == "sodium"
-    assert drug_name_keys("Sodium lactate") == ("sodium lactate",)
+    assert "sodium" not in drug_name_keys("Sodium lactate")
+    assert "lactate" not in drug_name_keys("Sodium lactate")
 
 
 # ------------------------------------------------------------------------ dilirank
@@ -630,3 +669,144 @@ def test_urls_are_built_in_a_stable_order():
     assert build_url("https://example.test/x", {"b": 2, "a": 1}) == (
         "https://example.test/x?a=1&b=2"
     )
+
+
+# ------------------------------------------------- name accuracy across sources
+
+
+def test_dailymed_retries_with_the_us_spelling():
+    """DailyMed holds no "sulphate" label, so the variant has to be tried."""
+
+    def fetch_json(url):
+        if "sulfate" in url:
+            return {"data": [{"setid": "aaa"}], "metadata": {"total_elements": 9}}
+        return {"data": [], "metadata": {"total_elements": 0}}
+
+    finding = dailymed.resolve_dailymed(
+        "Morphine sulphate",
+        fetch_json=fetch_json,
+        fetch_text=lambda _: spl(("34066-1", "Hepatic failure reported.")),
+    )
+
+    assert finding.label_found is True
+    assert finding.search_name == "morphine sulfate"
+    assert finding.searched_names[0] == "morphine sulphate"
+    assert finding.score == 2
+
+
+def test_dailymed_stops_at_the_first_name_that_matches():
+    calls: list[str] = []
+
+    dailymed.resolve_dailymed(
+        "Amiodarone hydrochloride",
+        fetch_json=lambda url: (
+            calls.append(url)
+            or {"data": [{"setid": "aaa"}], "metadata": {"total_elements": 1}}
+        ),
+        fetch_text=lambda _: spl(("34066-1", "Hepatotoxicity.")),
+    )
+
+    assert len(calls) == 1
+
+
+def test_dailymed_records_every_name_it_tried_when_nothing_matched():
+    finding = dailymed.resolve_dailymed(
+        "Ciclosporin",
+        fetch_json=lambda _: {"data": [], "metadata": {"total_elements": 0}},
+        fetch_text=unreachable_fetcher,
+    )
+
+    assert finding.label_found is False
+    assert finding.search_name is None
+    assert "cyclosporine" in finding.searched_names
+
+
+def test_pubmed_query_ors_the_published_name_variants():
+    """A paper using the other spelling still counts as a published case."""
+
+    query = literature.build_pubmed_query("frusemide", as_of=AS_OF)
+
+    assert '"frusemide"[Title/Abstract]' in query
+    assert '"furosemide"[Title/Abstract]' in query
+    assert query.startswith("(")
+
+
+def test_pubmed_query_stays_simple_for_a_name_with_no_variants():
+    query = literature.build_pubmed_query("Tolvaptan", as_of=AS_OF)
+
+    assert query.startswith('"Tolvaptan"[Title/Abstract] AND')
+
+
+#: How case reports name a drug, against the DILIrank row it must reach.
+#: These are the forms that made recall 38% before name variants were added.
+PUBLISHED_NAME_FORMS = (
+    ("Amoxicillin", "Amoxicillin"),
+    ("amiodarone", "Amiodarone hydrochloride"),
+    ("Amiodarone HCl", "Amiodarone hydrochloride"),
+    ("morphine sulphate", "Morphine sulfate"),
+    ("sodium valproate", "Valproic acid"),
+    ("valproate", "Valproic acid"),
+    ("paracetamol", "Acetaminophen"),
+    ("sulphasalazine", "Sulfasalazine"),
+    ("amoxycillin", "Amoxicillin"),
+    ("oestradiol", "Estradiol valerate"),
+    ("cefalexin", "Cephalexin"),
+    ("ciclosporin", "Cyclosporine"),
+    ("rifampicin", "Rifampin"),
+    ("frusemide", "Furosemide"),
+    ("glibenclamide", "Glyburide"),
+    ("lignocaine", "Lidocaine"),
+    ("salbutamol", "Albuterol"),
+    ("phenobarbitone", "Phenobarbital sodium"),
+    ("tetracycline", "Tetracycline phosphate complex"),
+    ("indometacin", "Indomethacin"),
+    ("mesalazine", "Mesalamine"),
+    ("methotrexate", "Methotrexate sodium"),
+)
+
+#: Forms that deliberately do not resolve offline. Brand names are not in
+#: DILIrank at all, and sulfamethoxazole has no row in version 2. Both reach the
+#: DailyMed and PubMed tiers when supplied with --drug.
+KNOWN_UNRESOLVED_FORMS = ("Augmentin", "Tylenol", "sulphamethoxazole")
+
+
+@pytest.mark.parametrize(("published", "expected"), PUBLISHED_NAME_FORMS)
+def test_published_name_forms_resolve_against_the_pinned_workbook(published, expected):
+    assert expected in [
+        record.compound_name for record in load_dilirank_table().lookup(published)
+    ]
+
+
+@pytest.mark.parametrize("published", KNOWN_UNRESOLVED_FORMS)
+def test_the_documented_offline_gaps_are_still_the_only_gaps(published):
+    """Fails if a gap closes, so the documented accuracy stays true."""
+
+    assert load_dilirank_table().lookup(published) == ()
+
+
+def test_variant_keys_never_merge_two_different_drugs():
+    """A variant that collides with another drug would silently move a score."""
+
+    table = load_dilirank_table()
+
+    for key, records in table.index.items():
+        moieties = {
+            record.compound_name.split()[0].lower().rstrip(",") for record in records
+        }
+        assert len(moieties) == 1, f"key {key!r} merges {sorted(moieties)}"
+
+
+def test_published_alternatives_are_found_when_scanning_case_text():
+    resolution = resolve_case_evidence(
+        {"normalized_text": "She took paracetamol and ciclosporin, then frusemide."},
+        as_of=AS_OF,
+        network_enabled=False,
+        fetch_json=unreachable_fetcher,
+        fetch_text=unreachable_fetcher,
+    )
+
+    assert {finding.matched_names[0] for finding in resolution.findings} == {
+        "Acetaminophen",
+        "Cyclosporine",
+        "Furosemide",
+    }

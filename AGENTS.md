@@ -107,6 +107,10 @@ Responsibilities:
 
 - Resolve every DILIrank compound name occurring in the case bundle text, and
   any drug name supplied explicitly by the caller.
+- Match names through one deterministic normaliser covering salt, hydrate and
+  formulation suffixes, British spellings, INN/USAN aliases and salt-first word
+  order, trying the exact name before any variant. The networked tiers search
+  those variants in order and record which one matched.
 - Attach the result to the case bundle as `hepatotoxicity_evidence`, with the
   deciding tier, the score and the provenance behind it.
 - Persist a markdown artifact for the resolution when an output directory is
