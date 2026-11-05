@@ -18,6 +18,7 @@ from dili_rucam_agents.hepatotoxicity.dilirank import (
     DILIRANK_CONCERN_SCORES,
     DILIrankError,
     build_dilirank_table,
+    default_dilirank_path,
     load_dilirank_table,
 )
 from dili_rucam_agents.hepatotoxicity.evidence import (
@@ -810,3 +811,21 @@ def test_published_alternatives_are_found_when_scanning_case_text():
         "Cyclosporine",
         "Furosemide",
     }
+
+
+# ------------------------------------------------------------------- packaging
+
+
+def test_the_workbook_ships_with_the_docker_image():
+    """Without it the DILIrank tier resolves nothing and item 6 silently hits 0."""
+
+    repo_root = default_dilirank_path().parents[1]
+    dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
+    dockerignore = (repo_root / ".dockerignore").read_text(encoding="utf-8")
+
+    assert "COPY dilirank_v2 /app/dilirank_v2" in dockerfile
+    assert "dilirank_v2" not in dockerignore.split()
+
+
+def test_the_default_workbook_path_points_at_a_real_file():
+    assert default_dilirank_path().is_file()

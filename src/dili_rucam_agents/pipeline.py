@@ -397,6 +397,15 @@ def _main() -> None:
         ),
     )
     parser.add_argument(
+        "--dilirank-path",
+        dest="dilirank_path",
+        metavar="PATH",
+        help=(
+            "Override the DILIrank workbook location "
+            "(default: dilirank_v2/DILIrank_v2.xlsx at the repository root)."
+        ),
+    )
+    parser.add_argument(
         "--hepatotoxicity-as-of",
         dest="hepatotoxicity_as_of",
         default=DEFAULT_EVIDENCE_AS_OF,
@@ -432,6 +441,7 @@ def _main() -> None:
                 network_enabled=args.hepatotoxicity_network,
                 as_of=args.hepatotoxicity_as_of,
                 cache_path=args.hepatotoxicity_cache,
+                dilirank_path=args.dilirank_path,
             ),
         )
     )
