@@ -162,13 +162,13 @@ Environment variables let you pin each model deterministically:
 | `ANALYST_EPSILON_MODEL` | Optional Analyst Epsilon model override. | `qwen/qwen3.5-plus-02-15` |
 | `ANALYST_ZETA_MODEL` | Optional Analyst Zeta model override. | `claude-opus-4-7` |
 | `ANALYST_ETA_MODEL` | Optional Analyst Eta model override. | `z-ai/glm-5` |
-| `ANALYST_ALPHA_MAX_TOKENS` | Analyst Alpha max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `12000` |
-| `ANALYST_BETA_MAX_TOKENS` | Analyst Beta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `12000` |
-| `ANALYST_GAMMA_MAX_TOKENS` | Analyst Gamma max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `12000` |
-| `ANALYST_DELTA_MAX_TOKENS` | Analyst Delta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `12000` |
-| `ANALYST_EPSILON_MAX_TOKENS` | Analyst Epsilon max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `12000` |
-| `ANALYST_ZETA_MAX_TOKENS` | Analyst Zeta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `12000` |
-| `ANALYST_ETA_MAX_TOKENS` | Analyst Eta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `12000` |
+| `ANALYST_ALPHA_MAX_TOKENS` | Analyst Alpha max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
+| `ANALYST_BETA_MAX_TOKENS` | Analyst Beta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
+| `ANALYST_GAMMA_MAX_TOKENS` | Analyst Gamma max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
+| `ANALYST_DELTA_MAX_TOKENS` | Analyst Delta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
+| `ANALYST_EPSILON_MAX_TOKENS` | Analyst Epsilon max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
+| `ANALYST_ZETA_MAX_TOKENS` | Analyst Zeta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
+| `ANALYST_ETA_MAX_TOKENS` | Analyst Eta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
 | `ANALYST_MAX_TOKENS` | Shared fallback max completion/output tokens for all analysts. | unset |
 | `LLM_MAX_TOKENS` | Global fallback max completion/output tokens. | unset |
 | `ANALYST_MODEL` | Shared fallback for analysts without their own override. |  |
@@ -344,7 +344,8 @@ run-to-run score variation can be measured. It keeps the same two positional
 arguments as a regular batch, `INPUT_DIR` and `OUTPUT_DIR`, and adds `--repeats N`.
 
 `--repeats` defaults to `5`, must be an integer `>= 1`, and is rejected without
-`--reproducibility`. Every other batch flag (`--prompt-path`, `--mask-scores`,
+`--reproducibility`. `--continue-on-failure` is reproducibility-only and is
+described below. Every other batch flag (`--prompt-path`, `--mask-scores`,
 `--strict-scoring`, the optional-analyst flags, `--debug`, `--force-rerun`, and
 `--analyst-restarts`) behaves exactly as it does in a regular batch.
 
@@ -368,9 +369,18 @@ The source PDF is not copied, no nested `batch_summary.xlsx` is written inside a
 repeat directory, and no reproducibility workbook is written at the output root.
 
 PDFs run sequentially in sorted filename order, and each PDF's repeats run in
-ascending repeat index. Execution is fail-fast: when a repeat fails, that failed
-repeat is recorded in the current PDF's `summary.xlsx`, the run stops immediately,
-and no later repeat or PDF is started.
+ascending repeat index. Execution is fail-fast by default: when a repeat fails,
+that failed repeat is recorded in the current PDF's `summary.xlsx`, the run stops
+immediately, and no later repeat or PDF is started. The abort names the failed
+repeat and states that re-running the same command resumes the batch.
+
+`--continue-on-failure` records the failed repeat and carries on with the
+remaining repeats and PDFs instead, so one analyst that cannot produce a valid
+report does not discard the repeats after it. Every visited repeat is still
+written to its PDF's `summary.xlsx`, and the aggregate statistics cover the
+repeats that completed. The run then exits with an error naming every failed
+repeat, so a short batch is never reported as a clean one. The flag is rejected
+without `--reproducibility`.
 
 Checkpoint reuse is repeat-local. Each repeat directory carries its own analyst
 checkpoints and its own `run_status.json` recording the reproducibility mode and
@@ -405,6 +415,21 @@ execution fails or the report is incomplete. `--analyst-restarts` accepts `0`, `
 or `2`; its value counts restarts after the initial attempt, so the default permits
 three total attempts per analyst in one invocation. The single-PDF and batch CLIs
 both accept this option.
+
+A rejected attempt that stops partway through the report is reported as
+`report_truncated` rather than as a missing section, and each truncated attempt
+doubles that analyst's output-token budget for the next attempt, up to a ceiling
+of 64,000. On a reasoning model the configured budget covers the hidden reasoning
+tokens as well as the visible report, so repeating a truncated attempt under the
+same budget only moves the cut point; the default budget is 32,000 tokens against
+a finished report of roughly 1,600-3,800. A cap changes a completion only when it
+binds, so widening it cannot alter a report that already fits. The widening is
+transient: the analyst checkpoint is fingerprinted against the configured budget,
+not the escalated one, so a restart does not invalidate a sibling checkpoint.
+Changing the configured budget does invalidate that analyst's checkpoints, which
+is deliberate - a report produced under a binding cap is not the same output as
+one produced with room to finish. Pin `ANALYST_MAX_TOKENS` to the old value to
+keep existing checkpoints eligible for reuse.
 
 Validated analyst reports are checkpointed independently in each PDF result
 directory. Re-running a single PDF with the same `--output-dir` or re-running a

@@ -7,6 +7,7 @@ import pytest
 
 from dili_rucam_agents.batch import PdfRunFailure, PdfRunResult, _main
 from dili_rucam_agents.reproducibility import (
+    RESUME_HINT,
     ReproducibilityRunRecord,
     _score_statistics,
     _write_reproducibility_workbook,
@@ -618,3 +619,187 @@ def test_batch_cli_keeps_regular_dispatch_unchanged(tmp_path: Path, monkeypatch)
         "force_rerun": False,
         "max_restarts": 2,
     }
+
+
+def _failing_repeat_runner(calls, failing_repeats):
+    def fake_run_pdf_analysis(**kwargs):
+        pdf_path = kwargs["pdf_path"]
+        repeat = kwargs["run_context"].repeat_index
+        calls.append((pdf_path.name, repeat))
+        row = {
+            "pdf_filename": pdf_path.name,
+            "analyst_alpha": 6,
+            "analyst_beta": 7,
+            "analyst_gamma": 6,
+            "masked_rucam_score": None,
+            "masked_rucam_category": None,
+        }
+        if repeat in failing_repeats:
+            raise PdfRunFailure(
+                pdf_path=pdf_path,
+                row={**row, "analyst_beta": None, "analyst_gamma": None},
+                diagnostic=(
+                    "analyst_delta failed after 3 attempts (validation): "
+                    "Report stops partway through."
+                ),
+            )
+        return PdfRunResult(row=row, reused=False)
+
+    return fake_run_pdf_analysis
+
+
+def test_reproducibility_continue_on_failure_scores_the_remaining_repeats(
+    tmp_path: Path, monkeypatch
+):
+    """One truncated analyst must not discard the repeats that follow it."""
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+    calls = []
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility._run_pdf_analysis",
+        _failing_repeat_runner(calls, {3}),
+    )
+
+    with pytest.raises(RuntimeError, match="1 failed repeat"):
+        run_reproducibility_folder(
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            repeats=5,
+            continue_on_failure=True,
+        )
+
+    assert calls == [("case.pdf", repeat) for repeat in range(1, 6)]
+    workbook = load_workbook(output_dir / "case" / "summary.xlsx", data_only=True)
+    runs = list(workbook["Runs"].values)
+    assert [row[2] for row in runs[1:]] == [
+        "completed",
+        "completed",
+        "failed",
+        "completed",
+        "completed",
+    ]
+    aggregate = list(workbook["Reproducibility"].values)
+    alpha = next(row for row in aggregate[1:] if row[0] == "analyst_alpha")
+    assert alpha[2] == 4
+
+
+def test_reproducibility_continue_on_failure_names_every_failed_repeat(
+    tmp_path: Path, monkeypatch
+):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+    calls = []
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility._run_pdf_analysis",
+        _failing_repeat_runner(calls, {1, 3}),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        run_reproducibility_folder(
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            repeats=3,
+            continue_on_failure=True,
+        )
+
+    message = str(exc_info.value)
+    assert "2 failed repeat(s)" in message
+    assert "case.pdf repeat 1" in message
+    assert "case.pdf repeat 3" in message
+
+
+def test_reproducibility_continue_on_failure_stays_quiet_when_nothing_fails(
+    tmp_path: Path, monkeypatch
+):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+    calls = []
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility._run_pdf_analysis",
+        _failing_repeat_runner(calls, set()),
+    )
+
+    summaries = run_reproducibility_folder(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        repeats=2,
+        continue_on_failure=True,
+    )
+
+    assert summaries == [output_dir / "case" / "summary.xlsx"]
+
+
+def test_the_default_stop_message_says_a_rerun_resumes(tmp_path: Path, monkeypatch):
+    """The abort used to read as though the finished repeats were lost."""
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility._run_pdf_analysis",
+        _failing_repeat_runner([], {2}),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        run_reproducibility_folder(
+            input_dir=str(input_dir), output_dir=str(output_dir), repeats=5
+        )
+
+    message = str(exc_info.value)
+    assert "stopped at case.pdf repeat 2" in message
+    assert RESUME_HINT in message
+    assert "--continue-on-failure" in message
+
+
+def test_batch_cli_forwards_continue_on_failure(tmp_path: Path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility.run_reproducibility_folder",
+        lambda **kwargs: captured.update(kwargs) or [],
+    )
+
+    _main(
+        [
+            str(tmp_path / "input"),
+            str(tmp_path / "output"),
+            "--reproducibility",
+            "--continue-on-failure",
+        ]
+    )
+
+    assert captured["continue_on_failure"] is True
+
+
+def test_batch_cli_defaults_continue_on_failure_off(tmp_path: Path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility.run_reproducibility_folder",
+        lambda **kwargs: captured.update(kwargs) or [],
+    )
+
+    _main([str(tmp_path / "input"), str(tmp_path / "output"), "--reproducibility"])
+
+    assert captured["continue_on_failure"] is False
+
+
+def test_batch_cli_rejects_continue_on_failure_without_reproducibility(
+    tmp_path: Path, capsys
+):
+    with pytest.raises(SystemExit):
+        _main(
+            [
+                str(tmp_path / "input"),
+                str(tmp_path / "output"),
+                "--continue-on-failure",
+            ]
+        )
+
+    assert "--continue-on-failure requires --reproducibility" in capsys.readouterr().err

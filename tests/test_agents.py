@@ -1,8 +1,11 @@
 import litellm
+import pytest
 from litellm.litellm_core_utils import litellm_logging
 
 from dili_rucam_agents.crew.agents import (
+    ANALYST_MAX_OUTPUT_TOKENS_CEILING,
     _build_routed_llm_kwargs,
+    escalate_analyst_max_output_tokens,
     build_ground_truth_rucam_score_finder_agent,
     build_rucam_agent,
     build_score_masking_agent,
@@ -260,12 +263,12 @@ def test_resolve_analyst_max_output_tokens_prefers_specific_env(monkeypatch):
     assert resolve_analyst_max_output_tokens("ANALYST_GAMMA_MAX_TOKENS") == 16000
 
 
-def test_resolve_analyst_max_output_tokens_defaults_to_12000(monkeypatch):
+def test_resolve_analyst_max_output_tokens_defaults_to_32000(monkeypatch):
     monkeypatch.delenv("ANALYST_GAMMA_MAX_TOKENS", raising=False)
     monkeypatch.delenv("ANALYST_MAX_TOKENS", raising=False)
     monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
 
-    assert resolve_analyst_max_output_tokens("ANALYST_GAMMA_MAX_TOKENS") == 12000
+    assert resolve_analyst_max_output_tokens("ANALYST_GAMMA_MAX_TOKENS") == 32000
 
 
 def test_openrouter_model_with_free_suffix_is_normalized_correctly(monkeypatch):
@@ -335,5 +338,62 @@ def test_glm_openrouter_model_is_routed_correctly(monkeypatch):
     assert params["model"] == "z-ai/glm-5"
     assert params["base_url"] == "https://openrouter.ai/api/v1"
     assert params["custom_llm_provider"] == "openrouter"
-    assert params["max_completion_tokens"] == 12000
+    assert params["max_completion_tokens"] == 32000
     assert "max_tokens" not in params
+
+
+@pytest.mark.parametrize(
+    ("truncation_restarts", "expected"),
+    [(0, 32000), (1, 64000), (2, 64000), (7, 64000)],
+)
+def test_truncation_restarts_widen_the_output_budget_up_to_the_ceiling(
+    truncation_restarts, expected
+):
+    """Repeating a truncated attempt under the same budget only moves the cut."""
+
+    assert (
+        escalate_analyst_max_output_tokens(
+            32000, truncation_restarts=truncation_restarts
+        )
+        == expected
+    )
+    assert expected <= ANALYST_MAX_OUTPUT_TOKENS_CEILING
+
+
+def test_escalation_starts_from_a_pinned_budget():
+    assert escalate_analyst_max_output_tokens(8000, truncation_restarts=1) == 16000
+    assert escalate_analyst_max_output_tokens(8000, truncation_restarts=2) == 32000
+
+
+def test_escalation_leaves_an_unset_budget_unset():
+    assert escalate_analyst_max_output_tokens(None, truncation_restarts=2) is None
+
+
+@pytest.mark.parametrize("restarts", [-1, 1.5, "1", True])
+def test_escalation_rejects_a_non_count_restart_value(restarts):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        escalate_analyst_max_output_tokens(32000, truncation_restarts=restarts)
+
+
+def test_a_truncation_restart_reaches_the_analyst_llm(monkeypatch):
+    captured = []
+    _install_fake_completion(monkeypatch, captured)
+    for name in (
+        "ANALYST_ETA_MAX_TOKENS",
+        "ANALYST_MAX_TOKENS",
+        "LLM_MAX_TOKENS",
+        "ANALYST_ETA_MODEL",
+        "ANALYST_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    agent = build_rucam_agent(
+        label="Analyst Eta",
+        model_env="ANALYST_ETA_MODEL",
+        max_tokens_env="ANALYST_ETA_MAX_TOKENS",
+        default_model="z-ai/glm-5",
+        truncation_restarts=1,
+    )
+    agent.llm.call("ping")
+
+    assert captured[0]["max_completion_tokens"] == 64000

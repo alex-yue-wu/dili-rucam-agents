@@ -340,3 +340,88 @@ def test_heading_level_diagnostic_ignores_headings_inside_code_fences():
         validate_analyst_report(report)
 
     assert exc_info.value.diagnostic.issues == (("SECTION_A", "missing_section"),)
+
+
+TRUNCATED_BEFORE_SECTION_B = (
+    "## SECTION A — HUMAN-READABLE FULL REPORT\n\n"
+    "#### Item 2 — Course after stopping the drug: +3\n\n"
+    "- Percent fall = (4,622 - 301) / (4,622 - 33) * 100 = **94.2%**\n"
+    "- First matching rung: >= 50.0% fall with days <= 8 -> **+3**\n"
+    "  (D1: day 8 is inside the 8-day band; the first rung is"
+)
+TRUNCATED_BEFORE_SECTION_C = (
+    "## SECTION A — HUMAN-READABLE FULL REPORT\n\nClinical summary.\n\n"
+    "## SECTION B — RUCAM SCORING TABLE\n\n"
+    "| Item | Score | Basis |\n| --- | --- | --- |\n"
+    "| Time to onset | +1 | Hepatocellular cessation rule |\n"
+    "| Known"
+)
+TRUNCATED_INSIDE_SECTION_C_FENCE = (
+    "## SECTION A — HUMAN-READABLE FULL REPORT\n\nClinical summary.\n\n"
+    "## SECTION B — RUCAM SCORING TABLE\n\n| Item | Score |\n| --- | --- |\n| Total | 6 |\n\n"
+    "## SECTION C — MACHINE-READABLE JSON\n\n"
+    '```json\n{\n  "injury_pattern": "hepatocellular",\n  "R_ratio": 402'
+)
+
+
+@pytest.mark.parametrize(
+    "report_text",
+    [
+        TRUNCATED_BEFORE_SECTION_B,
+        TRUNCATED_BEFORE_SECTION_C,
+        TRUNCATED_INSIDE_SECTION_C_FENCE,
+    ],
+)
+def test_a_report_cut_off_mid_report_is_reported_as_truncated(report_text):
+    """A cut-off completion must not be reported as a formatting mistake.
+
+    Telling an analyst that SECTION B is missing invites it to rewrite the
+    heading; the real failure is that the completion stopped early, and only a
+    diagnostic that says so can drive a useful restart.
+    """
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report(report_text)
+
+    assert exc_info.value.diagnostic.issues == (("report", "report_truncated"),)
+
+
+def test_truncation_is_reported_for_the_legacy_section_c_reader_too():
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        parse_section_c_payload(
+            TRUNCATED_INSIDE_SECTION_C_FENCE, allow_legacy_json=True
+        )
+
+    assert exc_info.value.diagnostic.issues == (("report", "report_truncated"),)
+
+
+def test_a_gap_between_present_sections_is_still_a_missing_section():
+    """Only a report that stops partway through counts as truncated."""
+
+    report_text = (
+        "## SECTION A — HUMAN-READABLE FULL REPORT\n\nClinical summary.\n\n"
+        "## SECTION C — MACHINE-READABLE JSON\n\n"
+        f"```json\n{json.dumps(VALID_PAYLOAD)}\n```\n"
+    )
+
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report(report_text)
+
+    assert exc_info.value.diagnostic.issues == (("SECTION_B", "missing_section"),)
+
+
+def test_an_empty_completion_is_still_reported_as_a_missing_section():
+    with pytest.raises(AnalystReportValidationError) as exc_info:
+        validate_analyst_report("Thought")
+
+    assert exc_info.value.diagnostic.issues == (("SECTION_A", "missing_section"),)
+
+
+def test_truncation_detection_does_not_narrow_what_validates():
+    """A stray unclosed fence after a complete SECTION C stays acceptable."""
+
+    report_text = report_for() + "\n```\n"
+
+    validated = validate_analyst_report(report_text)
+
+    assert validated.payload.total_score == 6

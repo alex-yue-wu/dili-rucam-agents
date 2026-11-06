@@ -158,6 +158,8 @@ rungs that require a labelling quote or a citation in the case text.
 - `ANALYST_ETA_MAX_TOKENS`
 - shared fallback: `ANALYST_MAX_TOKENS`
 - global fallback: `LLM_MAX_TOKENS`
+- default when none is set: 32000; a restart after a truncated report doubles the
+  budget up to a ceiling of 64000
 
 Each analyst must:
 
@@ -185,6 +187,10 @@ Strict JSON with injury pattern, R-ratio, itemized scores, total score, and cate
 ## 8. Engineering Standards
 
 - Temperature remains 0 for all configured models when supported; models that reject explicit temperature use the provider-required default.
+- The analyst output budget must leave room for the whole report on a reasoning
+  model, where it also covers hidden reasoning tokens. A cut-off report is
+  reported as a truncation, not as a missing section, and the restart that
+  follows it runs with a wider budget.
 - Ingestion, masking and the item 6 evidence cascade must be testable without
   live API calls.
 - The DILIrank tier stays offline. The DailyMed and PubMed tiers are consulted

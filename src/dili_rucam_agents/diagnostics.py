@@ -42,6 +42,12 @@ _VALIDATION_ISSUE_MESSAGES = {
     "duplicate_section": "Report must contain exactly one {field}.",
     "section_order": "Sections must appear in A, B, C order.",
     "empty_section": "{field} is empty.",
+    "report_truncated": (
+        "Report stops partway through: the completion was cut off before "
+        "SECTION A, SECTION B and SECTION C were all finished. Return the "
+        "whole report in one reply, and keep SECTION A compact so the "
+        "scoring table and the JSON both fit."
+    ),
     "json_fence_count": ("SECTION C must contain exactly one fenced JSON object."),
     "invalid_json": "Invalid SECTION C JSON.",
     "json_not_object": "SECTION C JSON must be an object.",

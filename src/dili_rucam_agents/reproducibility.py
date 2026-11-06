@@ -21,6 +21,14 @@ from dili_rucam_agents.crew.agents import resolve_ground_truth_score_finder_mode
 from dili_rucam_agents.crew.crew import validate_max_restarts
 
 
+RESUME_HINT = (
+    "Re-running the same command resumes this batch: every completed repeat is "
+    "skipped, and the failed repeat restarts at its first analyst without a "
+    "validated report. Add --continue-on-failure to score the remaining repeats "
+    "in one pass instead of stopping here."
+)
+
+
 @dataclass(frozen=True)
 class ReproducibilityRunRecord:
     repeat: int
@@ -219,6 +227,7 @@ def run_reproducibility_folder(
     debug: bool = False,
     force_rerun: bool = False,
     max_restarts: int = 2,
+    continue_on_failure: bool = False,
 ) -> list[Path]:
     repeats = validate_repeats(repeats)
     max_restarts = validate_max_restarts(max_restarts)
@@ -232,6 +241,7 @@ def run_reproducibility_folder(
         use_analyst_eta=use_analyst_eta,
     )
     summary_paths: list[Path] = []
+    failed_repeats: list[str] = []
 
     for pdf_path in sorted(source_dir.glob("*.pdf")):
         print(
@@ -286,10 +296,14 @@ def run_reproducibility_folder(
                     enable_score_masking=enable_score_masking,
                     output_path=summary_path,
                 )
-                raise RuntimeError(
-                    f"Reproducibility batch stopped at {pdf_path.name} "
-                    f"repeat {repeat_index}: {exc.diagnostic}"
-                ) from exc
+                failure = f"{pdf_path.name} repeat {repeat_index}: {exc.diagnostic}"
+                if not continue_on_failure:
+                    raise RuntimeError(
+                        f"Reproducibility batch stopped at {failure}\n{RESUME_HINT}"
+                    ) from exc
+                failed_repeats.append(failure)
+                print(f"Continuing after failed repeat: {failure}")
+                continue
 
             if result.reused:
                 print(f"Skipping completed repeat: {repeat_dir.name}")
@@ -318,10 +332,20 @@ def run_reproducibility_folder(
         "\n===================== Reproducibility analysis completed "
         "=====================\n"
     )
+    if failed_repeats:
+        # Every summary workbook is on disk and the completed repeats are scored,
+        # so the work is not lost; the caller still has to learn that the batch
+        # is short of the repeat count it asked for.
+        listed = "; ".join(failed_repeats)
+        raise RuntimeError(
+            f"Reproducibility batch finished with {len(failed_repeats)} failed "
+            f"repeat(s): {listed}\n{RESUME_HINT}"
+        )
     return summary_paths
 
 
 __all__ = [
+    "RESUME_HINT",
     "ReproducibilityRunRecord",
     "ScoreStatistics",
     "run_reproducibility_folder",

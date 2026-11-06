@@ -57,7 +57,10 @@ class _MarkdownFence:
 def parse_section_c_payload(
     report_text: str, *, allow_legacy_json: bool = False
 ) -> dict[str, Any]:
-    headings, fences, masked_text = _markdown_structure(report_text)
+    headings, fences, masked_text, unterminated_fence = _markdown_structure(
+        report_text
+    )
+    truncated = _is_truncated(headings, unterminated_fence=unterminated_fence)
     section_c_headings = [match for match in headings if match.group(1).upper() == "C"]
     if not section_c_headings:
         raise _validation_error("SECTION_C", _absent_section_code(masked_text, "C"))
@@ -86,7 +89,9 @@ def parse_section_c_payload(
         json_text = report_text[fence.content_start : fence.content_end].strip()
     elif allow_legacy_json:
         section_text = report_text[section_c.end() : section_end]
-        json_text = _extract_balanced_json_object(section_text)
+        json_text = _extract_balanced_json_object(section_text, truncated=truncated)
+    elif truncated:
+        raise _validation_error("report", "report_truncated")
     else:
         raise _validation_error("SECTION_C", "json_fence_count")
     invalid_json = False
@@ -122,13 +127,16 @@ def validate_analyst_report(
         raise _validation_error("report", "report_empty")
     if "see complete sections a, b, and c above." in stripped.lower():
         raise _validation_error("report", "summary_placeholder")
-    headings, _, masked_text = _markdown_structure(report_text)
+    headings, _, masked_text, unterminated_fence = _markdown_structure(report_text)
+    truncated = _is_truncated(headings, unterminated_fence=unterminated_fence)
     by_name = {
         name: [match for match in headings if match.group(1).upper() == name]
         for name in ("A", "B", "C")
     }
     for required in ("A", "B", "C"):
         if not by_name[required]:
+            if truncated:
+                raise _validation_error("report", "report_truncated")
             raise _validation_error(
                 f"SECTION_{required}", _absent_section_code(masked_text, required)
             )
@@ -160,7 +168,7 @@ def validate_analyst_report(
 
 def _markdown_structure(
     report_text: str,
-) -> tuple[list[re.Match[str]], list[_MarkdownFence], str]:
+) -> tuple[list[re.Match[str]], list[_MarkdownFence], str, bool]:
     fences: list[_MarkdownFence] = []
     masked_ranges: list[tuple[int, int]] = []
     active: tuple[str, int, int, int, str] | None = None
@@ -210,7 +218,22 @@ def _markdown_structure(
                 masked[index] = " "
     masked_text = "".join(masked)
     headings = list(_SECTION_HEADING_RE.finditer(masked_text))
-    return headings, fences, masked_text
+    return headings, fences, masked_text, active is not None
+
+
+def _is_truncated(headings: list[re.Match[str]], *, unterminated_fence: bool) -> bool:
+    """Report whether the text stops partway through the required sections.
+
+    A cut-off completion leaves either an unclosed code fence or a run of
+    sections that is a strict prefix of A, B, C. A report that skips a middle
+    section, or that holds no section heading at all, is malformed rather than
+    truncated, so those keep their own diagnostics.
+    """
+
+    if unterminated_fence:
+        return True
+    present = tuple(match.group(1).upper() for match in headings)
+    return present in (("A",), ("A", "B"))
 
 
 def _absent_section_code(masked_text: str, name: str) -> str:
@@ -226,7 +249,7 @@ def _fence_language(info: str) -> str:
     return info.casefold().split(maxsplit=1)[0] if info else ""
 
 
-def _extract_balanced_json_object(section_text: str) -> str:
+def _extract_balanced_json_object(section_text: str, *, truncated: bool = False) -> str:
     depth = 0
     in_string = False
     escaped = False
@@ -254,6 +277,8 @@ def _extract_balanced_json_object(section_text: str) -> str:
                 object_start = None
     if objects:
         return objects[-1]
+    if truncated:
+        raise _validation_error("report", "report_truncated")
     raise _validation_error("SECTION_C", "missing_json_object")
 
 

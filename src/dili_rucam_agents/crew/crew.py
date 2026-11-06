@@ -331,6 +331,7 @@ def run_crew(
         if key in reports:
             continue
         retry_instruction: str | None = None
+        truncation_restarts = 0
         last_error = ""
         last_exception: Exception | None = None
         last_validation_diagnostic: SafeValidationDiagnostic | None = None
@@ -343,6 +344,7 @@ def run_crew(
                 strict_scoring=strict_scoring,
                 retry_instruction=retry_instruction,
                 instruction_contract=(instruction_contracts or {}).get(key),
+                truncation_restarts=truncation_restarts,
             )
             print(f"{key}: attempt {attempt}/{max_attempts}")
             running_event = AnalystAttemptEvent(
@@ -392,6 +394,8 @@ def run_crew(
                     last_exception = exc
                     failure_kind = "validation"
                     retry_instruction = last_error
+                    if _is_truncation_diagnostic(last_validation_diagnostic):
+                        truncation_restarts += 1
                     if _on_invalid_report_audit:
                         _on_invalid_report_audit(
                             key,
@@ -452,6 +456,14 @@ def run_crew(
     return final_output, reports
 
 
+def _is_truncation_diagnostic(diagnostic: SafeValidationDiagnostic | None) -> bool:
+    """Report whether the rejected attempt was a cut-off completion."""
+
+    if diagnostic is None:
+        return False
+    return any(code == "report_truncated" for _field, code in diagnostic.issues)
+
+
 def _build_isolated_analyst_run(
     *,
     config: dict[str, Any],
@@ -460,6 +472,7 @@ def _build_isolated_analyst_run(
     strict_scoring: bool,
     retry_instruction: str | None,
     instruction_contract: AnalystInstructionContract | None = None,
+    truncation_restarts: int = 0,
 ) -> tuple[Crew, Task]:
     prompt_text = load_rucam_prompt(prompt_path, strict_scoring=strict_scoring)
     model_name = resolve_rucam_model(
@@ -480,6 +493,7 @@ def _build_isolated_analyst_run(
         fallback_envs=config["fallback_envs"],
         default_model=config["default_model"],
         instruction_contract=contract,
+        truncation_restarts=truncation_restarts,
     )
     task = create_analysis_task(
         agent=agent,

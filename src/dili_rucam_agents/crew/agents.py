@@ -15,6 +15,17 @@ from .tasks import AnalystInstructionContract
 configure_litellm_runtime()
 
 
+# On a reasoning model this budget covers the hidden reasoning tokens as well as
+# the visible report, and the two share one allowance. A finished RUCAM report
+# measures roughly 1,600-3,800 output tokens, so the former 12,000-token default
+# left so little headroom that a long chain of thought cut the report off
+# mid-sentence: SECTION B or SECTION C simply never arrived. A cap only changes a
+# completion when it binds, so raising it cannot alter a report that already fits.
+DEFAULT_ANALYST_MAX_OUTPUT_TOKENS = 32000
+# Each restart after a truncated report doubles the budget up to this ceiling.
+ANALYST_MAX_OUTPUT_TOKENS_CEILING = 64000
+
+
 def _read_int_env(*names: str) -> int | None:
     for name in names:
         raw = os.getenv(name)
@@ -31,7 +42,29 @@ def _read_int_env(*names: str) -> int | None:
 
 def resolve_analyst_max_output_tokens(max_tokens_env: str) -> int | None:
     return (
-        _read_int_env(max_tokens_env, "ANALYST_MAX_TOKENS", "LLM_MAX_TOKENS") or 12000
+        _read_int_env(max_tokens_env, "ANALYST_MAX_TOKENS", "LLM_MAX_TOKENS")
+        or DEFAULT_ANALYST_MAX_OUTPUT_TOKENS
+    )
+
+
+def escalate_analyst_max_output_tokens(
+    base: int | None, *, truncation_restarts: int
+) -> int | None:
+    """Widen the output budget for a restart that follows a truncated report.
+
+    Repeating a truncated attempt under the same budget just moves the cut
+    point, which is why three attempts could fail three different ways. Doubling
+    per truncation gives the restart room the first attempt did not have. The
+    configured budget is what the analyst checkpoint is fingerprinted against,
+    so this widening stays transient, like the retry instruction itself.
+    """
+
+    if type(truncation_restarts) is not int or truncation_restarts < 0:
+        raise ValueError("truncation_restarts must be a non-negative integer")
+    if base is None:
+        return None
+    return min(
+        base * 2**min(truncation_restarts, 8), ANALYST_MAX_OUTPUT_TOKENS_CEILING
     )
 
 
@@ -152,6 +185,7 @@ def build_rucam_agent(
     fallback_envs: tuple[str, ...] = (),
     default_model: str,
     instruction_contract: AnalystInstructionContract | None = None,
+    truncation_restarts: int = 0,
 ) -> Agent:
     """Factory for configurable RUCAM analysts."""
 
@@ -162,7 +196,10 @@ def build_rucam_agent(
     )
     llm_kwargs = _build_routed_llm_kwargs(
         model=analyst_model,
-        max_output_tokens=resolve_analyst_max_output_tokens(max_tokens_env),
+        max_output_tokens=escalate_analyst_max_output_tokens(
+            resolve_analyst_max_output_tokens(max_tokens_env),
+            truncation_restarts=truncation_restarts,
+        ),
     )
 
     return Agent(
@@ -269,10 +306,13 @@ def build_ground_truth_rucam_score_finder_agent(model: Optional[str] = None) -> 
 
 
 __all__ = [
+    "ANALYST_MAX_OUTPUT_TOKENS_CEILING",
+    "DEFAULT_ANALYST_MAX_OUTPUT_TOKENS",
     "build_ground_truth_rucam_score_finder_agent",
     "build_ingestion_agent",
     "build_rucam_agent",
     "build_score_masking_agent",
+    "escalate_analyst_max_output_tokens",
     "resolve_analyst_max_output_tokens",
     "resolve_ground_truth_score_finder_model",
     "resolve_rucam_model",

@@ -56,7 +56,7 @@ def complete_report(total_score: int = 6, narrative: str = "Clinical summary") -
     )
 
 
-def install_retry_scenario(monkeypatch, outputs_by_key):
+def install_retry_scenario(monkeypatch, outputs_by_key, captured_kwargs=None):
     constructed_keys = []
 
     class DummyBundle:
@@ -93,6 +93,8 @@ def install_retry_scenario(monkeypatch, outputs_by_key):
 
     def fake_build_run(*, config, **kwargs):
         constructed_keys.append(config["key"])
+        if captured_kwargs is not None:
+            captured_kwargs.append(kwargs)
         return DummyCrew(next(outputs_by_key[config["key"]])), DummyTask()
 
     monkeypatch.setattr(
@@ -1514,3 +1516,62 @@ def test_analyst_instruction_states_the_required_section_heading_level():
     retry = contract.render_task_description(retry_instruction="some diagnostic")
     for heading in ("## SECTION A", "## SECTION B", "## SECTION C"):
         assert heading in retry
+
+
+TRUNCATED_REPORT = (
+    "## SECTION A\n\nClinical summary.\n\n"
+    "#### Item 2 — Course after stopping the drug\n\n"
+    "- Percent fall = (4,622 - 301) / (4,622 - 33) * 100 = **94.2%**\n"
+    "- First matching rung: >= 50.0% fall with days <= 8 -> **+3**\n"
+    "  (D1: day 8 is inside the 8-day band; the first rung is"
+)
+
+
+def test_a_truncated_attempt_widens_the_budget_for_the_next_one(monkeypatch):
+    """Three attempts under one budget just produced three different cut points."""
+
+    captured_kwargs = []
+    install_retry_scenario(
+        monkeypatch,
+        {
+            "analyst_alpha": iter(
+                [TRUNCATED_REPORT, TRUNCATED_REPORT, complete_report()]
+            )
+        },
+        captured_kwargs,
+    )
+
+    _, reports = run_crew("dummy.pdf", capture_reports=True, max_restarts=2)
+
+    assert reports["analyst_alpha"].startswith("## SECTION A")
+    assert [kwargs["truncation_restarts"] for kwargs in captured_kwargs] == [0, 1, 2]
+
+
+def test_a_malformed_attempt_leaves_the_budget_alone(monkeypatch):
+    """Only a cut-off completion is evidence that the budget was the problem."""
+
+    captured_kwargs = []
+    install_retry_scenario(
+        monkeypatch,
+        {"analyst_alpha": iter(["no sections at all", complete_report()])},
+        captured_kwargs,
+    )
+
+    run_crew("dummy.pdf", capture_reports=True, max_restarts=2)
+
+    assert [kwargs["truncation_restarts"] for kwargs in captured_kwargs] == [0, 0]
+
+
+def test_a_truncated_attempt_is_reported_as_truncated_not_as_a_missing_section(
+    monkeypatch,
+):
+    install_retry_scenario(
+        monkeypatch, {"analyst_alpha": iter([TRUNCATED_REPORT] * 3)}
+    )
+
+    with pytest.raises(AnalystExecutionError) as exc_info:
+        run_crew("dummy.pdf", capture_reports=True, max_restarts=2)
+
+    assert exc_info.value.validation_diagnostic.issues == (
+        ("report", "report_truncated"),
+    )

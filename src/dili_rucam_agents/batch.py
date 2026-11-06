@@ -535,6 +535,15 @@ def _main(argv: Sequence[str] | None = None) -> None:
         default=None,
         help="Positive repeat count for reproducibility mode (default: 5).",
     )
+    parser.add_argument(
+        "--continue-on-failure",
+        dest="continue_on_failure",
+        action="store_true",
+        help=(
+            "Reproducibility mode: record a failed repeat and score the "
+            "remaining repeats instead of stopping at the first failure."
+        ),
+    )
     parser.add_argument("--debug", dest="debug", action="store_true")
     parser.add_argument("--force-rerun", dest="force_rerun", action="store_true")
     parser.add_argument(
@@ -548,6 +557,8 @@ def _main(argv: Sequence[str] | None = None) -> None:
 
     if args.repeats is not None and not args.reproducibility:
         parser.error("--repeats requires --reproducibility")
+    if args.continue_on_failure and not args.reproducibility:
+        parser.error("--continue-on-failure requires --reproducibility")
     if args.reproducibility and args.repeats is not None and args.repeats < 1:
         parser.error("--repeats must be a positive integer")
 
@@ -568,6 +579,7 @@ def _main(argv: Sequence[str] | None = None) -> None:
             debug=args.debug,
             force_rerun=args.force_rerun,
             max_restarts=args.analyst_restarts,
+            continue_on_failure=args.continue_on_failure,
         )
         for summary_path in summary_paths:
             print(summary_path)
