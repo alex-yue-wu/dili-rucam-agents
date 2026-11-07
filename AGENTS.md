@@ -191,6 +191,11 @@ Strict JSON with injury pattern, R-ratio, itemized scores, total score, and cate
   model, where it also covers hidden reasoning tokens. A cut-off report is
   reported as a truncation, not as a missing section, and the restart that
   follows it runs with a wider budget.
+- Latency from a dose of the suspect drug is numbered from 1: the calendar day of
+  the dose is Day 1, so an onset on the day of the dose lands on a printed rung
+  of item 1 instead of falling off the sheet as day 0. Elapsed-day durations that
+  are not anchored on a dose -- item 2's clock from the peak, item 4's lookback
+  window -- stay elapsed and are not renumbered.
 - Ingestion, masking and the item 6 evidence cascade must be testable without
   live API calls.
 - The DILIrank tier stays offline. The DailyMed and PubMed tiers are consulted

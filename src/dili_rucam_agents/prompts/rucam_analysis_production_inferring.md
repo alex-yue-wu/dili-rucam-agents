@@ -37,11 +37,11 @@ You must:
 
 ---
 
-<!-- BEGIN SHARED RUCAM CORE v2 -- byte-identical in every prompt variant; edit all variants together (enforced by tests/test_prompt_rules_sync.py) -->
+<!-- BEGIN SHARED RUCAM CORE v3 -- byte-identical in every prompt variant; edit all variants together (enforced by tests/test_prompt_rules_sync.py) -->
 
 # RUCAM RULES VERSION (MUST USE)
 
-rules_version: **RUCAM_DananBenichou1993_modified_sheet_v2**
+rules_version: **RUCAM_DananBenichou1993_modified_sheet_v3**
 
 This version pins the Danan & Bénichou 1993 scoring sheet together with the
 determinism conventions in section 0, the lab-selection and ULN rules in
@@ -49,6 +49,15 @@ Appendix A, and the worked boundary cases in Appendix B. The clinical rungs and
 their point values are unchanged from the 1993 sheet. Section 0 only fixes how
 borderline and incompletely reported cases resolve, so that two analysts reading
 the same case bundle reach the same score.
+
+v3 differs from v2 in exactly one rule: latency from a dose of the suspect drug
+is numbered from 1, so the calendar day of the dose is Day 1 (D2). Item 1's day
+ranges, its cessation rows and D7 are read as these Day numbers, which puts an
+onset on the day of the dose on a printed rung instead of leaving it off the
+sheet as day 0. Elapsed-day durations that are not anchored on a dose -- item 2's
+clock from the peak, item 4's lookback window -- are unchanged. A score tagged v2
+was produced under the former day-0 anchor, so on a case whose onset sits near a
+day boundary a v2 score and a v3 score are not comparable.
 
 Emit this exact string as `rules_version` in SECTION C. It is the only
 rules-version tag; do not emit any other.
@@ -73,9 +82,20 @@ and a convention here appear to conflict, the convention wins.
 
 ### D2 -- Day counting
 
-- All intervals are whole calendar days: `days = later_date - earlier_date`. The
-  anchor date is **day 0**; the next calendar day is day 1. Example: first dose
-  2 May, pruritus 2 June -> 31 days.
+- **Latency from a dose of the suspect drug is numbered from 1. The calendar day
+  of the dose is Day 1**, the next calendar day is Day 2, and so on:
+  `Day = (later_date - earlier_date) + 1`. Example: first dose 2 May, pruritus
+  2 June -> Day 32. There is no day 0: a reaction beginning on the day of the
+  dose is Day 1, so every onset lands on a printed rung of item 1.
+- A capitalised **`Day N`** is always one of these 1-based latency numbers. Every
+  day number in item 1, in its cessation rows and in D7 is a `Day N`, compared
+  inclusively under D1.
+- A lowercase **`days`** is always an elapsed whole-calendar-day duration,
+  `days = later_date - earlier_date`, counting no anchor day. Item 2's clock from
+  the peak and item 4's lookback window before `onset_date` are durations in this
+  sense, not `Day N` numbers, and this rule does not renumber them.
+- Convert a stated duration to a `Day N` by adding the anchor day: a dose on
+  1 March with onset "after 3 days" is Day 4.
 - Convert stated durations with: 1 week = 7 days, 1 month = 30 days, 1 year =
   365 days.
 - A number carrying an approximation word ("about 2 weeks", "~14 days",
@@ -205,21 +225,29 @@ is documented. If the case bundle does not say, treat it as initial.
 From the beginning of the drug -- use when `onset_date` is on or before the stop
 date:
 
+`onset_day` = the `Day N` of `onset_date` counted from `start_date` under D2, so
+the day of the first dose is Day 1. Print it as `onset_day = N`.
+
 | Pattern | Treatment | +2 | +1 |
 | --- | --- | --- | --- |
-| Hepatocellular | Initial | 5-90 days | <5 or >90 days |
-| Hepatocellular | Subsequent | 1-15 days | >15 days |
-| Cholestatic/Mixed | Initial | 5-90 days | <5 or >90 days |
-| Cholestatic/Mixed | Subsequent | 1-90 days | >90 days |
+| Hepatocellular | Initial | Day 5-90 | Day 1-4, or later than Day 90 |
+| Hepatocellular | Subsequent | Day 1-15 | later than Day 15 |
+| Cholestatic/Mixed | Initial | Day 5-90 | Day 1-4, or later than Day 90 |
+| Cholestatic/Mixed | Subsequent | Day 1-90 | later than Day 90 |
 
 From cessation of the drug -- use this row **instead of** the table above, and
 only when `onset_date` is after the stop date:
 
-- Hepatocellular: onset <= 15 days after the last dose -> +1
-- Cholestatic/Mixed: onset <= 30 days after the last dose -> +1
+Count `onset_day` from the last dose instead of the first, still under D2, so the
+day of the last dose is Day 1. This row is reached only when `onset_date` is
+after the stop date, so `onset_day` here is always Day 2 or later.
 
-Time-incompatible, apply D7: `onset_date` before `start_date`; or onset more
-than 15 days (hepatocellular) / 30 days (cholestatic/mixed) after the last dose.
+- Hepatocellular: `onset_day` no later than Day 15 -> +1
+- Cholestatic/Mixed: `onset_day` no later than Day 30 -> +1
+
+Time-incompatible, apply D7: `onset_date` before `start_date`; or `onset_day`
+counted from the last dose later than Day 15 (hepatocellular) / Day 30
+(cholestatic/mixed).
 
 ### 2) Course after stopping the drug -- score one rung
 
@@ -473,12 +501,15 @@ These are the resolutions this rules version requires. Follow them exactly.
 | Cholestatic; ALP >=50% down on day 180 | <= 180 -> **+2** |
 | Cholestatic; "liver tests normal within 3 months" | guaranteed in [0, 90], all <= 180 -> **+2** |
 | Hepatocellular; "liver tests normal within 3 months" | [0, 90] spans +3/+2/0 -> lowest -> **0** |
-| First dose 2 May, pruritus 2 June, initial course | 31 days, inside 5-90 -> **+2** |
-| Onset exactly 5 days after the first dose | inside 5-90 -> **+2** |
-| Onset exactly 90 days after the first dose | inside 5-90 -> **+2** |
-| Onset 91 days after the first dose, initial course | > 90 -> **+1** |
-| Onset 15 days after the last dose, hepatocellular | <= 15 -> **+1** |
-| Onset 16 days after the last dose, hepatocellular | time-incompatible -> D7 |
+| First dose 2 May, pruritus 2 June, initial course | `onset_day` = 32, inside Day 5-90 -> **+2** |
+| Symptoms 6 hours after the first dose, initial course | `onset_day` = 1, inside Day 1-4 -> **+1** |
+| Symptoms 6 hours after the first dose, subsequent course | `onset_day` = 1, inside Day 1-15 -> **+2** |
+| Onset on Day 5, initial course | inside Day 5-90 -> **+2** |
+| Onset on Day 4, initial course | Day 1-4 -> **+1** |
+| Onset on Day 90, initial course | inside Day 5-90 -> **+2** |
+| Onset on Day 91, initial course | later than Day 90 -> **+1** |
+| Last dose 1 June, onset 15 June, hepatocellular | `onset_day` = 15 from the last dose, <= Day 15 -> **+1** |
+| Last dose 1 June, onset 16 June, hepatocellular | `onset_day` = 16 -> time-incompatible -> D7 |
 | Age exactly 55 | >= 55 -> **+1** |
 | "Moderate social drinking", unquantified | threshold not shown -> **0** for the alcohol sub-item |
 | Group I: HAV, HBV and obstruction excluded; HCV, alcohol and ischaemia not mentioned | g1 = 3 -> **-2** |
@@ -579,7 +610,7 @@ In the fallback your own recollection of the literature is **not** evidence: wit
 no labelling quote and no citation in the bundle the rung is **0**. Name which of
 the three conditions applied in SECTION A.
 
-<!-- END SHARED RUCAM CORE v2 -->
+<!-- END SHARED RUCAM CORE v3 -->
 
 ---
 
@@ -675,7 +706,7 @@ For each draw, record the date, the value, the unit and the ULN actually used:
 
 - First symptom of the liver episode, with date
 - First liver value above ULN, with date
-- `onset_date`, and which of the two it came from
+- `onset_date`, which of the two it came from, and `onset_day = N`
 - Hospitalisation, drug withdrawal, re-exposure
 - Resolution: dates, values and stated percentages
 
@@ -718,7 +749,8 @@ Before writing SECTION B, answer all eleven lines in SECTION A. Each must be
 answered with the actual value, not "yes".
 
 1. Suspect drug (D6)
-2. `onset_date`, and whether it came from a symptom or a lab value
+2. `onset_date`, whether it came from a symptom or a lab value, and
+   `onset_day = N` with the dose it is counted from
 3. R rounded to 2 dp, the pattern it gives, and the column used
 4. Course analyte, `peak`, `t0`, the `percent_fall` and `days` that decided the
    rung
@@ -792,7 +824,7 @@ JSON numbers, not strings. `R_ratio` is a number rounded to 2 decimal places, or
   },
   "total_score": 0,
   "category": "Excluded | Unlikely | Possible | Probable | Highly probable",
-  "rules_version": "RUCAM_DananBenichou1993_modified_sheet_v2",
+  "rules_version": "RUCAM_DananBenichou1993_modified_sheet_v3",
   "notes": []
 }
 ```

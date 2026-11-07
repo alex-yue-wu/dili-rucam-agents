@@ -20,9 +20,15 @@ from dili_rucam_agents.hepatotoxicity.dailymed import DAILYMED_SECTION_SCORES
 from dili_rucam_agents.hepatotoxicity.dilirank import DILIRANK_CONCERN_SCORES
 from dili_rucam_agents.validators.rucam_json import RucamReport, RucamScores
 
-RULES_VERSION = "RUCAM_DananBenichou1993_modified_sheet_v2"
+RULES_VERSION = "RUCAM_DananBenichou1993_modified_sheet_v3"
+# A tag is retired, never reused: a score still carries the rules that produced
+# it, so a report tagged with one of these predates a change in those rules.
+RETIRED_RULES_VERSIONS = (
+    "RUCAM_DananBenichou1993_modified_sheet_v1",
+    "RUCAM_DananBenichou1993_modified_sheet_v2",
+)
 _SHARED_CORE_RE = re.compile(
-    r"<!-- BEGIN SHARED RUCAM CORE v2.*?<!-- END SHARED RUCAM CORE v2 -->",
+    r"<!-- BEGIN SHARED RUCAM CORE v3.*?<!-- END SHARED RUCAM CORE v3 -->",
     re.DOTALL,
 )
 _PROMPT_PATHS = (
@@ -59,7 +65,8 @@ def test_both_prompts_pin_the_same_rules_version():
         assert f'"rules_version": "{RULES_VERSION}"' in text, name
         # A second, competing version tag is what made v1 unreproducible.
         assert "RUCAM_ULN_LiverTox_v1" not in text, name
-        assert "RUCAM_DananBenichou1993_modified_sheet_v1" not in text, name
+        for retired in RETIRED_RULES_VERSIONS:
+            assert retired not in text, f"{name} still mentions {retired}"
 
 
 def test_r_ratio_boundaries_are_stated_once_and_without_contradiction():
@@ -117,6 +124,33 @@ def test_boundary_conventions_and_worked_cases_are_present():
         # The boundary case that motivated v2: a 50% fall on day 8 exactly.
         assert "day 8 <= 8 -> **+3**" in text, name
         assert "day 9 > 8 -> **+2**" in text, name
+
+
+def test_latency_days_are_numbered_from_the_dose_day():
+    """Day 1 is the day of the dose, so a same-day onset lands on a rung.
+
+    Under the former day-0 anchor, an onset hours after the dose computed to
+    day 0, which appears on no printed rung of item 1. Analysts split 0/+1/+2
+    on one such case, and the ones scoring 0 said so: day 0 matched no row.
+    Numbering latency from 1 closes that gap. The lowercase `days` durations of
+    items 2 and 4 are anchored on the peak and on `onset_date`, not on a dose,
+    so this rule deliberately leaves them alone.
+    """
+
+    for name, text in _prompt_texts().items():
+        assert "is numbered from 1. The calendar day" in text, name
+        assert "of the dose is Day 1**" in text, name
+        assert "`Day = (later_date - earlier_date) + 1`" in text, name
+        assert "There is no day 0" in text, name
+        for rung in ("| Day 5-90 |", "| Day 1-15 |", "| Day 1-90 |"):
+            assert rung in text, f"{name} omits the {rung} rung of item 1"
+        # The same-day onset that motivated the change, on both treatment rows.
+        assert "`onset_day` = 1, inside Day 1-4 -> **+1**" in text, name
+        assert "`onset_day` = 1, inside Day 1-15 -> **+2**" in text, name
+        # Item 2 keeps its elapsed clock from the peak.
+        assert "`days(t) = t - t0`" in text, name
+        # The Day number is printed, so a run can be audited for it.
+        assert "`onset_day = N`" in text, name
 
 
 def test_percentage_fall_formula_is_anchored_to_the_peak_to_uln_distance():
