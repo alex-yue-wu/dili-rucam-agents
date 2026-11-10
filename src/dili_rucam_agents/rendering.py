@@ -86,6 +86,15 @@ def _text(value: object) -> str:
     return _PLACEHOLDER_RE.sub("\\1\u200b\\2", flat)
 
 
+def _number_pattern(value: int) -> re.Pattern[str]:
+    return re.compile(rf"(?<![\d.]){value}(?![\d]|\.\d)")
+
+
+def _category_pattern(category: str) -> re.Pattern[str]:
+    prefix = "(?<!highly )" if category == "Probable" else ""
+    return re.compile(prefix + re.escape(category), re.IGNORECASE)
+
+
 def _cell(value: object) -> str:
     return _text(value).replace("|", "\\|")
 
@@ -126,8 +135,19 @@ def _section_a(
         "### Pre-flight check",
         "",
     ]
+    computed = {
+        "total_sum": (str(scored.total_score), _number_pattern(scored.total_score)),
+        "category_match": (scored.category, _category_pattern(scored.category)),
+        "g1_count": (str(causes.g1), _number_pattern(causes.g1)),
+    }
     for number, (field, label) in enumerate(_PRE_FLIGHT_LABELS, start=1):
-        lines.append(f"{number}. {label}: {_text(getattr(assessment.pre_flight, field))}")
+        claim = _text(getattr(assessment.pre_flight, field))
+        if field in computed:
+            value, pattern = computed[field]
+            if not pattern.search(claim):
+                # Keep the model's claim as diagnostic data; show the computed value.
+                claim = f"{claim} (as stated) / {value} (computed)"
+        lines.append(f"{number}. {label}: {claim}")
     lines += ["", "### Item 5 cause checklist", "", "Group I:"]
     lines += [f"- {name}: {getattr(causes, name).value}" for name in _GROUP_I]
     lines += ["", "Group II:"]

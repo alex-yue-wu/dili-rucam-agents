@@ -200,4 +200,64 @@ def test_placeholder_phrase_is_defused_without_changing_its_words():
     report = _render(assessment, scored)
     validate_analyst_report(report)
     assert phrase not in report
-    assert report.replace("\u200b", "") .count(phrase) == 1
+    assert report.replace("\u200b", "").count(phrase) == 1
+
+
+def test_pre_flight_claims_that_disagree_are_shown_beside_the_computed_values():
+    data = _assessment(
+        item_5_causes=_causes(3),
+        **{name: _item(score) for name, score in _SCORES.items()},
+    )
+    data["pre_flight"] = {
+        **data["pre_flight"],
+        "total_sum": "12",
+        "category_match": "Probable",
+        "g1_count": "5",
+    }
+    assessment = RucamAssessment.model_validate(data)
+    scored = score_assessment(assessment)
+    report = _render(assessment, scored)
+    section_a = report.split("## SECTION B")[0]
+    assert "Total sum: 12 (as stated) / 9 (computed)" in section_a
+    assert "Category match: Probable (as stated) / Highly probable (computed)" in section_a
+    assert "g1 count: 5 (as stated) / 3 (computed)" in section_a
+    validate_analyst_report(report)
+    assert extract_section_c_json(report)["total_score"] == 9
+
+
+def test_pre_flight_claims_that_agree_are_left_alone():
+    data = _assessment(
+        item_5_causes=_causes(3),
+        **{name: _item(score) for name, score in _SCORES.items()},
+    )
+    data["pre_flight"] = {
+        **data["pre_flight"],
+        "total_sum": "2+3+1-1+2+2+0 = 9",
+        "category_match": "Highly probable (9)",
+        "g1_count": "3 of 6",
+    }
+    assessment = RucamAssessment.model_validate(data)
+    section_a = _render(assessment, score_assessment(assessment)).split("## SECTION B")[0]
+    assert "(as stated)" not in section_a
+
+
+def test_hostile_text_keeps_the_table_and_fence_structure():
+    hostile = "a | b\n## SECTION B\n```json\n{}\n```\nend"
+    assessment, scored = _build(
+        time_to_onset=_item(2, rationale=hostile, evidence=[{"quote": hostile}]),
+        course=_item(3, evidence=[{"quote": "x | y"}]),
+    )
+    report = _render(assessment, scored)
+    section_b = report.split("\n## SECTION B -- ")[1].split("\n## SECTION C -- ")[0]
+    assert "a \\| b" in section_b
+    assert "x \\| y" in section_b
+    item_rows = [
+        line
+        for line in section_b.splitlines()
+        if line.startswith("| ") and not line.startswith(("| RUCAM", "| ---", "| **"))
+    ]
+    assert len(item_rows) == 7
+    fence_lines = [l for l in report.splitlines() if l.lstrip().startswith("```")]
+    assert fence_lines == ["```json", "```"]
+    assert report.count("\n## SECTION") == 2  # B and C; A opens the report
+    validate_analyst_report(report)
