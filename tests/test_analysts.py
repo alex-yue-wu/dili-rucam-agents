@@ -266,6 +266,20 @@ def test_rejected_attempts_persist_as_invalid_artifacts(tmp_path: Path):
     assert outcome.counters["analyst_0"].validation_retries == 2
 
 
+def test_the_provider_is_closed_once_the_analysts_are_done():
+    """Clients are built inside this loop, so this is where they are released."""
+    provider = FakeProvider(_reply(), _reply())
+    _run(provider, _roster(2))
+    assert provider.closes == 1
+
+
+def test_the_provider_is_closed_even_when_an_analyst_fails():
+    provider = FakeProvider(StatusError(401, "bad key"))
+    with pytest.raises(AnalystExecutionError):
+        _run(provider)
+    assert provider.closes == 1
+
+
 def test_no_audit_files_without_an_output_dir_or_a_rejection(tmp_path: Path):
     _run(FakeProvider(_reply()), output_dir=tmp_path)
     assert not (tmp_path / "attempts").exists()

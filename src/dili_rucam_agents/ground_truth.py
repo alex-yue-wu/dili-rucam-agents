@@ -87,15 +87,21 @@ def run_ground_truth_score_finder(
     prompt = build_ground_truth_score_finder_prompt(
         raw_case_bundle_json=raw_case_bundle_json, model_name=config.model
     )
-    response = asyncio.run(
-        provider.complete(
-            model_spec(config),
-            [{"role": "user", "content": prompt}],
-            StructuredMode.text,
-            None,
-        )
-    )
-    return response.text
+
+    async def call_then_close():
+        # The provider's client is built inside this loop and must be closed
+        # inside it, so the one call and the close share the one asyncio.run.
+        try:
+            return await provider.complete(
+                model_spec(config),
+                [{"role": "user", "content": prompt}],
+                StructuredMode.text,
+                None,
+            )
+        finally:
+            await provider.aclose()
+
+    return asyncio.run(call_then_close()).text
 
 
 __all__ = [

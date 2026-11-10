@@ -108,6 +108,16 @@ class CompletionProvider(Protocol):
         schema: dict[str, Any] | None,
     ) -> ModelResponse: ...
 
+    async def aclose(self) -> None:
+        """Release whatever the provider holds open.
+
+        Called by whichever layer owns the event loop the calls ran in --
+        ``analysts._run_pending`` and ``run_ground_truth_score_finder`` -- and
+        called there rather than by the caller that built the provider, because
+        an SDK client must be closed inside the loop that created it.
+        """
+        ...
+
 
 def model_spec(config: AnalystConfig | GroundTruthConfig) -> ModelSpec:
     """The one place a roster entry becomes a call spec."""
@@ -432,10 +442,21 @@ class SdkProvider:
         )
 
     async def aclose(self) -> None:
-        """Close the clients that hold connections; call once at the end of a run."""
-        for provider, client in self._clients.items():
-            if provider is Provider.google:
-                await client.aio.aclose()
-            else:
-                await client.close()
-        self._clients.clear()
+        """Close the clients that hold connections; call once at the end of a run.
+
+        Each close is independent: one vendor's client failing to shut down must
+        not leave the others open, and the registry is emptied either way so a
+        second call cannot close a client twice. Nothing here is worth failing a
+        run for -- the calls are already over by the time it is reached.
+        """
+        try:
+            for provider, client in self._clients.items():
+                try:
+                    if provider is Provider.google:
+                        await client.aio.aclose()
+                    else:
+                        await client.close()
+                except Exception:  # noqa: BLE001 - best-effort cleanup
+                    pass
+        finally:
+            self._clients.clear()

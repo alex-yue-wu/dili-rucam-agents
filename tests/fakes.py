@@ -22,12 +22,14 @@ class FakeProvider:
     ``queue`` accepts either, so a test reads as the sequence of provider
     behaviour it wants. An exhausted script fails loudly rather than inventing
     a reply. Every call is recorded in ``calls`` as ``(spec, messages, mode,
-    schema)``.
+    schema)``, and ``closes`` counts the ``aclose`` calls it received.
     """
 
     def __init__(self, *script: ModelResponse | BaseException | str) -> None:
         self._script: deque[ModelResponse | BaseException] = deque()
         self.calls: list[tuple[ModelSpec, list[dict[str, str]], StructuredMode, dict[str, Any] | None]] = []
+        #: How many times the owning layer closed this provider.
+        self.closes = 0
         self.queue(*script)
 
     def queue(self, *items: ModelResponse | BaseException | str) -> FakeProvider:
@@ -58,3 +60,6 @@ class FakeProvider:
         if isinstance(item, BaseException):
             raise item
         return item
+
+    async def aclose(self) -> None:
+        self.closes += 1

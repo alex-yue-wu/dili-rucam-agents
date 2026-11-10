@@ -10,7 +10,7 @@ from dili_rucam_agents.ground_truth import (
 )
 from dili_rucam_agents.providers import MissingApiKeyError, StructuredMode
 from dili_rucam_agents.roster import GroundTruthConfig, Provider, load_roster
-from fakes import FakeProvider
+from fakes import FakeProvider, StatusError
 
 _REPORT = """# Ground Truth RUCAM Score Report
 
@@ -86,6 +86,30 @@ def test_finder_calls_the_configured_ground_truth_model(monkeypatch):
     assert "GROUND_TRUTH_RUCAM_SCORE" in sent
     # The model name is interpolated into the prompt; pin it end to end.
     assert 'Use the configured model "gt-model-x".' in sent
+
+
+def test_the_finder_closes_the_provider_it_was_handed(monkeypatch):
+    """The client is built inside this asyncio.run, so it is closed inside it."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    provider = FakeProvider(_REPORT)
+
+    run_ground_truth_score_finder(
+        raw_case_bundle_json=_BUNDLE, config=_config(), provider=provider
+    )
+
+    assert provider.closes == 1
+
+
+def test_the_finder_closes_the_provider_when_the_call_fails(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    provider = FakeProvider(StatusError(503, "upstream down"))
+
+    with pytest.raises(StatusError):
+        run_ground_truth_score_finder(
+            raw_case_bundle_json=_BUNDLE, config=_config(), provider=provider
+        )
+
+    assert provider.closes == 1
 
 
 def test_finder_output_still_yields_a_score_and_a_category(monkeypatch):

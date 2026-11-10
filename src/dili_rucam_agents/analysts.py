@@ -195,9 +195,22 @@ def run_analysts(
     return outcome
 
 
-async def _run_pending(*, pending: list[AnalystConfig], **kwargs) -> None:
-    for config in pending:
-        await _run_one(config=config, **kwargs)
+async def _run_pending(
+    *, pending: list[AnalystConfig], provider: CompletionProvider, **kwargs
+) -> None:
+    """Score each pending analyst, then close the provider.
+
+    The provider's clients are built inside this loop, and an SDK client must be
+    closed inside the loop that created it, so this is where its lifetime ends.
+    Closing in a ``finally`` means a failed analyst still releases the
+    connections; the gate calls this once per PDF per repeat, so what leaks here
+    arrives as pages of unclosed-client noise interleaved with the measurement.
+    """
+    try:
+        for config in pending:
+            await _run_one(config=config, provider=provider, **kwargs)
+    finally:
+        await provider.aclose()
 
 
 async def _run_one(

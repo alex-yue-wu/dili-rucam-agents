@@ -603,6 +603,51 @@ def test_google_client_is_built_with_no_sdk_retries(monkeypatch):
     assert captured["http_options"].retry_options.attempts == 1
 
 
+class _Closer:
+    """A client whose close either records the call or refuses it."""
+
+    def __init__(self, *, fails: bool = False) -> None:
+        self.closed = 0
+        self.fails = fails
+        self.aio = SimpleNamespace(aclose=self._close)
+
+    async def _close(self) -> None:
+        if self.fails:
+            raise RuntimeError("transport already gone")
+        self.closed += 1
+
+    async def close(self) -> None:
+        await self._close()
+
+
+def test_aclose_closes_every_client_and_empties_the_registry():
+    sdk = SdkProvider()
+    openai_client = _Closer()
+    google_client = _Closer()
+    sdk._clients[Provider.openai] = openai_client
+    sdk._clients[Provider.google] = google_client
+
+    asyncio.run(sdk.aclose())
+
+    assert (openai_client.closed, google_client.closed) == (1, 1)
+    assert sdk._clients == {}
+
+
+def test_one_failing_close_neither_stops_the_others_nor_keeps_the_registry():
+    """A client that cannot shut down must not strand the rest open."""
+    sdk = SdkProvider()
+    refuses = _Closer(fails=True)
+    survivor = _Closer()
+    # Insertion order puts the failing client first, so a bare loop would stop.
+    sdk._clients[Provider.anthropic] = refuses
+    sdk._clients[Provider.openai] = survivor
+
+    asyncio.run(sdk.aclose())
+
+    assert survivor.closed == 1
+    assert sdk._clients == {}
+
+
 def test_every_provider_declares_modes_highest_first_and_ending_in_text():
     from dili_rucam_agents.providers import SUPPORTED_MODES, starting_mode
 
