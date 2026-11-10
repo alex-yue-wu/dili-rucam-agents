@@ -418,7 +418,9 @@ both accept this option.
 Four retry budgets are separate and never pooled:
 
 - **validation retries** (default 2) for a reply that parsed but broke the schema;
-- **transient transport retries** (3, with backoff) for provider errors;
+- **transient transport retries** (4, with backoff 0.5/1/2/4s plus jitter, so
+  total patience is 7.5s) for provider errors; the budget is per stall, and one
+  reply resets it;
 - **one truncation escalation**: a reply cut off by the output budget is reported
   as `report_truncated`, and the one retry that follows runs with a wider budget up
   to a ceiling of 64,000 tokens. On a reasoning model the budget covers hidden

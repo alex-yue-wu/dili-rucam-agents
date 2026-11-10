@@ -47,7 +47,12 @@ from dili_rucam_agents.providers import (
 TERMINAL_STATUS_CODES: frozenset[int] = frozenset({400, 401, 403, 404, 422})
 
 #: Consecutive transient errors retried before giving up; the next one raises.
-_MAX_TRANSIENT_RETRIES = 3
+#: Four, so the documented 0.5/1/2/4s backoff is actually spent and the cap is
+#: reached. At three the last sleep was 2s and total patience was 3.5s -- which
+#: abandons an analyst three and a half seconds into a rate limit, on a paid run
+#: where three analysts share one OpenRouter key and the gate command carries no
+#: --continue-on-failure.
+_MAX_TRANSIENT_RETRIES = 4
 _TRUNCATION_MULTIPLIER = 2
 
 _BACKOFF_BASE_SECONDS = 0.5

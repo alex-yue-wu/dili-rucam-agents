@@ -127,31 +127,44 @@ def test_transient_errors_do_not_shrink_the_validation_budget(sleeps):
     assert result.counters.transient_retries == 2
 
 
-def test_a_fourth_consecutive_transient_error_raises_execution_kind(sleeps):
+def test_a_fifth_consecutive_transient_error_raises_execution_kind(sleeps):
+    """Four retries, so the whole documented 0.5/1/2/4s backoff is spent."""
     fake = FakeProvider(
-        StatusError(429), StatusError(500), StatusError(502), StatusError(503), GOOD
+        StatusError(429),
+        StatusError(500),
+        StatusError(502),
+        StatusError(504),
+        StatusError(503),
+        GOOD,
     )
     error = run_error(fake, sleeps)
     assert error.kind == "execution"
-    assert error.counters.transient_retries == 3
+    assert error.counters.transient_retries == 4
     assert error.execution_diagnostic.status_code == 503
-    assert len(fake.calls) == 4
-    assert len(sleeps.recorded) == 3
+    assert len(fake.calls) == 5
+    assert len(sleeps.recorded) == 4
 
 
-def test_three_transient_errors_are_each_retried_and_the_run_succeeds(sleeps):
-    fake = FakeProvider(StatusError(429), StatusError(500), StatusError(502), GOOD)
+def test_four_transient_errors_are_each_retried_and_the_run_succeeds(sleeps):
+    fake = FakeProvider(
+        StatusError(429), StatusError(500), StatusError(502), StatusError(504), GOOD
+    )
     result = run(fake, sleeps)
-    assert result.counters.transient_retries == 3
+    assert result.counters.transient_retries == 4
     assert result.counters.validation_retries == 0
-    assert len(sleeps.recorded) == 3
+    assert len(sleeps.recorded) == 4
 
 
 def test_the_transient_budget_is_per_stall_not_per_run(sleeps):
     err = StatusError
-    fake = FakeProvider(err(429), err(429), err(429), BAD, err(429), err(429), err(429), GOOD)
+    fake = FakeProvider(
+        err(429), err(429), err(429), err(429),
+        BAD,
+        err(429), err(429), err(429), err(429),
+        GOOD,
+    )
     result = run(fake, sleeps)
-    assert result.counters.transient_retries == 6
+    assert result.counters.transient_retries == 8
     assert result.counters.validation_retries == 1
 
 
@@ -188,15 +201,33 @@ def test_transient_backoff_grows_and_is_jittered(sleeps, monkeypatch):
         return high
 
     monkeypatch.setattr(runner_module.random, "uniform", fixed_jitter)
-    run(FakeProvider(StatusError(429), StatusError(429), StatusError(429), GOOD), sleeps)
-    assert sleeps.recorded == pytest.approx([0.5 * 1.1, 1.0 * 1.1, 2.0 * 1.1])
+    run(
+        FakeProvider(*[StatusError(429)] * runner_module._MAX_TRANSIENT_RETRIES, GOOD),
+        sleeps,
+    )
+    # The documented schedule, spent in full: total patience 7.5s before jitter.
+    assert sleeps.recorded == pytest.approx(
+        [0.5 * 1.1, 1.0 * 1.1, 2.0 * 1.1, 4.0 * 1.1]
+    )
+    assert sum(sleeps.recorded) == pytest.approx(7.5 * 1.1)
     assert jitter_args == [
-        (0, pytest.approx(0.05)), (0, pytest.approx(0.1)), (0, pytest.approx(0.2))
+        (0, pytest.approx(0.05)),
+        (0, pytest.approx(0.1)),
+        (0, pytest.approx(0.2)),
+        (0, pytest.approx(0.4)),
     ]
 
 
-def test_backoff_is_capped(monkeypatch):
+def test_the_backoff_cap_is_reachable_within_the_budget(monkeypatch):
+    """The cap was dead code while the budget stopped one rung short of it."""
     monkeypatch.setattr(runner_module.random, "uniform", lambda low, high: 0.0)
+    assert runner_module._MAX_TRANSIENT_RETRIES == 4
+    schedule = [
+        runner_module._backoff_seconds(n)
+        for n in range(runner_module._MAX_TRANSIENT_RETRIES)
+    ]
+    assert schedule == [0.5, 1.0, 2.0, 4.0]
+    assert schedule[-1] == runner_module._BACKOFF_CAP_SECONDS
     assert runner_module._backoff_seconds(10) == 4.0
 
 
