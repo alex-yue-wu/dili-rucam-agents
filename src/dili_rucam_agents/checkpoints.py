@@ -10,10 +10,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from dili_rucam_agents.crew.agents import (
-    resolve_analyst_max_output_tokens,
-    resolve_rucam_model,
-)
+from pydantic import ValidationError
+
 from dili_rucam_agents.diagnostics import (
     SafeExecutionDiagnostic,
     SafeValidationDiagnostic,
@@ -22,10 +20,16 @@ from dili_rucam_agents.diagnostics import (
     validate_failure_kind,
     validate_validation_diagnostic,
 )
+from dili_rucam_agents.roster import AnalystConfig
+from dili_rucam_agents.runner import RetryCounters
 from dili_rucam_agents.validators.analyst_report import validate_analyst_report
+from dili_rucam_agents.validators.rucam_assessment import RucamAssessment
 
 
-CHECKPOINT_SCHEMA_VERSION = 3
+# 4: each analyst writes a validated-assessment sidecar beside its report, and
+# the manifest records the runner's four retry counters. A version-3 manifest
+# is discarded, not migrated.
+CHECKPOINT_SCHEMA_VERSION = 4
 CHECKPOINT_FILENAME = "analyst_checkpoints.json"
 
 
@@ -33,6 +37,7 @@ CHECKPOINT_FILENAME = "analyst_checkpoints.json"
 class AnalystIdentity:
     key: str
     report_filename: str
+    assessment_filename: str
     fingerprint: str
 
 
@@ -83,9 +88,14 @@ def build_analyst_fingerprint(
     return hashlib.sha256(encoded).hexdigest()
 
 
+def assessment_filename_for(key: str) -> str:
+    """``analyst_alpha`` -> ``analyst-alpha_assessment.json``, beside the report."""
+    return f"{key.replace('_', '-')}_assessment.json"
+
+
 def build_analyst_identities(
     *,
-    configs: list[dict[str, Any]],
+    configs: list[AnalystConfig],
     report_filename_map: Mapping[str, str],
     pdf_sha256: str,
     analyst_instruction_sha256: Mapping[str, str],
@@ -95,23 +105,18 @@ def build_analyst_identities(
 ) -> dict[str, AnalystIdentity]:
     identities: dict[str, AnalystIdentity] = {}
     for config in configs:
-        key = config["key"]
-        model = resolve_rucam_model(
-            model_env=config["model_env"],
-            fallback_envs=tuple(config["fallback_envs"]),
-            default_model=config["default_model"],
-        )
-        max_output_tokens = resolve_analyst_max_output_tokens(config["max_tokens_env"])
+        key = config.key
         identities[key] = AnalystIdentity(
             key=key,
             report_filename=report_filename_map[key],
+            assessment_filename=assessment_filename_for(key),
             fingerprint=build_analyst_fingerprint(
                 pdf_sha256=pdf_sha256,
                 analyst_instruction_sha256=analyst_instruction_sha256[key],
                 enable_score_masking=enable_score_masking,
                 strict_scoring=strict_scoring,
-                model=model,
-                max_output_tokens=max_output_tokens,
+                model=config.model,
+                max_output_tokens=config.max_output_tokens,
                 hepatotoxicity_evidence_sha256=hepatotoxicity_evidence_sha256,
             ),
         )
@@ -169,9 +174,8 @@ class AnalystCheckpointStore:
         reports = self._valid_legacy_reports(identities)
         if adopt_legacy and allow_manifest_updates:
             for identity in identities:
-                report_text = reports.get(identity.key)
-                if report_text is not None:
-                    self.record_completed(identity, attempt=0, report_text=report_text)
+                if identity.key in reports:
+                    self._mark_completed(identity, attempt=0, counters=None)
         return reports
 
     def record_running(self, identity: AnalystIdentity, *, attempt: int) -> None:
@@ -197,21 +201,28 @@ class AnalystCheckpointStore:
         report_text: str | None = None,
         execution_diagnostic: SafeExecutionDiagnostic | None = None,
         validation_diagnostic: SafeValidationDiagnostic | None = None,
+        counters: RetryCounters | None = None,
     ) -> None:
         failure_kind = validate_failure_kind(failure_kind)
-        if failure_kind == "execution":
+        # An execution or terminal failure is a provider error and carries
+        # execution metadata; a validation or truncation failure is about the
+        # reply and carries validation issues.
+        if failure_kind in ("execution", "terminal"):
             if validation_diagnostic is not None:
                 raise ValueError(
-                    "execution failures cannot carry validation diagnostics"
+                    f"{failure_kind} failures cannot carry validation diagnostics"
                 )
             error = render_execution_diagnostic(execution_diagnostic)
         else:
             if execution_diagnostic is not None:
                 raise ValueError(
-                    "validation failures cannot carry execution diagnostics"
+                    f"{failure_kind} failures cannot carry execution diagnostics"
                 )
+            default_code = (
+                "report_truncated" if failure_kind == "truncation" else "invalid_report"
+            )
             source = validation_diagnostic or SafeValidationDiagnostic(
-                (("report", "invalid_report"),)
+                (("report", default_code),)
             )
             error = render_validation_diagnostic(validate_validation_diagnostic(source))
         if report_text is not None and type(report_text) is not str:
@@ -251,14 +262,38 @@ class AnalystCheckpointStore:
                 "failed_at": failed_at,
             }
         )
+        if counters is not None:
+            entry.update(_counter_fields(counters))
         self._write_manifest(manifest)
 
     def record_completed(
-        self, identity: AnalystIdentity, *, attempt: int, report_text: str
+        self,
+        identity: AnalystIdentity,
+        *,
+        attempt: int,
+        report_text: str,
+        assessment_json: str,
+        counters: RetryCounters,
     ) -> None:
-        validate_analyst_report(report_text)
-        atomic_write_text(self.output_dir / identity.report_filename, report_text)
+        """Persist the report and its validated-assessment sidecar, then mark done.
 
+        Both are validated before anything is written, and the manifest entry is
+        written last: a crash between the files leaves the analyst not
+        completed rather than half-recorded.
+        """
+        validate_analyst_report(report_text)
+        _validate_assessment_text(assessment_json)
+        atomic_write_text(self.output_dir / identity.assessment_filename, assessment_json)
+        atomic_write_text(self.output_dir / identity.report_filename, report_text)
+        self._mark_completed(identity, attempt=attempt, counters=counters)
+
+    def _mark_completed(
+        self,
+        identity: AnalystIdentity,
+        *,
+        attempt: int,
+        counters: RetryCounters | None,
+    ) -> None:
         manifest = self._read_manifest() or self._new_manifest()
         entry = self._entry(manifest, identity.key)
         entry.pop("failure_kind", None)
@@ -268,11 +303,14 @@ class AnalystCheckpointStore:
                 "status": "completed",
                 "attempts_in_last_invocation": attempt,
                 "report_file": identity.report_filename,
+                "assessment_file": identity.assessment_filename,
                 "fingerprint": identity.fingerprint,
                 "completed_at": _utc_now_isoformat(),
                 "last_error": None,
             }
         )
+        if counters is not None:
+            entry.update(_counter_fields(counters))
         self._write_manifest(manifest)
 
     def all_completed(
@@ -333,9 +371,9 @@ class AnalystCheckpointStore:
                 continue
             if entry.get("report_file") != identity.report_filename:
                 continue
-            report_text = self._read_valid_report(
-                self.output_dir / identity.report_filename
-            )
+            if entry.get("assessment_file") != identity.assessment_filename:
+                continue
+            report_text = self._read_complete_artifacts(identity)
             if report_text is not None:
                 reports[identity.key] = report_text
         return reports
@@ -362,12 +400,29 @@ class AnalystCheckpointStore:
     ) -> dict[str, str]:
         reports: dict[str, str] = {}
         for identity in identities:
-            report_text = self._read_valid_report(
-                self.output_dir / identity.report_filename
-            )
+            report_text = self._read_complete_artifacts(identity)
             if report_text is not None:
                 reports[identity.key] = report_text
         return reports
+
+    def _read_complete_artifacts(self, identity: AnalystIdentity) -> str | None:
+        """The report text, only when the report AND its sidecar both validate.
+
+        A report without its assessment would resume an analyst whose audit
+        fields were never kept, so it counts as not completed.
+        """
+        report_text = self._read_valid_report(self.output_dir / identity.report_filename)
+        if report_text is None:
+            return None
+        try:
+            _validate_assessment_text(
+                (self.output_dir / identity.assessment_filename).read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, UnicodeError, ValueError):
+            return None
+        return report_text
 
     @staticmethod
     def _read_valid_report(path: Path) -> str | None:
@@ -399,6 +454,27 @@ class AnalystCheckpointStore:
         atomic_write_json(self.manifest_path, manifest)
 
 
+def _validate_assessment_text(assessment_json: object) -> None:
+    """Raise ValueError unless this is the JSON text of a valid RucamAssessment."""
+    if type(assessment_json) is not str:
+        raise TypeError("assessment_json must be a string")
+    try:
+        RucamAssessment.model_validate_json(assessment_json)
+    except ValidationError:
+        # A ValidationError is a ValueError, but its message quotes the input.
+        raise ValueError("assessment_json is not a valid RUCAM assessment") from None
+
+
+def _counter_fields(counters: RetryCounters) -> dict[str, Any]:
+    return {
+        "validation_retries": counters.validation_retries,
+        "transient_retries": counters.transient_retries,
+        "truncation_escalations": counters.truncation_escalations,
+        "mode_downgrades": counters.mode_downgrades,
+        "final_mode": counters.final_mode.value,
+    }
+
+
 def _utc_now_isoformat() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -412,5 +488,6 @@ __all__ = [
     "atomic_write_json",
     "atomic_write_text",
     "build_analyst_fingerprint",
+    "assessment_filename_for",
     "build_analyst_identities",
 ]

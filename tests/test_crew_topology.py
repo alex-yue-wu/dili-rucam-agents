@@ -329,6 +329,7 @@ def test_execution_exception_diagnostics_are_safe_across_retry_sinks(
     identity = AnalystIdentity(
         key="analyst_alpha",
         report_filename="analyst-alpha_report.md",
+        assessment_filename="analyst-alpha_assessment.json",
         fingerprint="fingerprint-a",
     )
     events = []
@@ -734,6 +735,7 @@ def test_validation_secrets_do_not_reach_retry_events_or_manifest(
     identity = AnalystIdentity(
         key="analyst_alpha",
         report_filename="analyst-alpha_report.md",
+        assessment_filename="analyst-alpha_assessment.json",
         fingerprint="fingerprint-a",
     )
     events = []

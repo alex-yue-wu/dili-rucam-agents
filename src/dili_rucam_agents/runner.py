@@ -33,6 +33,7 @@ from dili_rucam_agents.diagnostics import (
     SafeExecutionDiagnostic,
     SafeValidationDiagnostic,
     build_execution_diagnostic,
+    validation_diagnostic_from_errors,
 )
 from dili_rucam_agents.providers import (
     SUPPORTED_MODES,
@@ -199,8 +200,10 @@ def _correction(exc: ValidationError | ValueError) -> str:
 
 
 def _validation_diagnostic(exc: ValidationError | ValueError) -> SafeValidationDiagnostic:
-    code = "invalid_value" if isinstance(exc, ValidationError) else "invalid_report"
-    return SafeValidationDiagnostic((("report", code),))
+    """Which fields failed, as allowlisted paths; never the model's own text."""
+    if isinstance(exc, ValidationError):
+        return validation_diagnostic_from_errors(exc.errors(include_input=False))
+    return SafeValidationDiagnostic((("report", "invalid_report"),))
 
 
 async def run_contract(

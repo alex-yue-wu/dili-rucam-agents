@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import re
 from typing import Literal, cast
@@ -9,6 +10,9 @@ _SAFE_TYPE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 _FAILURE_KINDS = frozenset(("validation", "execution", "truncation", "terminal"))
 FailureKind = Literal["validation", "execution", "truncation", "terminal"]
 
+# The first block names the legacy three-section report and its Section C JSON;
+# the rest is every path of the RucamAssessment object, with list indices
+# dropped (``course.evidence.0.quote`` is ``course.evidence.quote``).
 _VALIDATION_FIELD_PATHS = frozenset(
     (
         "report",
@@ -25,6 +29,92 @@ _VALIDATION_FIELD_PATHS = frozenset(
         "rucam_scores.other_causes_excluded",
         "rucam_scores.known_hepatotoxicity",
         "rucam_scores.rechallenge",
+        "r_ratio",
+        "r_ratio_basis",
+        "r_ratio_basis.alt",
+        "r_ratio_basis.alp",
+        "r_ratio_basis.alt_uln",
+        "r_ratio_basis.alp_uln",
+        "onset_day",
+        "onset_anchor_dose",
+        "pre_flight",
+        "pre_flight.suspect_drug",
+        "pre_flight.onset",
+        "pre_flight.r_ratio_pattern",
+        "pre_flight.course_basis",
+        "pre_flight.g1_count",
+        "pre_flight.item_6_source",
+        "pre_flight.scores_in_legal_sets",
+        "pre_flight.total_sum",
+        "pre_flight.category_match",
+        "pre_flight.section_b_matches_section_c",
+        "pre_flight.notes_complete",
+        "item_5_causes",
+        "item_5_causes.hepatitis_a",
+        "item_5_causes.hepatitis_b",
+        "item_5_causes.hepatitis_c",
+        "item_5_causes.biliary_obstruction",
+        "item_5_causes.alcoholism",
+        "item_5_causes.hypotension_or_ischaemia",
+        "item_5_causes.underlying_disease",
+        "item_5_causes.acute_viral_infection",
+        "item_5_causes.g1",
+        "time_to_onset",
+        "time_to_onset.score",
+        "time_to_onset.data_status",
+        "time_to_onset.rationale",
+        "time_to_onset.inference_note",
+        "time_to_onset.evidence",
+        "time_to_onset.evidence.quote",
+        "time_to_onset.evidence.verified",
+        "course",
+        "course.score",
+        "course.data_status",
+        "course.rationale",
+        "course.inference_note",
+        "course.evidence",
+        "course.evidence.quote",
+        "course.evidence.verified",
+        "risk_factors",
+        "risk_factors.score",
+        "risk_factors.data_status",
+        "risk_factors.rationale",
+        "risk_factors.inference_note",
+        "risk_factors.evidence",
+        "risk_factors.evidence.quote",
+        "risk_factors.evidence.verified",
+        "concomitant_drugs",
+        "concomitant_drugs.score",
+        "concomitant_drugs.data_status",
+        "concomitant_drugs.rationale",
+        "concomitant_drugs.inference_note",
+        "concomitant_drugs.evidence",
+        "concomitant_drugs.evidence.quote",
+        "concomitant_drugs.evidence.verified",
+        "other_causes_excluded",
+        "other_causes_excluded.score",
+        "other_causes_excluded.data_status",
+        "other_causes_excluded.rationale",
+        "other_causes_excluded.inference_note",
+        "other_causes_excluded.evidence",
+        "other_causes_excluded.evidence.quote",
+        "other_causes_excluded.evidence.verified",
+        "known_hepatotoxicity",
+        "known_hepatotoxicity.score",
+        "known_hepatotoxicity.data_status",
+        "known_hepatotoxicity.rationale",
+        "known_hepatotoxicity.inference_note",
+        "known_hepatotoxicity.evidence",
+        "known_hepatotoxicity.evidence.quote",
+        "known_hepatotoxicity.evidence.verified",
+        "rechallenge",
+        "rechallenge.score",
+        "rechallenge.data_status",
+        "rechallenge.rationale",
+        "rechallenge.inference_note",
+        "rechallenge.evidence",
+        "rechallenge.evidence.quote",
+        "rechallenge.evidence.verified",
         "total_score",
         "category",
     )
@@ -139,6 +229,68 @@ def render_validation_diagnostic(diagnostic: object) -> str:
     return "; ".join(messages)
 
 
+#: pydantic error ``type`` -> issue code. Anything unlisted is ``invalid_value``.
+_ERROR_TYPE_CODES = {
+    "missing": "field_required",
+    "int_type": "invalid_integer",
+    "int_parsing": "invalid_integer",
+    "int_from_float": "invalid_integer",
+    "float_type": "invalid_number",
+    "float_parsing": "invalid_number",
+    "enum": "invalid_literal",
+    "literal_error": "invalid_literal",
+    "greater_than": "number_too_small",
+    "greater_than_equal": "number_too_small",
+}
+
+
+def _allowlisted_path(loc: object) -> str:
+    """The longest allowlisted prefix of an error location, else ``report``.
+
+    Integer segments are list indices and are dropped. A segment the schema does
+    not define (an ``extra="forbid"`` rejection names the provider's own key)
+    ends the walk, so provider text can only ever select an ancestor that the
+    allowlist already contains.
+    """
+
+    if not isinstance(loc, (tuple, list)):
+        return "report"
+    parts: list[str] = []
+    for segment in loc:
+        if type(segment) is int:
+            continue
+        if type(segment) is not str:
+            break
+        candidate = ".".join((*parts, segment))
+        if candidate not in _VALIDATION_FIELD_PATHS:
+            break
+        parts.append(segment)
+    return ".".join(parts) if parts else "report"
+
+
+def validation_diagnostic_from_errors(
+    errors: Iterable[Mapping[str, object]],
+) -> SafeValidationDiagnostic:
+    """Map pydantic ``ValidationError.errors()`` onto allowlisted field/code pairs.
+
+    Only each error's ``loc`` and ``type`` are read, never ``msg``, ``input`` or
+    ``ctx``, and both are reduced to allowlisted values. Duplicates collapse and
+    the list is capped at the diagnostic's own limit.
+    """
+
+    issues: list[tuple[str, str]] = []
+    for error in errors:
+        issue = (
+            _allowlisted_path(error.get("loc")),
+            _ERROR_TYPE_CODES.get(str(error.get("type")), "invalid_value"),
+        )
+        if issue not in issues:
+            issues.append(issue)
+    if not issues:
+        issues.append(("report", "invalid_report"))
+    return SafeValidationDiagnostic(tuple(issues[:16]))
+
+
 def validate_failure_kind(value: object) -> FailureKind:
     if not isinstance(value, str) or value not in _FAILURE_KINDS:
         raise ValueError("failure_kind must be 'validation', 'execution', 'truncation' or 'terminal'")
@@ -244,4 +396,6 @@ __all__ = [
     "validate_execution_diagnostic",
     "validate_failure_kind",
     "validate_validation_diagnostic",
+    "validation_diagnostic_from_errors",
 ]
+

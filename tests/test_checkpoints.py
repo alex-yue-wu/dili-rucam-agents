@@ -14,12 +14,18 @@ from dili_rucam_agents.checkpoints import (
     build_analyst_fingerprint,
     build_analyst_identities,
 )
+from dili_rucam_agents.checkpoints import CHECKPOINT_SCHEMA_VERSION
 from dili_rucam_agents.crew.tasks import build_analyst_instruction_contract
 from dili_rucam_agents.diagnostics import (
     SafeExecutionDiagnostic,
     SafeValidationDiagnostic,
     build_execution_diagnostic,
 )
+from dili_rucam_agents.providers import StructuredMode
+from dili_rucam_agents.roster import AnalystConfig, Provider
+from dili_rucam_agents.runner import RetryCounters
+from dili_rucam_agents.validators.rucam_assessment import RucamAssessment
+from dili_rucam_agents.validators.rucam_json import ITEM_LEGAL_SCORES
 
 
 def complete_report() -> str:
@@ -45,11 +51,83 @@ def complete_report() -> str:
     )
 
 
+def assessment_json() -> str:
+    flags = {
+        name: "not_documented"
+        for name in (
+            "hepatitis_a",
+            "hepatitis_b",
+            "hepatitis_c",
+            "biliary_obstruction",
+            "alcoholism",
+            "hypotension_or_ischaemia",
+            "underlying_disease",
+            "acute_viral_infection",
+        )
+    }
+    payload = {
+        "injury_pattern": "hepatocellular",
+        "r_ratio": 12.5,
+        "r_ratio_basis": {
+            "alt": 500.0,
+            "alp": 120.0,
+            "alt_uln": 40.0,
+            "alp_uln": 120.0,
+        },
+        "onset_day": 10,
+        "onset_anchor_dose": "first dose",
+        "pre_flight": {
+            name: "x"
+            for name in (
+                "suspect_drug",
+                "onset",
+                "r_ratio_pattern",
+                "course_basis",
+                "g1_count",
+                "item_6_source",
+                "scores_in_legal_sets",
+                "total_sum",
+                "category_match",
+                "section_b_matches_section_c",
+                "notes_complete",
+            )
+        },
+        "item_5_causes": {**flags, "g1": 0},
+        **{
+            item: {"score": 0, "data_status": "reported", "rationale": "because"}
+            for item in ITEM_LEGAL_SCORES
+        },
+    }
+    RucamAssessment.model_validate(payload)  # the fixture must itself be valid
+    return json.dumps(payload)
+
+
+COUNTERS = RetryCounters(
+    validation_retries=2,
+    transient_retries=1,
+    truncation_escalations=1,
+    mode_downgrades=1,
+    final_mode=StructuredMode.json_object,
+)
+
+
 def identity(key: str = "analyst_alpha", fingerprint: str = "fingerprint-a"):
     return AnalystIdentity(
         key=key,
         report_filename=f"{key.replace('_', '-')}_report.md",
+        assessment_filename=f"{key.replace('_', '-')}_assessment.json",
         fingerprint=fingerprint,
+    )
+
+
+def complete(store, ident=None, *, attempt=1, report=None, counters=COUNTERS):
+    """Record a completed analyst with a valid report and a valid sidecar."""
+    store.record_completed(
+        ident or identity(),
+        attempt=attempt,
+        report_text=report if report is not None else complete_report(),
+        assessment_json=assessment_json(),
+        counters=counters,
     )
 
 
@@ -79,29 +157,27 @@ def test_fingerprint_changes_with_each_compatibility_input(field, replacement):
 
 def test_static_instruction_change_invalidates_only_affected_analyst(monkeypatch):
     configs = [
-        {
-            "key": "analyst_alpha",
-            "label": "Analyst Alpha",
-            "model_env": "TEST_ALPHA_MODEL",
-            "max_tokens_env": "TEST_ALPHA_MAX_TOKENS",
-            "fallback_envs": (),
-            "default_model": "model-a",
-        },
-        {
-            "key": "analyst_beta",
-            "label": "Analyst Beta",
-            "model_env": "TEST_BETA_MODEL",
-            "max_tokens_env": "TEST_BETA_MAX_TOKENS",
-            "fallback_envs": (),
-            "default_model": "model-b",
-        },
+        AnalystConfig(
+            key="analyst_alpha",
+            label="Analyst Alpha",
+            provider=Provider.openai,
+            model="model-a",
+            max_output_tokens=12000,
+        ),
+        AnalystConfig(
+            key="analyst_beta",
+            label="Analyst Beta",
+            provider=Provider.google,
+            model="model-b",
+            max_output_tokens=12000,
+        ),
     ]
     monkeypatch.delenv("ANALYST_MODEL", raising=False)
     contracts = {
-        config["key"]: build_analyst_instruction_contract(
-            analyst_label=config["label"],
+        config.key: build_analyst_instruction_contract(
+            analyst_label=config.label,
             prompt_text="Production prompt",
-            model_name=config["default_model"],
+            model_name=config.model,
             bundle_input_name="raw_case_bundle_json",
         )
         for config in configs
@@ -190,7 +266,7 @@ def test_store_reuses_only_matching_completed_valid_report(tmp_path: Path):
         enabled_analysts=("analyst_alpha",),
     )
     report = complete_report()
-    store.record_completed(identity(), attempt=1, report_text=report)
+    complete(store, identity(), attempt=1, report=report)
     assert store.load_compatible_reports([identity()], resume=True) == {
         "analyst_alpha": report
     }
@@ -258,7 +334,7 @@ def test_store_rejects_invalid_report_even_when_manifest_says_completed(tmp_path
         pdf_sha256="pdf",
         enabled_analysts=("analyst_alpha",),
     )
-    store.record_completed(identity(), attempt=1, report_text=complete_report())
+    complete(store, identity(), attempt=1, report=complete_report())
     (tmp_path / "analyst-alpha_report.md").write_text("incomplete", encoding="utf-8")
     assert store.load_compatible_reports([identity()], resume=True) == {}
 
@@ -270,7 +346,7 @@ def test_resume_false_bypasses_completed_checkpoints(tmp_path: Path):
         pdf_sha256="pdf",
         enabled_analysts=("analyst_alpha",),
     )
-    store.record_completed(identity(), attempt=1, report_text=complete_report())
+    complete(store, identity(), attempt=1, report=complete_report())
     assert store.load_compatible_reports([identity()], resume=False) == {}
 
 
@@ -294,7 +370,7 @@ def test_adding_delta_preserves_alpha_checkpoint(tmp_path: Path):
         pdf_sha256="pdf",
         enabled_analysts=("analyst_alpha", "analyst_delta"),
     )
-    store.record_completed(identity(), attempt=1, report_text=complete_report())
+    complete(store, identity(), attempt=1, report=complete_report())
     reports = store.load_compatible_reports(
         [identity(), identity("analyst_delta", "fingerprint-d")], resume=True
     )
@@ -335,7 +411,7 @@ def test_completion_clears_current_failure_fields_but_retains_history(tmp_path: 
         report_text="invalid report",
     )
 
-    store.record_completed(identity(), attempt=2, report_text=complete_report())
+    complete(store, identity(), attempt=2, report=complete_report())
 
     manifest = json.loads((tmp_path / "analyst_checkpoints.json").read_text())
     entry = manifest["analysts"]["analyst_alpha"]
@@ -564,10 +640,11 @@ def test_checkpoint_store_rejects_non_finite_report_before_any_mutation(
     non_finite_report = complete_report().replace("6.4", "Infinity", 1)
 
     with pytest.raises(ValueError):
-        store.record_completed(identity(), attempt=1, report_text=non_finite_report)
+        complete(store, identity(), attempt=1, report=non_finite_report)
 
     assert manifest_path.read_bytes() == manifest_before
     assert not (tmp_path / identity().report_filename).exists()
+    assert not (tmp_path / identity().assessment_filename).exists()
 
 
 def test_checkpoint_store_rejects_invalid_failure_kind_before_any_write(
@@ -603,7 +680,7 @@ def test_existing_manifest_write_refreshes_enabled_analysts(tmp_path: Path):
         pdf_sha256="pdf",
         enabled_analysts=("analyst_alpha",),
     )
-    alpha_store.record_completed(identity(), attempt=1, report_text=complete_report())
+    complete(alpha_store, identity(), attempt=1, report=complete_report())
 
     expanded_store = AnalystCheckpointStore(
         tmp_path,
@@ -626,8 +703,8 @@ def test_reusing_contracted_topology_refreshes_manifest_metadata(tmp_path: Path)
     )
     alpha = identity()
     delta = identity("analyst_delta", "fingerprint-d")
-    expanded_store.record_completed(alpha, attempt=1, report_text=complete_report())
-    expanded_store.record_completed(delta, attempt=1, report_text=complete_report())
+    complete(expanded_store, alpha, attempt=1, report=complete_report())
+    complete(expanded_store, delta, attempt=1, report=complete_report())
 
     contracted_store = AnalystCheckpointStore(
         tmp_path,
@@ -653,8 +730,8 @@ def test_contracted_topology_read_only_loading_never_writes_manifest(
     )
     alpha = identity()
     delta = identity("analyst_delta", "fingerprint-d")
-    expanded_store.record_completed(alpha, attempt=1, report_text=complete_report())
-    expanded_store.record_completed(delta, attempt=1, report_text=complete_report())
+    complete(expanded_store, alpha, attempt=1, report=complete_report())
+    complete(expanded_store, delta, attempt=1, report=complete_report())
     manifest_path = tmp_path / "analyst_checkpoints.json"
     manifest_before = manifest_path.read_bytes()
 
@@ -680,6 +757,9 @@ def test_contracted_topology_read_only_loading_never_writes_manifest(
 def test_store_adopts_valid_legacy_report(tmp_path: Path):
     report_path = tmp_path / "analyst-alpha_report.md"
     report_path.write_text(complete_report(), encoding="utf-8")
+    (tmp_path / "analyst-alpha_assessment.json").write_text(
+        assessment_json(), encoding="utf-8"
+    )
     store = AnalystCheckpointStore(
         tmp_path,
         pdf_filename="case.pdf",
@@ -761,3 +841,254 @@ def test_atomic_write_does_not_replace_destination_when_replace_fails(
     with pytest.raises(OSError, match="stop"):
         atomic_write_text(destination, "new")
     assert destination.read_text(encoding="utf-8") == "old"
+
+
+def test_store_does_not_adopt_a_legacy_report_that_has_no_sidecar(tmp_path: Path):
+    (tmp_path / "analyst-alpha_report.md").write_text(
+        complete_report(), encoding="utf-8"
+    )
+    store = AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=("analyst_alpha",),
+    )
+    reports = store.load_compatible_reports(
+        [identity()],
+        resume=True,
+        legacy_context=LegacyRunContext("case.pdf", False, False),
+    )
+    assert reports == {}
+    assert not (tmp_path / "analyst_checkpoints.json").exists()
+
+
+def make_store(tmp_path: Path, *analysts: str) -> AnalystCheckpointStore:
+    return AnalystCheckpointStore(
+        tmp_path,
+        pdf_filename="case.pdf",
+        pdf_sha256="pdf",
+        enabled_analysts=analysts or ("analyst_alpha",),
+    )
+
+
+def test_schema_version_is_four():
+    assert CHECKPOINT_SCHEMA_VERSION == 4
+    assert make_store(Path("."))._new_manifest()["schema_version"] == 4
+
+
+def test_a_manifest_at_version_three_is_discarded(tmp_path: Path):
+    store = make_store(tmp_path)
+    complete(store)
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["schema_version"] == 4
+    # A v3 manifest that otherwise matches in every field, artifacts included.
+    manifest["schema_version"] = 3
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_bytes()
+
+    reader = make_store(tmp_path)
+    assert reader.load_compatible_reports(
+        [identity()], resume=True, adopt_legacy=False, allow_manifest_updates=False
+    ) == {}
+    assert not reader.all_completed([identity()])
+    # Discarded, not migrated: nothing rewrote it.
+    assert manifest_path.read_bytes() == before
+
+
+def test_completed_entry_records_the_four_counters(tmp_path: Path):
+    store = make_store(tmp_path)
+    complete(store, attempt=3)
+
+    entry = json.loads((tmp_path / "analyst_checkpoints.json").read_text())[
+        "analysts"
+    ]["analyst_alpha"]
+    assert entry["validation_retries"] == 2
+    assert entry["transient_retries"] == 1
+    assert entry["truncation_escalations"] == 1
+    assert entry["mode_downgrades"] == 1
+    assert entry["final_mode"] == "json_object"
+    assert entry["assessment_file"] == "analyst-alpha_assessment.json"
+
+
+def test_failure_entry_records_the_counters_and_the_new_kinds(tmp_path: Path):
+    store = make_store(tmp_path)
+    store.record_running(identity(), attempt=1)
+    store.record_failure(
+        identity(),
+        attempt=1,
+        failure_kind="truncation",
+        error="ignored",
+        counters=COUNTERS,
+    )
+    entry = json.loads((tmp_path / "analyst_checkpoints.json").read_text())[
+        "analysts"
+    ]["analyst_alpha"]
+    assert entry["failure_kind"] == "truncation"
+    assert "cut off" in entry["last_error"]
+    assert (entry["validation_retries"], entry["mode_downgrades"]) == (2, 1)
+    assert entry["final_mode"] == "json_object"
+
+    store.record_failure(
+        identity(),
+        attempt=1,
+        failure_kind="terminal",
+        error="ignored",
+        execution_diagnostic=SafeExecutionDiagnostic("AuthenticationError", 401),
+    )
+    entry = json.loads((tmp_path / "analyst_checkpoints.json").read_text())[
+        "analysts"
+    ]["analyst_alpha"]
+    assert entry["failure_kind"] == "terminal"
+    assert entry["last_error"] == (
+        "Execution error [type=AuthenticationError; status_code=401]"
+    )
+    with pytest.raises(ValueError, match="cannot carry"):
+        store.record_failure(
+            identity(),
+            attempt=1,
+            failure_kind="terminal",
+            error="x",
+            validation_diagnostic=SafeValidationDiagnostic((("report", "invalid_report"),)),
+        )
+
+
+def test_completed_requires_both_the_report_and_the_sidecar(tmp_path: Path):
+    store = make_store(tmp_path)
+    complete(store)
+    sidecar = tmp_path / "analyst-alpha_assessment.json"
+    assert store.all_completed([identity()])
+
+    sidecar.unlink()
+
+    # The report is still on disk and still valid; the analyst must be re-scored.
+    assert (tmp_path / "analyst-alpha_report.md").exists()
+    assert not store.all_completed([identity()])
+    assert store.load_compatible_reports([identity()], resume=True) == {}
+
+    sidecar.write_text("{not json", encoding="utf-8")
+    assert store.load_compatible_reports([identity()], resume=True) == {}
+
+    # An object that parses but is not a valid assessment does not count either.
+    sidecar.write_text(json.dumps({"injury_pattern": "hepatocellular"}), encoding="utf-8")
+    assert store.load_compatible_reports([identity()], resume=True) == {}
+
+    sidecar.write_text(assessment_json(), encoding="utf-8")
+    assert store.all_completed([identity()])
+
+
+def test_a_missing_report_alone_also_forces_a_rescore(tmp_path: Path):
+    store = make_store(tmp_path)
+    complete(store)
+    (tmp_path / "analyst-alpha_report.md").unlink()
+    assert not store.all_completed([identity()])
+
+
+def test_record_completed_rejects_an_invalid_assessment_before_any_write(
+    tmp_path: Path,
+):
+    store = make_store(tmp_path)
+    store.record_running(identity(), attempt=1)
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    before = manifest_path.read_bytes()
+    secret = "MODEL-CONTROLLED-SIDECAR-SECRET"
+
+    for bad in (json.dumps({"injury_pattern": secret}), "{", "[]"):
+        with pytest.raises(ValueError) as info:
+            store.record_completed(
+                identity(),
+                attempt=1,
+                report_text=complete_report(),
+                assessment_json=bad,
+                counters=COUNTERS,
+            )
+        assert secret not in str(info.value)
+    with pytest.raises(TypeError):
+        store.record_completed(
+            identity(),
+            attempt=1,
+            report_text=complete_report(),
+            assessment_json={"not": "text"},
+            counters=COUNTERS,
+        )
+
+    assert manifest_path.read_bytes() == before
+    assert not (tmp_path / identity().report_filename).exists()
+    assert not (tmp_path / identity().assessment_filename).exists()
+
+
+def test_the_sidecar_holds_the_assessment_verbatim(tmp_path: Path):
+    store = make_store(tmp_path)
+    complete(store)
+    assert (tmp_path / "analyst-alpha_assessment.json").read_text() == assessment_json()
+
+
+def test_removing_an_analyst_leaves_the_others_checkpoints_valid(tmp_path: Path):
+    alpha, delta = identity(), identity("analyst_delta", "fingerprint-d")
+    full = make_store(tmp_path, "analyst_alpha", "analyst_delta")
+    complete(full, alpha)
+    complete(full, delta)
+    assert full.all_completed([alpha, delta])
+
+    reduced = make_store(tmp_path, "analyst_alpha")
+    assert reduced.load_compatible_reports([alpha], resume=True) == {
+        "analyst_alpha": complete_report()
+    }
+    assert reduced.all_completed([alpha])
+    manifest = json.loads((tmp_path / "analyst_checkpoints.json").read_text())
+    assert manifest["enabled_analysts"] == ["analyst_alpha"]
+    assert manifest["analysts"]["analyst_alpha"]["status"] == "completed"
+
+
+def test_fingerprint_ignores_the_roster():
+    def configs(*keys: str) -> list[AnalystConfig]:
+        return [
+            AnalystConfig(
+                key=key,
+                label=key,
+                provider=Provider.openai,
+                model=f"model-{key}",
+                max_output_tokens=12000,
+            )
+            for key in keys
+        ]
+
+    def identities(*keys: str):
+        return build_analyst_identities(
+            configs=configs(*keys),
+            report_filename_map={k: f"{k.replace('_', '-')}_report.md" for k in keys},
+            pdf_sha256="pdf-a",
+            analyst_instruction_sha256={k: f"instr-{k}" for k in keys},
+            enable_score_masking=False,
+            strict_scoring=False,
+        )
+
+    both = identities("analyst_alpha", "analyst_beta")
+    alone = identities("analyst_alpha")
+    reordered = identities("analyst_beta", "analyst_alpha")
+    assert alone["analyst_alpha"] == both["analyst_alpha"] == reordered["analyst_alpha"]
+    assert both["analyst_alpha"].fingerprint != both["analyst_beta"].fingerprint
+
+
+def test_identity_reads_model_and_budget_off_the_config():
+    def fingerprint(model: str, budget: int) -> str:
+        config = AnalystConfig(
+            key="analyst_alpha",
+            label="Alpha",
+            provider=Provider.openai,
+            model=model,
+            max_output_tokens=budget,
+        )
+        return build_analyst_identities(
+            configs=[config],
+            report_filename_map={"analyst_alpha": "analyst-alpha_report.md"},
+            pdf_sha256="p",
+            analyst_instruction_sha256={"analyst_alpha": "i"},
+            enable_score_masking=False,
+            strict_scoring=False,
+        )["analyst_alpha"].fingerprint
+
+    base = fingerprint("m", 1000)
+    assert fingerprint("other", 1000) != base
+    assert fingerprint("m", 2000) != base
+    assert fingerprint("m", 1000) == base
