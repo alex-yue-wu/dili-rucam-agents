@@ -124,7 +124,7 @@ Adopted essentially wholesale:
   a fake implements in tests; one `_complete_*` coroutine per vendor.
 - **`runner.py` budget separation.** Four independent budgets: validation retries (the
   only ones consuming `max_retries`), transient transport retries
-  (`_MAX_TRANSIENT_RETRIES = 3`, exponential backoff with jitter), truncation
+  (`_MAX_TRANSIENT_RETRIES = 4`, exponential backoff with jitter), truncation
   escalation (one doubling, then a hard failure), and structured-output downgrades.
   Mode downgrades and transient retries `continue` without appending to the attempt
   list.
@@ -395,10 +395,19 @@ scratch. That is unavoidable: the artifact set per analyst has changed.
 
 ## Failure Semantics And Retry Accounting
 
+**Amended after the final review.** This table first stated a budget of 3 transient
+retries alongside a backoff of 0.5/1/2/4s. Those cannot both hold: three retries sleep
+0.5, 1.0 and 2.0 seconds and total 3.5, leaving the 4.0s step unreachable. Four retries
+make both statements true and raise total patience to 7.5s, which matters because the
+acceptance gate is a 70-call paid run with three OpenRouter analysts sharing one key and
+no `--continue-on-failure`; abandoning an analyst 3.5 seconds into a rate limit was the
+worse reading. Honouring `Retry-After` is the better answer and is deliberately not done.
+
+
 | Condition | Budget | Exhausted behaviour |
 | --- | --- | --- |
 | Invalid/unparseable JSON, schema violation | `max_retries` (default 2) | `validation` failure |
-| 429, 5xx, timeout, connection error | 3, backoff 0.5/1/2/4s + jitter | `execution` failure |
+| 429, 5xx, timeout, connection error | 4, backoff 0.5/1/2/4s + jitter | `execution` failure |
 | `finish_reason` says length | 1 doubling of `max_output_tokens` | `truncation` failure |
 | Provider rejects the response format | step down the 3-tier ladder | last tier carries no format; a recurring 400 is terminal |
 | 400, 401, 403, 404, 422 | none | `terminal` failure, immediately |
