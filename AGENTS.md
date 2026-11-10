@@ -142,8 +142,10 @@ explicitly and is one of `openai`, `anthropic`, `google`, `openrouter` or
 passed to the vendor SDK as written. API keys come from the environment
 (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
 `DEEPSEEK_API_KEY`); the CLIs read a `.env` file from the directory the command
-was run in, and values already exported win. Before ingestion or any model call, every provider the run will use (the
-roster's analysts, plus the ground-truth provider when masking is on) is key-checked, and a failure names every missing variable at once.
+was run in, and values already exported win.
+Before ingestion or any model call, every provider the run will use (the
+roster's analysts, plus the ground-truth provider when masking is on) is key-
+checked, and a failure names every missing variable at once.
 
 ### Per-analyst contract
 

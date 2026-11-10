@@ -110,8 +110,21 @@ def test_api_key_check_is_documented_as_upfront_and_exhaustive(name):
     text = " ".join(BOTH[name].split())
     assert "Before ingestion or any model call" in text
     assert "names every missing variable at once" in text
-    assert "first call to a provider" not in text
-    assert "lazily" not in text
+    assert (
+        "(the roster's analysts, plus the ground-truth provider when masking is on)"
+        in text
+    )
+    lowered = text.lower()
+    for lazy in (
+        "first call",
+        "first use",
+        "on first",
+        "lazy",
+        "lazily",
+        "on demand",
+        "when first needed",
+    ):
+        assert lazy not in lowered, lazy
 
 
 def test_instruction_hash_is_documented_as_covering_the_persona():

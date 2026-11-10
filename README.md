@@ -164,7 +164,9 @@ API keys are the only analyst configuration read from the environment:
 | `OPENROUTER_API_KEY` | `openrouter` |
 | `DEEPSEEK_API_KEY` | `deepseek` |
 
-Before ingestion or any model call, every provider the run will use (the roster's analysts, plus the ground-truth provider when masking is on) is key-checked, and a failure names every missing variable at once. The former
+Before ingestion or any model call, every provider the run will use (the
+roster's analysts, plus the ground-truth provider when masking is on) is key-
+checked, and a failure names every missing variable at once. The former
 `ANALYST_*_MODEL` and `*_MAX_TOKENS` variables no longer exist; change the roster
 file instead.
 
@@ -445,7 +447,7 @@ strict-scoring mode, resolved model, or effective max-output-token changes
 invalidate only the affected analyst checkpoint. The instruction contract covers
 every field of the instruction contract, including the
 three per-analyst persona fields (`agent_role`, `agent_goal`, `agent_backstory`),
-which is what makes each analyst's fingerprint differ; the analyst's model and
+which is why the instruction-contract hash differs between analysts; the analyst's model and
 `max_output_tokens` are fingerprinted alongside it. Runtime case-bundle content and transient retry diagnostics
 are not part of that instruction hash (the source PDF hash is tracked separately).
 Old output directories without `analyst_checkpoints.json` are handled as legacy
