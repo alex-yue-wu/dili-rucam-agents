@@ -13,7 +13,7 @@ import json
 import re
 from typing import get_args
 
-from dili_rucam_agents.crew.tasks import (
+from dili_rucam_agents.contracts import (
     DEFAULT_RUCAM_INFERRING_PROMPT_PATH,
     DEFAULT_RUCAM_STRICT_PROMPT_PATH,
 )
