@@ -9,6 +9,7 @@ from openpyxl import load_workbook
 import pytest
 
 import dili_rucam_agents.pipeline as pipeline_module
+import dili_rucam_agents.runner as runner_module
 from dili_rucam_agents.analysts import AnalystExecutionError, AnalystRunOutcome
 from dili_rucam_agents.batch import (
     PdfRunFailure,
@@ -2320,9 +2321,10 @@ def test_a_failed_analysts_retry_counters_reach_the_manifest(tmp_path, monkeypat
     assert [item["total_attempt"] for item in entry["attempt_history"]] == [1, 2, 3]
 
 
-def test_a_failed_analysts_execution_counters_reach_the_manifest(
+def test_a_bad_key_is_persisted_as_terminal_not_execution(
     tmp_path, monkeypatch
 ):
+    """The manifest must separate "the endpoint is flaky" from "the key is wrong"."""
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
@@ -2338,7 +2340,38 @@ def test_a_failed_analysts_execution_counters_reach_the_manifest(
         )
 
     entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
-    assert entry["failure_kind"] == "execution"
+    assert entry["failure_kind"] == "terminal"
+    assert entry["last_error"] == (
+        "Execution error [type=StatusError; status_code=401]"
+    )
     assert entry["validation_retries"] == 0
     assert entry["transient_retries"] == 0
     assert entry["final_mode"] == "json_schema"
+    assert [item["failure_kind"] for item in entry["attempt_history"]] == ["terminal"]
+
+
+def test_an_exhausted_transient_budget_is_still_persisted_as_execution(
+    tmp_path, monkeypatch
+):
+    """A retryable status that never clears is the other reading of the status."""
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    fake_ingestion(monkeypatch)
+    # The schedule itself is pinned in test_runner; don't spend 7.5s here.
+    monkeypatch.setattr(runner_module, "_backoff_seconds", lambda errors: 0.0)
+    use_provider(
+        monkeypatch, FakeProvider(*[StatusError(429, "slow down")] * 5)
+    )
+
+    with pytest.raises(AnalystExecutionError):
+        run_end_to_end(
+            str(pdf_path),
+            output_dir=str(output_dir),
+            roster_path=write_roster(tmp_path, ("analyst_alpha",)),
+            max_restarts=0,
+        )
+
+    entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
+    assert entry["failure_kind"] == "execution"
+    assert entry["transient_retries"] == 4

@@ -33,6 +33,7 @@ from dili_rucam_agents.contracts import (
 )
 from dili_rucam_agents.diagnostics import (
     SafeValidationDiagnostic,
+    validate_execution_diagnostic,
     validate_validation_diagnostic,
 )
 from dili_rucam_agents.ground_truth import run_ground_truth_score_finder
@@ -52,7 +53,11 @@ from dili_rucam_agents.masking import (
 )
 from dili_rucam_agents.providers import CompletionProvider, SdkProvider, require_api_keys
 from dili_rucam_agents.roster import AnalystRoster, load_roster
-from dili_rucam_agents.runner import RetryCounters, validate_max_restarts
+from dili_rucam_agents.runner import (
+    TERMINAL_STATUS_CODES,
+    RetryCounters,
+    validate_max_restarts,
+)
 
 #: The reports that are not an analyst's. Analyst filenames are not listed here:
 #: they come from ``AnalystConfig.report_filename``, so adding a roster entry
@@ -163,7 +168,12 @@ def _failure_kind_for(event: AnalystAttemptEvent) -> str:
     if event.status == "execution_failed":
         # Both an exhausted transient budget and a terminal status code reach
         # the pipeline as this one status; the execution diagnostic carries the
-        # status code that tells them apart.
+        # status code that tells them apart. Recording both as "execution" left
+        # the manifest unable to answer the first question of a smoke run: is
+        # the endpoint flaky, or is the key wrong?
+        diagnostic = validate_execution_diagnostic(event.execution_diagnostic)
+        if diagnostic.status_code in TERMINAL_STATUS_CODES:
+            return "terminal"
         return "execution"
     diagnostic = validate_validation_diagnostic(
         event.validation_diagnostic or _INVALID_REPORT
