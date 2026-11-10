@@ -166,24 +166,50 @@ def openai_request(
     return request
 
 
-#: JSON Schema bounds Anthropic's grammar rejects; they move into the description.
+#: Keywords stripped from a schema node and restated in its description.
+#: Taken from the "JSON Schema limitations" section of Anthropic's structured
+#: outputs documentation (numerical and string-length constraints, and array
+#: size bounds, are unsupported). Not checked against the live API: `pattern`
+#: and `format` are deliberately left alone, since the documentation lists
+#: them as supported. Pinned by a test so a change is a reviewed change.
 _UNSUPPORTED_BOUNDS = (
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
     "minLength", "maxLength", "minItems", "maxItems",
 )
 
+#: Keywords whose value is a map of name -> schema. The keys are names chosen
+#: by the schema's author (a property may be called "maximum"), never keywords.
+_SCHEMA_MAPS = ("properties", "patternProperties", "$defs", "definitions")
+#: Keywords whose value is a schema, or a list of schemas.
+_SCHEMA_VALUES = (
+    "items", "additionalProperties", "not", "if", "then", "else",
+    "anyOf", "oneOf", "allOf", "prefixItems",
+)
+
 
 def _anthropic_schema(node: Any) -> Any:
-    """Close every object and move unsupported bounds into descriptions.
+    """Close every object schema and move unsupported bounds into descriptions.
 
-    Mirrors what the SDK's ``transform_schema`` does, locally, so building a
-    request needs no SDK. Pydantic validates the reply against the real model.
+    A local stand-in, written because the SDK's ``transform_schema`` does not
+    exist at the installed anthropic version; it is not known to match it. It
+    walks the JSON Schema structure rather than every dict, so a property named
+    like a keyword is left alone. Pydantic validates the reply against the
+    real model.
     """
     if isinstance(node, list):
         return [_anthropic_schema(item) for item in node]
     if not isinstance(node, dict):
         return node
-    out = {k: _anthropic_schema(v) for k, v in node.items() if k not in _UNSUPPORTED_BOUNDS}
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _UNSUPPORTED_BOUNDS:
+            continue
+        if key in _SCHEMA_MAPS and isinstance(value, dict):
+            out[key] = {name: _anthropic_schema(sub) for name, sub in value.items()}
+        elif key in _SCHEMA_VALUES:
+            out[key] = _anthropic_schema(value)
+        else:
+            out[key] = value
     if out.get("type") == "object" or "properties" in out:
         out["additionalProperties"] = False
     moved = [f"{k}: {node[k]}" for k in _UNSUPPORTED_BOUNDS if k in node]
