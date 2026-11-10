@@ -736,6 +736,25 @@ spec's scheme, drop the `.invalid.md` write, and wire `on_report` to
 `store.record_completed` so the report and its sidecar are persisted by the store that
 validates them.
 
+Three more call-site facts Task 9's review established, each verified against the
+code rather than inferred:
+
+- `pipeline.py:132` reads `event.error`, which the new `AnalystAttemptEvent` does
+  not have (CrewAI's did, `crew.py:68-72`). Substantively harmless —
+  `record_failure` recomputes the message from the diagnostic
+  (`checkpoints.py:207-226`) — but the call site must change or it raises.
+- `require_api_keys` in `run_analysts` covers `roster.analysts` only, not
+  `roster.ground_truth.provider`. With masking enabled the pipeline also calls a
+  ground-truth model, so the "every provider's key before any ingestion"
+  guarantee is not met at the pipeline level until the ground-truth provider is
+  included in the pre-flight check. Add it where the pipeline composes the run.
+- `validate_max_restarts` still lives in `crew/crew.py:179`, which this task
+  deletes. Relocate it to a neutral module and apply it to `run_analysts`'
+  `max_retries`: today a programmatic `max_retries=-1` produces
+  `RunnerError(kind="validation", attempts=0, validation_diagnostic=None)` and an
+  `AnalystExecutionError` carrying a null diagnostic. The CLI is safe because
+  argparse constrains `--analyst-restarts` to `range(0, 3)`.
+
 - [ ] **Step 4: Verify removal and run the whole suite**
 
 Run: `grep -rn "crewai\|litellm\|kickoff\|use_analyst_\|ANALYST_.*_MODEL\|ANALYST_.*_MAX_TOKENS" src/ pyproject.toml; uv run pytest -q`
