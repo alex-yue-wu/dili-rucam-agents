@@ -1,0 +1,58 @@
+{
+  "analysts": [
+    {
+      "key": "analyst_alpha",
+      "label": "Analyst Alpha",
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "max_output_tokens": 32000
+    },
+    {
+      "key": "analyst_beta",
+      "label": "Analyst Beta",
+      "provider": "google",
+      "model": "gemini-3.1-pro-preview",
+      "max_output_tokens": 32000
+    },
+    {
+      "key": "analyst_gamma",
+      "label": "Analyst Gamma",
+      "provider": "openrouter",
+      "model": "moonshotai/kimi-k2.5",
+      "max_output_tokens": 32000
+    },
+    {
+      "key": "analyst_delta",
+      "label": "Analyst Delta",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "max_output_tokens": 32000
+    },
+    {
+      "key": "analyst_epsilon",
+      "label": "Analyst Epsilon",
+      "provider": "openrouter",
+      "model": "qwen/qwen3.5-plus-02-15",
+      "max_output_tokens": 32000
+    },
+    {
+      "key": "analyst_zeta",
+      "label": "Analyst Zeta",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "max_output_tokens": 32000
+    },
+    {
+      "key": "analyst_eta",
+      "label": "Analyst Eta",
+      "provider": "openrouter",
+      "model": "z-ai/glm-5",
+      "max_output_tokens": 32000
+    }
+  ],
+  "ground_truth": {
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "max_output_tokens": 8000
+  }
+}

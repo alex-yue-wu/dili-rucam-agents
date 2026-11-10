@@ -1,0 +1,16 @@
+{
+  "analysts": [
+    {
+      "key": "analyst_alpha",
+      "label": "Analyst Alpha",
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "max_output_tokens": 32000
+    }
+  ],
+  "ground_truth": {
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "max_output_tokens": 8000
+  }
+}
