@@ -149,8 +149,9 @@ class RRatioBasis(_Strict):
     alp_uln: float = Field(gt=0)
 
 
-# The prompt rounds R to 2 dp (error <= 0.005). A flat 0.01 absorbs that without
-# letting a stated R straddle the 2 or 5 boundary that picks the scoring table.
+# The prompt rounds R to 2 dp (error <= 0.005), so a flat 0.01 absorbs the
+# rounding. It is the threshold for annotating a disagreement, not for rejecting
+# one: see ``r_ratio_disagreement``.
 R_RATIO_ABS_TOL = 0.01
 
 _ITEMS = (
@@ -186,25 +187,6 @@ class RucamAssessment(_Strict):
         check_item_score(info.field_name, value.score)
         return value
 
-    @model_validator(mode="after")
-    def _r_ratio_matches_basis(self) -> RucamAssessment:
-        basis = self.r_ratio_basis
-        if (
-            self.r_ratio is None
-            or basis.alt is None
-            or basis.alp is None
-        ):
-            return self
-        computed = (basis.alt / basis.alt_uln) / (basis.alp / basis.alp_uln)
-        if not math.isclose(
-            self.r_ratio, computed, rel_tol=0.0, abs_tol=R_RATIO_ABS_TOL
-        ):
-            raise ValueError(
-                f"r_ratio {self.r_ratio} disagrees with r_ratio_basis "
-                f"(computes to {computed:.2f})"
-            )
-        return self
-
 
 class ScoredAssessment(_Strict):
     total_score: int
@@ -216,7 +198,37 @@ def score_assessment(assessment: RucamAssessment) -> ScoredAssessment:
     return ScoredAssessment(total_score=total, category=expected_category(total))
 
 
+def computed_r_ratio(assessment: RucamAssessment) -> float | None:
+    """R from the four numbers of ``r_ratio_basis``, or None when it needs one."""
+    basis = assessment.r_ratio_basis
+    if basis.alt is None or basis.alp is None:
+        return None
+    return (basis.alt / basis.alt_uln) / (basis.alp / basis.alp_uln)
+
+
+def r_ratio_disagreement(assessment: RucamAssessment) -> float | None:
+    """The computed R, when it differs from the stated one beyond the tolerance.
+
+    This is reported, never enforced. Rejecting the reply over it would spend a
+    validation retry, and the correction turn can change ``r_ratio`` -- which
+    selects the injury pattern, which selects the column items 1 and 2 are read
+    off. That moves a score for a reason other than removing framework noise,
+    which the design's anti-goals forbid, and the straddle the check was
+    tightened to catch is inherent at any non-zero tolerance anyway. So the
+    renderer prints both numbers and leaves the score alone.
+    """
+    computed = computed_r_ratio(assessment)
+    if assessment.r_ratio is None or computed is None:
+        return None
+    if math.isclose(
+        assessment.r_ratio, computed, rel_tol=0.0, abs_tol=R_RATIO_ABS_TOL
+    ):
+        return None
+    return computed
+
+
 __all__ = [
+    "R_RATIO_ABS_TOL",
     "CauseStatus",
     "DataStatus",
     "EvidenceRef",
@@ -226,5 +238,7 @@ __all__ = [
     "RRatioBasis",
     "RucamAssessment",
     "ScoredAssessment",
+    "computed_r_ratio",
+    "r_ratio_disagreement",
     "score_assessment",
 ]

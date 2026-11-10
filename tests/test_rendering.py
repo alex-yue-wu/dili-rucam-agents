@@ -137,6 +137,27 @@ def test_section_a_prints_onset_day_and_the_r_ratio_basis():
     assert "ALP 120 (ULN 120)" in section_a
 
 
+def test_an_r_ratio_that_disagrees_with_its_basis_is_shown_beside_the_computed_one():
+    """The disagreement is surfaced in the report, never spent as a retry."""
+    assessment, scored = _build(
+        r_ratio=8.0,  # the basis computes (500/40) / (120/120) = 12.50
+    )
+    section_a = _render(assessment, scored).split("## SECTION B")[0]
+    assert "R = 8.00 (as stated) / 12.50 (computed)" in section_a
+    assert "ALT 500 (ULN 40)" in section_a
+    # The pattern and the scores are left exactly as the model wrote them.
+    payload = extract_section_c_json(_render(assessment, scored))
+    assert payload["R_ratio"] == 8.0
+    assert payload["injury_pattern"] == "hepatocellular"
+    assert validate_analyst_report(_render(assessment, scored)).payload.R_ratio == 8.0
+
+
+def test_an_r_ratio_that_agrees_with_its_basis_is_left_alone():
+    section_a = _render().split("## SECTION B")[0]
+    (r_line,) = [line for line in section_a.splitlines() if line.startswith("- R = ")]
+    assert r_line == "- R = 12.50 (ALT 500 (ULN 40) / ALP 120 (ULN 120))"
+
+
 def test_rules_version_is_rendered_not_taken_from_the_model():
     assert RULES_VERSION == "RUCAM_DananBenichou1993_modified_sheet_v3"
     assessment, scored = _build()

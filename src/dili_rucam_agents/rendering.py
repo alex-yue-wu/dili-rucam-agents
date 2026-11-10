@@ -15,6 +15,7 @@ from dili_rucam_agents.validators.rucam_assessment import (
     ItemScore,
     RucamAssessment,
     ScoredAssessment,
+    r_ratio_disagreement,
 )
 
 RULES_VERSION = "RUCAM_DananBenichou1993_modified_sheet_v3"
@@ -113,6 +114,13 @@ def _section_a(
     r_ratio = (
         NOT_REPORTED if assessment.r_ratio is None else f"{assessment.r_ratio:.2f}"
     )
+    # A stated R that disagrees with its own basis is reported, not rejected:
+    # rejecting it spends a validation retry whose correction turn can move the
+    # pattern, and the pattern picks the scoring column. Shown the way a
+    # disagreeing pre-flight claim is, so one reading finds both.
+    disagreement = r_ratio_disagreement(assessment)
+    if disagreement is not None:
+        r_ratio = f"{r_ratio} (as stated) / {disagreement:.2f} (computed)"
     onset_day = (
         NOT_REPORTED if assessment.onset_day is None else str(assessment.onset_day)
     )

@@ -5,11 +5,13 @@ from pydantic import ValidationError
 
 from dili_rucam_agents.validators.rucam_assessment import (
     CauseStatus,
+    computed_r_ratio,
     EvidenceRef,
     ItemFiveCauses,
     ItemScore,
     PreFlight,
     RucamAssessment,
+    r_ratio_disagreement,
     score_assessment,
 )
 from dili_rucam_agents.validators.rucam_json import (
@@ -279,23 +281,35 @@ def test_certified_verified_flag_does_not_survive_a_round_trip():
     assert reloaded.course.evidence[0].verified is False
 
 
-def test_r_ratio_must_agree_with_its_basis():
+def test_r_ratio_disagreeing_with_its_basis_is_reported_not_rejected():
+    """Rejecting it would spend a retry whose correction can move the pattern."""
     # (500/40) / (120/120) = 12.5
-    RucamAssessment.model_validate(_assessment(r_ratio=12.5))
-    RucamAssessment.model_validate(_assessment(r_ratio=12.51))
-    with pytest.raises(ValidationError, match="r_ratio"):
-        RucamAssessment.model_validate(_assessment(r_ratio=8.0))
+    assert r_ratio_disagreement(RucamAssessment.model_validate(_assessment(r_ratio=12.5))) is None
+    assert r_ratio_disagreement(RucamAssessment.model_validate(_assessment(r_ratio=12.51))) is None
+    disagreeing = RucamAssessment.model_validate(_assessment(r_ratio=8.0))
+    assert computed_r_ratio(disagreeing) == pytest.approx(12.5)
+    assert r_ratio_disagreement(disagreeing) == pytest.approx(12.5)
 
 
 def test_r_ratio_cross_check_skipped_when_a_value_is_not_reported():
     basis = {"alt": 500.0, "alp": None, "alt_uln": 40.0, "alp_uln": 120.0}
-    RucamAssessment.model_validate(_assessment(r_ratio=3.0, r_ratio_basis=basis))
+    missing_alp = RucamAssessment.model_validate(
+        _assessment(r_ratio=3.0, r_ratio_basis=basis)
+    )
+    assert computed_r_ratio(missing_alp) is None
+    assert r_ratio_disagreement(missing_alp) is None
     basis = {"alt": None, "alp": 120.0, "alt_uln": 40.0, "alp_uln": 120.0}
-    RucamAssessment.model_validate(_assessment(r_ratio=3.0, r_ratio_basis=basis))
-    RucamAssessment.model_validate(_assessment(r_ratio=None))
+    missing_alt = RucamAssessment.model_validate(
+        _assessment(r_ratio=3.0, r_ratio_basis=basis)
+    )
+    assert computed_r_ratio(missing_alt) is None
+    assert r_ratio_disagreement(missing_alt) is None
+    # Nothing stated: there is nothing to disagree with, even with a full basis.
+    assert r_ratio_disagreement(RucamAssessment.model_validate(_assessment(r_ratio=None))) is None
 
 
-def test_alp_of_zero_is_a_contradiction_not_a_skip():
+def test_alp_of_zero_is_rejected_by_the_basis_bound():
+    """R would be infinite, so the bound on ALP still rejects the reply."""
     zero = {"alt": 500.0, "alp": 0.0, "alt_uln": 40.0, "alp_uln": 120.0}
     with pytest.raises(ValidationError):
         RucamAssessment.model_validate(_assessment(r_ratio=3.0, r_ratio_basis=zero))
@@ -305,14 +319,23 @@ def test_alp_of_zero_is_a_contradiction_not_a_skip():
     ("stated", "alt"),
     [(5.00, 496.0), (2.00, 202.0)],  # basis computes 4.96 and 2.02
 )
-def test_r_ratio_tolerance_cannot_straddle_a_pattern_boundary(stated, alt):
+def test_a_pattern_boundary_straddle_is_annotated_not_rejected(stated, alt):
+    """The straddle is real and inherent at any tolerance, so it is reported.
+
+    A stated 5.00 on a basis computing 4.96 crosses the hepatocellular/mixed
+    boundary, and 2.00 on 2.02 crosses the cholestatic/mixed one. Rejecting
+    either spends a retry that can move the pattern; both are now annotated.
+    """
     basis = {"alt": alt, "alp": 100.0, "alt_uln": 100.0, "alp_uln": 100.0}
-    with pytest.raises(ValidationError, match="r_ratio"):
-        RucamAssessment.model_validate(_assessment(r_ratio=stated, r_ratio_basis=basis))
-    # two-decimal rounding of the true value is still accepted
-    RucamAssessment.model_validate(
+    straddling = RucamAssessment.model_validate(
+        _assessment(r_ratio=stated, r_ratio_basis=basis)
+    )
+    assert r_ratio_disagreement(straddling) == pytest.approx(alt / 100)
+    # Two-decimal rounding of the true value still raises no disagreement.
+    rounded = RucamAssessment.model_validate(
         _assessment(r_ratio=round(alt / 100, 2), r_ratio_basis=basis)
     )
+    assert r_ratio_disagreement(rounded) is None
 
 
 def test_onset_day_has_no_day_zero():

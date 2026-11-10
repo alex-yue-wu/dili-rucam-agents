@@ -78,7 +78,7 @@ def _assessment(**overrides) -> dict:
     return data
 
 
-def _issues(payload: dict) -> tuple[tuple[str, str], ...]:
+def _issues(payload: object) -> tuple[tuple[str, str], ...]:
     with pytest.raises(ValidationError) as info:
         RucamAssessment.model_validate(payload)
     return validation_diagnostic_from_errors(info.value.errors()).issues
@@ -179,8 +179,10 @@ def test_unknown_field_names_never_reach_the_diagnostic():
 
 
 def test_model_level_failure_falls_back_to_the_report():
-    # A 20x r_ratio disagrees with its basis: raised on the model, loc == ().
-    assert _issues(_assessment(r_ratio=250.0)) == (("report", "invalid_value"),)
+    # A reply that parsed as JSON but is not an object: raised on the model, so
+    # loc == () and there is no field to name. ``_parse`` can return a list, so
+    # this is a reply the runner really can be handed.
+    assert _issues([1, 2, 3]) == (("report", "invalid_value"),)
 
 
 def test_item_five_g1_mismatch_names_its_group():
