@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+import dili_rucam_agents.contracts as contracts_module
 from dili_rucam_agents.contracts import (
     AnalystInstructionContract,
     build_analyst_instruction_contract,
@@ -47,7 +50,12 @@ def test_sha256_is_stable_across_builds_with_the_same_inputs():
         "model_name='model-x', bundle_input_name='case_bundle_json').sha256)"
     )
     out = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        # Import the package under test, not whichever copy the venv resolves.
+        env={**os.environ, "PYTHONPATH": str(Path(contracts_module.__file__).parents[1])},
     ).stdout.strip()
     assert out == _build().sha256
 
