@@ -39,7 +39,17 @@ def test_contract_keeps_the_per_analyst_persona():
 
 
 def test_two_analysts_have_different_sha256():
-    assert _build("Analyst Alpha").sha256 != _build("Analyst Beta").sha256
+    alpha, beta = _build("Analyst Alpha"), _build("Analyst Beta")
+    assert alpha.sha256 != beta.sha256
+    # The persona must diverge on its own, not only through the label in the template.
+    assert alpha.agent_backstory != beta.agent_backstory
+    assert alpha.agent_role != beta.agent_role
+
+
+def test_persona_alone_moves_the_hash():
+    base = _build()
+    for field in ("agent_backstory", "agent_role"):
+        assert base.model_copy(update={field: "other"}).sha256 != base.sha256
 
 
 def test_sha256_is_stable_across_builds_with_the_same_inputs():
@@ -104,3 +114,15 @@ def test_contract_is_frozen_and_forbids_extra_fields():
 
 def test_load_rucam_prompt_reads_strict_and_inferring_files():
     assert load_rucam_prompt(strict_scoring=True) != load_rucam_prompt()
+
+
+@pytest.mark.parametrize("strict", [True, False])
+def test_render_keeps_the_real_prompts_braces_literal(strict):
+    prompt = load_rucam_prompt(strict_scoring=strict)
+    contract = _build(prompt_text=prompt)
+    text = contract.render(case_bundle_json='{"bundle": 1}', retry_requirement="")
+    assert '{"bundle": 1}' in text
+    for probe in ('"injury_pattern"', '"r_ratio_basis"'):
+        assert probe in prompt  # the probe is real
+        assert probe in text
+    assert prompt in text
