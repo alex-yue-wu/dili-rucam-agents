@@ -727,6 +727,15 @@ One of the xfailed tests needs a value changed, not just a marker removed:
 asserts `current_manifest["schema_version"] == 3`. That must become 4, or the
 test fails for a reason unrelated to the rewrite.
 
+Retire the store's legacy attempt-artifact writer. `AnalystCheckpointStore.record_failure`
+writes `attempts/<uuid>.invalid.md` (`checkpoints.py:239`), the markdown-era scheme, while
+`run_analysts` writes `attempts/<key>.<n>.invalid.json` when a JSON object parsed and
+`.invalid.txt` when nothing did — which is what the spec mandates (spec lines 389-390).
+Leaving both would write two artifacts per failure under different names. Keep the
+spec's scheme, drop the `.invalid.md` write, and wire `on_report` to
+`store.record_completed` so the report and its sidecar are persisted by the store that
+validates them.
+
 - [ ] **Step 4: Verify removal and run the whole suite**
 
 Run: `grep -rn "crewai\|litellm\|kickoff\|use_analyst_\|ANALYST_.*_MODEL\|ANALYST_.*_MAX_TOKENS" src/ pyproject.toml; uv run pytest -q`
