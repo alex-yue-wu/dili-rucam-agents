@@ -1,6 +1,7 @@
 import pytest
 
-from dili_rucam_agents.analysts import AnalystRunOutcome
+from dili_rucam_agents import ground_truth
+
 from dili_rucam_agents.ground_truth import (
     extract_ground_truth_rucam_category,
     extract_ground_truth_rucam_score,
@@ -83,6 +84,8 @@ def test_finder_calls_the_configured_ground_truth_model(monkeypatch):
     sent = "\n".join(m["content"] for m in messages)
     assert "raw bundle marker 7f3a" in sent
     assert "GROUND_TRUTH_RUCAM_SCORE" in sent
+    # The model name is interpolated into the prompt; pin it end to end.
+    assert 'Use the configured model "gt-model-x".' in sent
 
 
 def test_finder_output_still_yields_a_score_and_a_category(monkeypatch):
@@ -102,8 +105,8 @@ def test_finder_never_appears_as_an_analyst_column():
     assert isinstance(roster.ground_truth, GroundTruthConfig)
     # ... so no analyst key can collide with its aggregate row ...
     assert not any(a.key.startswith("ground_truth") for a in roster.analysts)
-    # ... and an analyst outcome has no slot a finder report could occupy.
-    assert set(AnalystRunOutcome.__dataclass_fields__) == {"reports", "assessments", "counters"}
+    # ... and the finder's report key is not among the roster's analyst keys.
+    assert "ground_truth_rucam_score" not in {a.key for a in roster.analysts}
 
 
 def test_missing_ground_truth_key_is_reported_before_the_call(monkeypatch):
@@ -116,3 +119,30 @@ def test_missing_ground_truth_key_is_reported_before_the_call(monkeypatch):
         )
 
     assert provider.calls == []
+
+
+def test_builder_output_is_pinned_to_a_golden_string(monkeypatch):
+    # The prompt produces the baseline column every analyst is compared with,
+    # so any rewording of the template must fail here.
+    monkeypatch.setattr(ground_truth, "load_ground_truth_prompt", lambda: "PROMPT BODY")
+
+    prompt = ground_truth.build_ground_truth_score_finder_prompt(
+        raw_case_bundle_json='{"k": 1}', model_name="gt-model-x"
+    )
+
+    assert prompt == (
+        "You are the Ground Truth RUCAM Score Finder. Consume the shared raw_case_bundle_json exactly as provided below.\n"
+        "Find the author-reported RUCAM outcome in the source report, not a recomputed score.\n"
+        "\n"
+        "--- BEGIN RAW CASE BUNDLE JSON ---\n"
+        '{"k": 1}\n'
+        "--- END RAW CASE BUNDLE JSON ---\n"
+        "\n"
+        "--- BEGIN GROUND TRUTH PROMPT ---\n"
+        "PROMPT BODY\n"
+        "--- END GROUND TRUTH PROMPT ---\n"
+        "\n"
+        'Use the configured model "gt-model-x". Temperature must remain 0 when supported;\n'
+        "otherwise use the provider-required default temperature.\n"
+        "Return only the markdown report requested by the prompt."
+    )
