@@ -253,3 +253,49 @@ def test_r_ratio_basis_requires_positive_uln_and_allows_missing_values():
         RucamAssessment.model_validate(
             _assessment(r_ratio_basis={**base, "alt_uln": 0.0})
         )
+
+
+def test_every_illegal_item_is_reported_with_its_field_location():
+    bad = {item: _item(99) for item in ITEMS}
+    with pytest.raises(ValidationError) as exc:
+        RucamAssessment.model_validate(_assessment(**bad))
+    assert {e["loc"][0] for e in exc.value.errors()} == set(ITEMS)
+    with pytest.raises(ValidationError) as exc:
+        RucamScores.model_validate({item: 99 for item in ITEMS})
+    assert {e["loc"] for e in exc.value.errors()} == {
+        (("other_causes_excluded" if i == "other_causes_excluded" else i),)
+        for i in ITEMS
+    }
+
+
+def test_certified_verified_flag_does_not_survive_a_round_trip():
+    # `verified` is model-facing and always False on validation, so a quote
+    # certified by mutation is reset by model_validate(model_dump()).
+    assessment = RucamAssessment.model_validate(
+        _assessment(course=_item(1, evidence=[{"quote": "q"}]))
+    )
+    assessment.course.evidence[0].verified = True
+    reloaded = RucamAssessment.model_validate(assessment.model_dump())
+    assert reloaded.course.evidence[0].verified is False
+
+
+def test_r_ratio_must_agree_with_its_basis():
+    # (500/40) / (120/120) = 12.5
+    RucamAssessment.model_validate(_assessment(r_ratio=12.5))
+    RucamAssessment.model_validate(_assessment(r_ratio=12.51))
+    with pytest.raises(ValidationError, match="r_ratio"):
+        RucamAssessment.model_validate(_assessment(r_ratio=8.0))
+
+
+def test_r_ratio_cross_check_skipped_when_basis_incomplete():
+    basis = {"alt": 500.0, "alp": None, "alt_uln": 40.0, "alp_uln": 120.0}
+    RucamAssessment.model_validate(_assessment(r_ratio=3.0, r_ratio_basis=basis))
+    zero = {"alt": 500.0, "alp": 0.0, "alt_uln": 40.0, "alp_uln": 120.0}
+    RucamAssessment.model_validate(_assessment(r_ratio=3.0, r_ratio_basis=zero))
+
+
+def test_onset_day_has_no_day_zero():
+    with pytest.raises(ValidationError):
+        RucamAssessment.model_validate(_assessment(onset_day=0))
+    RucamAssessment.model_validate(_assessment(onset_day=1))
+    RucamAssessment.model_validate(_assessment(onset_day=None))

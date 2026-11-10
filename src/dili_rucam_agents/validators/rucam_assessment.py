@@ -4,10 +4,16 @@ The model supplies the clinical judgement for each of the seven RUCAM items and
 nothing arithmetic: no total, no category and no ``g1``. ``score_assessment``
 sums the items and derives the category, ``g1`` is recomputed from the eight
 cause flags, and evidence quotes are never marked verified by the model.
+
+``EvidenceRef.verified`` is model-facing: validation always resets it to False,
+including on ``model_validate(model_dump())``. Code that certifies a quote must
+keep that fact somewhere a reload cannot erase; mutating the field is lost on
+the next round trip.
 """
 
 from __future__ import annotations
 
+import math
 from enum import StrEnum
 from typing import Annotated
 
@@ -16,6 +22,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -142,11 +149,27 @@ class RRatioBasis(_Strict):
     alp_uln: float = Field(gt=0)
 
 
+# The prompt has R rounded to 2 dp from lab values that carry their own
+# rounding, so accept 0.01 absolute or 1% relative, whichever is wider.
+R_RATIO_ABS_TOL = 0.01
+R_RATIO_REL_TOL = 0.01
+
+_ITEMS = (
+    "time_to_onset",
+    "course",
+    "risk_factors",
+    "concomitant_drugs",
+    "other_causes_excluded",
+    "known_hepatotoxicity",
+    "rechallenge",
+)
+
+
 class RucamAssessment(_Strict):
     injury_pattern: InjuryPattern
     r_ratio: float | None = Field(ge=0)
     r_ratio_basis: RRatioBasis
-    onset_day: int | None
+    onset_day: int | None = Field(ge=1)  # numbered from the dose day; no day 0
     onset_anchor_dose: str
     pre_flight: PreFlight
     item_5_causes: ItemFiveCauses
@@ -158,22 +181,31 @@ class RucamAssessment(_Strict):
     known_hepatotoxicity: ItemScore
     rechallenge: ItemScore
 
+    @field_validator(*_ITEMS, mode="after")
+    @classmethod
+    def _score_is_a_printed_rung(cls, value: ItemScore, info: ValidationInfo):
+        check_item_score(info.field_name, value.score)
+        return value
+
     @model_validator(mode="after")
-    def _scores_are_printed_rungs(self) -> RucamAssessment:
-        for item in _ITEMS:
-            check_item_score(item, getattr(self, item).score)
+    def _r_ratio_matches_basis(self) -> RucamAssessment:
+        basis = self.r_ratio_basis
+        if (
+            self.r_ratio is None
+            or basis.alt is None
+            or basis.alp is None
+            or basis.alp == 0
+        ):
+            return self
+        computed = (basis.alt / basis.alt_uln) / (basis.alp / basis.alp_uln)
+        if not math.isclose(
+            self.r_ratio, computed, rel_tol=R_RATIO_REL_TOL, abs_tol=R_RATIO_ABS_TOL
+        ):
+            raise ValueError(
+                f"r_ratio {self.r_ratio} disagrees with r_ratio_basis "
+                f"(computes to {computed:.2f})"
+            )
         return self
-
-
-_ITEMS = (
-    "time_to_onset",
-    "course",
-    "risk_factors",
-    "concomitant_drugs",
-    "other_causes_excluded",
-    "known_hepatotoxicity",
-    "rechallenge",
-)
 
 
 class ScoredAssessment(_Strict):

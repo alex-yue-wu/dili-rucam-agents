@@ -9,6 +9,8 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    ValidationInfo,
+    field_validator,
     model_validator,
 )
 
@@ -66,11 +68,10 @@ class RucamScores(BaseModel):
     known_hepatotoxicity: int
     rechallenge: int
 
-    @model_validator(mode="after")
-    def validate_legal_sets(self) -> RucamScores:
-        for item in ITEM_LEGAL_SCORES:
-            check_item_score(item, getattr(self, item))
-        return self
+    @field_validator(*ITEM_LEGAL_SCORES, mode="after")
+    @classmethod
+    def validate_legal_set(cls, value: int, info: ValidationInfo) -> int:
+        return check_item_score(info.field_name, value)
 
     @property
     def total(self) -> int:
