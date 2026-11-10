@@ -103,3 +103,17 @@ def test_readme_test_command_names_only_existing_files():
     section = README.split("## Tests", 1)[1]
     for path in re.findall(r"tests/test_\w+\.py", section):
         assert (ROOT / path).exists(), path
+
+
+@pytest.mark.parametrize("name", BOTH)
+def test_api_key_check_is_documented_as_upfront_and_exhaustive(name):
+    text = " ".join(BOTH[name].split())
+    assert "Before ingestion or any model call" in text
+    assert "names every missing variable at once" in text
+    assert "first call to a provider" not in text
+    assert "lazily" not in text
+
+
+def test_instruction_hash_is_documented_as_covering_the_persona():
+    for field in ("agent_role", "agent_goal", "agent_backstory"):
+        assert field in README
