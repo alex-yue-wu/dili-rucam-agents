@@ -122,13 +122,24 @@ def test_transient_errors_do_not_shrink_the_validation_budget(sleeps):
     assert result.counters.transient_retries == 2
 
 
-def test_three_transient_errors_raise_execution_kind(sleeps):
-    fake = FakeProvider(StatusError(429), StatusError(500), StatusError(503))
+def test_a_fourth_consecutive_transient_error_raises_execution_kind(sleeps):
+    fake = FakeProvider(
+        StatusError(429), StatusError(500), StatusError(502), StatusError(503), GOOD
+    )
     error = run_error(fake, sleeps)
     assert error.kind == "execution"
-    assert error.counters.transient_retries == 2
+    assert error.counters.transient_retries == 3
     assert error.execution_diagnostic.status_code == 503
-    assert len(fake.calls) == 3
+    assert len(fake.calls) == 4
+    assert len(sleeps.recorded) == 3
+
+
+def test_three_transient_errors_are_each_retried_and_the_run_succeeds(sleeps):
+    fake = FakeProvider(StatusError(429), StatusError(500), StatusError(502), GOOD)
+    result = run(fake, sleeps)
+    assert result.counters.transient_retries == 3
+    assert result.counters.validation_retries == 0
+    assert len(sleeps.recorded) == 3
 
 
 def test_transient_backoff_grows_and_is_jittered(sleeps, monkeypatch):
@@ -139,11 +150,11 @@ def test_transient_backoff_grows_and_is_jittered(sleeps, monkeypatch):
         return high
 
     monkeypatch.setattr(runner_module.random, "uniform", fixed_jitter)
-    run(FakeProvider(StatusError(429), StatusError(429), GOOD), sleeps)
-    first, second = sleeps.recorded
-    assert first == pytest.approx(0.5 * 1.1)
-    assert second == pytest.approx(1.0 * 1.1)
-    assert jitter_args == [(0, pytest.approx(0.05)), (0, pytest.approx(0.1))]
+    run(FakeProvider(StatusError(429), StatusError(429), StatusError(429), GOOD), sleeps)
+    assert sleeps.recorded == pytest.approx([0.5 * 1.1, 1.0 * 1.1, 2.0 * 1.1])
+    assert jitter_args == [
+        (0, pytest.approx(0.05)), (0, pytest.approx(0.1)), (0, pytest.approx(0.2))
+    ]
 
 
 def test_backoff_is_capped(monkeypatch):

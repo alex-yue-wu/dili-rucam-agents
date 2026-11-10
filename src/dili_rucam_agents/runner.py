@@ -45,8 +45,8 @@ from dili_rucam_agents.providers import (
 #: Status codes where retrying cannot help: bad key, bad model, bad request.
 TERMINAL_STATUS_CODES: frozenset[int] = frozenset({400, 401, 403, 404, 422})
 
-#: Provider errors tolerated in a row before giving up (the third one raises).
-_MAX_TRANSIENT_ERRORS = 3
+#: Transient provider errors retried before giving up; the next one raises.
+_MAX_TRANSIENT_RETRIES = 3
 _TRUNCATION_MULTIPLIER = 2
 
 _BACKOFF_BASE_SECONDS = 0.5
@@ -276,7 +276,7 @@ async def run_contract(
                     execution_diagnostic=build_execution_diagnostic(exc),
                 ) from None
             transient_errors += 1
-            if transient_errors >= _MAX_TRANSIENT_ERRORS:
+            if transient_errors > _MAX_TRANSIENT_RETRIES:
                 raise RunnerError(
                     kind="execution",
                     attempts=number,
