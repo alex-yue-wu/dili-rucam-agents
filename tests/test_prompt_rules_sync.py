@@ -128,8 +128,19 @@ def test_section_c_template_matches_the_assessment_schema():
             assert options(template[item]["data_status"]) == {
                 s.value for s in DataStatus
             }, name
-        # ALP of 0 is rejected by the schema, so the placeholder must not be 0.
-        assert template["r_ratio_basis"]["alp"] > 0, name
+        # Every placeholder number must itself satisfy the schema's bound for its
+        # field (ALP and both ULNs are gt=0), or copying the shape is rejected.
+        for field, value in template["r_ratio_basis"].items():
+            bounds = {
+                type(meta).__name__: getattr(meta, type(meta).__name__.lower())
+                for meta in RRatioBasis.model_fields[field].metadata
+            }
+            if "Ge" in bounds:
+                assert value >= bounds["Ge"], f"{name}: {field}"
+            if "Gt" in bounds:
+                assert value > bounds["Gt"], f"{name}: {field}"
+            assert bounds, f"{name}: {field} has no declared bound"
+        RRatioBasis.model_validate(template["r_ratio_basis"])
         assert set(template["pre_flight"]) == set(PreFlight.model_fields), name
         assert set(template["item_5_causes"]) == set(ItemFiveCauses.model_fields), name
         assert set(template["r_ratio_basis"]) == set(RRatioBasis.model_fields), name

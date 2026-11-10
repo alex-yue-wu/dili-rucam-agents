@@ -774,8 +774,8 @@ allowed values of an enumerated field: write one of them.
   "r_ratio_basis": {
     "alt": 0.0,
     "alp": 1.0,
-    "alt_uln": 0.0,
-    "alp_uln": 0.0
+    "alt_uln": 33.0,
+    "alp_uln": 115.0
   },
   "onset_day": 1,
   "onset_anchor_dose": "...",
