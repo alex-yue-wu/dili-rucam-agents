@@ -183,57 +183,17 @@ def openai_request(
     return request
 
 
-#: Keywords stripped from a schema node and restated in its description.
-#: Taken from the "JSON Schema limitations" section of Anthropic's structured
-#: outputs documentation (numerical and string-length constraints, and array
-#: size bounds, are unsupported). Not checked against the live API: `pattern`
-#: and `format` are deliberately left alone, since the documentation lists
-#: them as supported. Pinned by a test so a change is a reviewed change.
+#: Keywords Anthropic's structured outputs cannot enforce, from the "JSON Schema
+#: limitations" section of its documentation (numerical and string-length
+#: constraints, and array size bounds). ``anthropic.transform_schema`` strips
+#: each one and restates it in the node's description; this tuple is what a test
+#: asserts it strips, so a change in the SDK's treatment is a reviewed change.
+#: ``pattern`` and ``format`` are absent deliberately: the documentation lists
+#: them as supported, and a test pins that they survive.
 _UNSUPPORTED_BOUNDS = (
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
     "minLength", "maxLength", "minItems", "maxItems",
 )
-
-#: Keywords whose value is a map of name -> schema. The keys are names chosen
-#: by the schema's author (a property may be called "maximum"), never keywords.
-_SCHEMA_MAPS = ("properties", "patternProperties", "$defs", "definitions")
-#: Keywords whose value is a schema, or a list of schemas.
-_SCHEMA_VALUES = (
-    "items", "additionalProperties", "not", "if", "then", "else",
-    "anyOf", "oneOf", "allOf", "prefixItems",
-)
-
-
-def _anthropic_schema(node: Any) -> Any:
-    """Close every object schema and move unsupported bounds into descriptions.
-
-    A local stand-in, written because the SDK's ``transform_schema`` does not
-    exist at the installed anthropic version; it is not known to match it. It
-    walks the JSON Schema structure rather than every dict, so a property named
-    like a keyword is left alone. Pydantic validates the reply against the
-    real model.
-    """
-    if isinstance(node, list):
-        return [_anthropic_schema(item) for item in node]
-    if not isinstance(node, dict):
-        return node
-    out: dict[str, Any] = {}
-    for key, value in node.items():
-        if key in _UNSUPPORTED_BOUNDS:
-            continue
-        if key in _SCHEMA_MAPS and isinstance(value, dict):
-            out[key] = {name: _anthropic_schema(sub) for name, sub in value.items()}
-        elif key in _SCHEMA_VALUES:
-            out[key] = _anthropic_schema(value)
-        else:
-            out[key] = value
-    if out.get("type") == "object" or "properties" in out:
-        out["additionalProperties"] = False
-    moved = [f"{k}: {node[k]}" for k in _UNSUPPORTED_BOUNDS if k in node]
-    if moved:
-        note = "Bounds: " + ", ".join(moved) + "."
-        out["description"] = f"{out['description']} {note}" if out.get("description") else note
-    return out
 
 
 def anthropic_request(
@@ -261,8 +221,18 @@ def anthropic_request(
         # on Haiku 4.5 and the 4.6 models.
         request["extra_body"] = {"temperature": spec.temperature}
     if mode is StructuredMode.json_schema and schema is not None:
+        # The SDK's own transform, not a local reimplementation of it: it closes
+        # every object node and moves what Anthropic cannot enforce into
+        # descriptions. Imported here rather than at module scope so importing
+        # this module still needs no SDK. The copy is defensive -- the caller's
+        # schema is the one pydantic validates the reply against.
+        from anthropic import transform_schema
+
         request["output_config"] = {
-            "format": {"type": "json_schema", "schema": _anthropic_schema(copy.deepcopy(schema))}
+            "format": {
+                "type": "json_schema",
+                "schema": transform_schema(copy.deepcopy(schema)),
+            }
         }
     return request
 

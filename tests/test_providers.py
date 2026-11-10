@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
+from pydantic import BaseModel, ValidationError
 import pytest
 
 from dili_rucam_agents.providers import (
     BASE_URLS,
+    TIMEOUT_SECONDS,
     GeminiAPIError,
     SdkProvider,
     _UNSUPPORTED_BOUNDS,
-    _anthropic_schema,
     MissingApiKeyError,
     ModelSpec,
     StructuredMode,
@@ -27,6 +29,7 @@ from dili_rucam_agents.providers import (
     takes_temperature,
 )
 from dili_rucam_agents.roster import AnalystConfig, GroundTruthConfig, Provider
+from dili_rucam_agents.validators.rucam_assessment import RucamAssessment
 
 MSGS = [
     {"role": "system", "content": "You are an analyst."},
@@ -95,9 +98,27 @@ def test_anthropic_system_prompt_is_split_out_of_messages():
     assert [m["role"] for m in req["messages"]] == ["user"]
 
 
+def _transformed(schema):
+    """The schema as the Anthropic request carries it."""
+    request = anthropic_request(
+        spec(Provider.anthropic), MSGS, StructuredMode.json_schema, schema
+    )
+    return request["output_config"]["format"]["schema"]
+
+
+def _nodes(node):
+    """Every dict in a JSON Schema tree, the root included."""
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _nodes(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _nodes(item)
+
+
 def test_anthropic_schema_is_closed_and_bounds_move_to_descriptions():
-    req = anthropic_request(spec(Provider.anthropic), MSGS, StructuredMode.json_schema, SCHEMA)
-    schema = req["output_config"]["format"]["schema"]
+    schema = _transformed(SCHEMA)
     assert schema["additionalProperties"] is False
     total = schema["properties"]["total"]
     assert "minimum" not in total and "maximum" not in total
@@ -112,6 +133,65 @@ def test_anthropic_temperature_is_sent_only_where_accepted():
                                 StructuredMode.text, None)
     assert kept["extra_body"] == {"temperature": 0.0}
     assert "extra_body" not in dropped
+
+
+# -- google_request against the installed google-genai ----------------------
+#
+# Task 2 checked these kwargs by hand against google-genai 1.49.0 and none was
+# exercised by a test, because none runs without a live call. Building the real
+# SDK types from the kwargs makes the check part of the suite, so the next
+# major bump cannot rename one silently.
+
+
+def test_google_request_config_is_accepted_by_the_installed_sdk():
+    from google.genai import types
+
+    config = google_request(
+        spec(Provider.google), MSGS, StructuredMode.json_schema, SCHEMA
+    )["config"]
+    built = types.GenerateContentConfig(
+        **config,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+    )
+
+    assert built.max_output_tokens == 32000
+    assert built.temperature == 0.0
+    assert built.system_instruction == "You are an analyst."
+    assert built.response_mime_type == "application/json"
+    assert built.response_json_schema == SCHEMA
+    assert built.automatic_function_calling.disable is True
+    with pytest.raises(ValidationError):  # a renamed kwarg would not pass silently
+        types.GenerateContentConfig(**config, max_output_token=1)
+
+
+def test_google_contents_are_accepted_by_the_installed_sdk():
+    from google.genai import types
+
+    contents = google_request(
+        spec(Provider.google),
+        [*MSGS, {"role": "assistant", "content": "earlier reply"}],
+        StructuredMode.text,
+        None,
+    )["contents"]
+    built = [types.Content.model_validate(item) for item in contents]
+
+    assert [content.role for content in built] == ["user", "model"]
+    assert built[1].parts[0].text == "earlier reply"
+
+
+def test_google_http_options_timeout_is_still_milliseconds():
+    from google.genai import types
+
+    options = types.HttpOptions(
+        timeout=TIMEOUT_SECONDS * 1000,
+        retry_options=types.HttpRetryOptions(attempts=1),
+    )
+
+    assert options.timeout == 600_000
+    # The unit is the SDK's, not ours: a switch to seconds would make the
+    # timeout 600_000 seconds rather than ten minutes.
+    assert "millisecond" in types.HttpOptions.model_fields["timeout"].description
+    assert options.retry_options.attempts == 1
 
 
 def test_google_request_sums_thinking_tokens():
@@ -199,53 +279,149 @@ def test_every_provider_has_a_key_variable():
     }
 
 
-# -- the Anthropic schema stand-in ------------------------------------------
+# -- anthropic.transform_schema, the SDK's own transform --------------------
+#
+# Task 2 shipped a local stand-in because `anthropic.transform_schema` did not
+# exist at anthropic 0.71.1. It does from 1.11.0, and the request now calls it.
+# The two never agreed textually -- the SDK writes a bound as
+# "{minimum: -4, maximum: 14}" where the stand-in wrote
+# "Bounds: minimum: -4, maximum: 14." -- so these tests pin the SDK's behaviour
+# on the properties that matter instead of comparing against deleted code.
+
+
+def _property(schema, name):
+    return _transformed({"type": "object", "properties": {name: schema}})[
+        "properties"
+    ][name]
 
 
 def test_anthropic_unsupported_keyword_list_is_pinned():
     # From the "JSON Schema limitations" section of Anthropic's structured
-    # outputs documentation; not verified against the live API. `pattern` and
-    # `format` are listed as supported there, so they must survive.
+    # outputs documentation: numerical and string-length constraints, and array
+    # size bounds. The transform must strip every one of them.
     assert set(_UNSUPPORTED_BOUNDS) == {
         "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
         "minLength", "maxLength", "minItems", "maxItems",
     }
-    node = {"type": "string", "pattern": "^[A-Z]", "format": "date"}
-    assert _anthropic_schema(node) == node
+    for keyword in _UNSUPPORTED_BOUNDS:
+        out = _property({"type": "integer", keyword: 3}, "s")
+        assert keyword not in out
+        assert "3" in out["description"]
 
 
-def test_property_named_like_a_bound_keyword_is_left_in_the_properties_map():
-    # A lab reference range ({minimum, maximum}) must not lose fields or gain
-    # a bogus "description" property while `required` still lists them.
+def test_the_sdk_also_strips_pattern_although_the_docs_list_it_as_supported():
+    """Recorded because the stand-in deliberately left `pattern` alone.
+
+    Anthropic's documentation lists `pattern` and `format` as supported, so the
+    deleted local transform preserved both. The SDK's transform keeps `format`
+    but moves `pattern` into the description, so a pattern constraint reaches
+    the model as prose rather than as a guarantee. No field of RucamAssessment
+    carries one today.
+    """
+    out = _property({"type": "string", "pattern": "^[A-Z]", "format": "date"}, "s")
+    assert out["format"] == "date"
+    assert "pattern" not in out
+    assert "^[A-Z]" in out["description"]
+    assert not any(
+        "pattern" in node for node in _nodes(_transformed(RucamAssessment.model_json_schema()))
+    )
+
+
+def test_every_object_node_of_the_real_schema_is_closed_and_has_no_bounds():
+    """The whole production schema, not a representative fragment."""
+    source = RucamAssessment.model_json_schema()
+    transformed = _transformed(source)
+
+    assert any("minimum" in node for node in _nodes(source))  # the probe is real
+    for node in _nodes(transformed):
+        for keyword in _UNSUPPORTED_BOUNDS:
+            assert keyword not in node, f"{keyword} survived in {node}"
+        if node.get("type") == "object" or "properties" in node:
+            assert node.get("additionalProperties") is False
+    # onset_day is `int | None` with ge=1, so its bound is restated as prose.
+    onset = transformed["properties"]["onset_day"]
+    assert "minimum" not in onset
+    assert "{minimum: 1}" in json.dumps(onset)
+    assert source["properties"]["onset_day"]["anyOf"][0]["minimum"] == 1
+
+
+def test_sub_schema_keywords_outside_the_bounds_table_are_not_left_open():
+    """The first gap in the deleted stand-in, which left these unrecursed.
+
+    The SDK does not recurse into them either -- it removes the keyword and
+    restates it in the node's description -- but the consequence the gap had,
+    an open sub-schema reaching the API with bounds intact, is gone.
+    """
+    for keyword in ("contains", "propertyNames", "unevaluatedItems"):
+        source = {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "object",
+                    keyword: {
+                        "type": "object",
+                        "properties": {"x": {"type": "integer", "minimum": 0}},
+                    },
+                }
+            },
+        }
+        field = _transformed(source)["properties"]["field"]
+        assert keyword not in field
+        assert field["additionalProperties"] is False
+        assert "minimum" not in json.dumps(
+            {k: v for k, v in field.items() if k != "description"}
+        )
+
+
+def test_a_dict_valued_field_loses_its_value_schema_and_is_closed():
+    """The second gap, which the SDK shares rather than fixes.
+
+    Anthropic's structured outputs have no open map, so an
+    `additionalProperties` sub-schema -- what pydantic emits for a
+    `dict[str, X]` field -- becomes `False` and the value schema is discarded.
+    No field of RucamAssessment is dict-valued, so nothing is lost today; a
+    future one would be sent as a closed, empty object.
+    """
+
+    class WithMap(BaseModel):
+        labs: dict[str, int]
+
+    source = WithMap.model_json_schema()
+    assert isinstance(source["properties"]["labs"]["additionalProperties"], dict)
+
+    labs = _transformed(source)["properties"]["labs"]
+    assert labs["additionalProperties"] is False
+    assert labs.get("properties") == {}
+    assert not any("integer" in json.dumps(node) for node in _nodes(labs))
+
+
+def test_a_property_named_like_a_keyword_survives_the_transform():
+    # A lab reference range ({minimum, maximum}) must keep both fields while
+    # `required` still lists them.
     schema = {
         "type": "object",
         "properties": {
             "item": {"type": "string"},
             "maximum": {"type": "integer", "maximum": 9},
             "minItems": {"type": "integer"},
-            "description": {"type": "string"},
         },
         "required": ["item", "maximum", "minItems"],
-        "$defs": {"maximum": {"type": "object", "properties": {"minimum": {"type": "number"}}}},
     }
-    out = _anthropic_schema(schema)
-    assert set(out["properties"]) == {"item", "maximum", "minItems", "description"}
-    assert out["properties"]["maximum"] == {
-        "type": "integer", "description": "Bounds: maximum: 9."}
-    assert out["properties"]["description"] == {"type": "string"}
+    out = _transformed(schema)
+    assert set(out["properties"]) == {"item", "maximum", "minItems"}
+    assert out["properties"]["maximum"]["type"] == "integer"
+    assert "maximum" not in out["properties"]["maximum"]
+    assert "9" in out["properties"]["maximum"]["description"]
     assert out["required"] == ["item", "maximum", "minItems"]
     assert out["additionalProperties"] is False
-    inner = out["$defs"]["maximum"]
-    assert inner["additionalProperties"] is False
-    assert set(inner["properties"]) == {"minimum"}
 
 
-def test_anthropic_schema_reaches_nested_items_and_unions():
+def test_the_transform_reaches_nested_items_and_unions():
     schema = {"type": "array", "items": {"anyOf": [
         {"type": "object", "properties": {"x": {"type": "integer", "minimum": 0}}},
         {"type": "null"},
     ]}, "minItems": 2}
-    out = _anthropic_schema(schema)
+    out = _transformed(schema)
     obj = out["items"]["anyOf"][0]
     assert obj["additionalProperties"] is False
     assert "minimum" not in obj["properties"]["x"]
