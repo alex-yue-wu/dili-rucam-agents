@@ -350,6 +350,34 @@ def test_openrouter_refusal_message_in_the_body_is_recognised(sleeps):
     assert result.counters.mode_downgrades == 1
 
 
+def test_a_programming_error_is_not_counted_as_a_mode_downgrade(sleeps):
+    """mode_downgrades is the gate's only evidence; a TypeError must not pollute it.
+
+    _FORMAT_MARKERS holds bare keyword names, so an SDK call made with a keyword
+    the installed version does not take names one of them in its message. With
+    no status code required, that read as the endpoint refusing structured
+    output: the counter went up and the run carried on one rung lower.
+    """
+    bug = TypeError(
+        "GenerateContentConfig() got an unexpected keyword argument "
+        "'response_json_schema'"
+    )
+    fake = FakeProvider(bug, GOOD)
+    result = run(fake, sleeps)
+    assert result.counters.mode_downgrades == 0
+    assert fake.modes == [StructuredMode.json_schema] * 2
+    # It is a provider error with no status, so it is retried, not downgraded.
+    assert result.counters.transient_retries == 1
+
+
+def test_a_programming_error_that_never_clears_is_an_execution_failure(sleeps):
+    bug = TypeError("unexpected keyword argument 'response_format'")
+    error = run_error(FakeProvider(*[bug] * 5), sleeps)
+    assert error.kind == "execution"
+    assert error.counters.mode_downgrades == 0
+    assert error.counters.final_mode is StructuredMode.json_schema
+
+
 def test_a_404_for_a_wrong_model_id_is_still_terminal(sleeps):
     fake = FakeProvider(StatusError(404, "No endpoints found for moonshotai/kimi-k9."))
     error = run_error(fake, sleeps, spec=OPENROUTER)

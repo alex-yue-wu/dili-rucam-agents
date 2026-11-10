@@ -143,17 +143,25 @@ def _error_text(exc: BaseException) -> str:
 def _is_format_rejection(exc: BaseException) -> bool:
     """Did the provider reject the structured-output request specifically?
 
-    Every status needs a marker in the message: a 400 for another cause (a
+    A rejection is a reply from the endpoint, so it must carry that endpoint's
+    status code. Without that requirement a local programming error matched:
+    ``_FORMAT_MARKERS`` holds bare keyword names, so ``TypeError:
+    GenerateContentConfig() got an unexpected keyword argument
+    'response_json_schema'`` read as a refusal, incremented ``mode_downgrades``
+    and carried the run on one rung lower -- polluting the one counter that is
+    the whole evidence for or against the OpenRouter hypothesis the gate exists
+    to test.
+
+    Every status also needs a marker in the message: a 400 for another cause (a
     context length, say) would only recur on every lower mode. OpenRouter
     answers 404 (sometimes 422) when no endpoint can honour ``response_format``,
     and a 404 for a wrong model id ("No endpoints found for <model>") must stay
     terminal.
     """
-    status = _status_code(exc)
-    if status in (400, 404, 422, None):
-        text = _error_text(exc)
-        return any(marker in text for marker in _FORMAT_MARKERS)
-    return False
+    if _status_code(exc) not in (400, 404, 422):
+        return False
+    text = _error_text(exc)
+    return any(marker in text for marker in _FORMAT_MARKERS)
 
 
 def _backoff_seconds(errors_so_far: int) -> float:
