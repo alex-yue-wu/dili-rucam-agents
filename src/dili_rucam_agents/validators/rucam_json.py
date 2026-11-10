@@ -31,22 +31,46 @@ def expected_category(total_score: int) -> CausalityCategory:
     return "Highly probable"
 
 
+ITEM_LEGAL_SCORES: dict[str, frozenset[int]] = {
+    "time_to_onset": frozenset({0, 1, 2}),
+    "course": frozenset({-2, 0, 1, 2, 3}),
+    "risk_factors": frozenset({0, 1, 2}),
+    "concomitant_drugs": frozenset({-3, -2, -1, 0}),
+    "other_causes_excluded": frozenset({-3, -2, 0, 1, 2}),
+    "known_hepatotoxicity": frozenset({0, 1, 2}),
+    "rechallenge": frozenset({-2, 0, 1, 3}),
+}
+
+
+def check_item_score(item: str, value: int) -> int:
+    """Return ``value`` when it is a printed rung of ``item``, else raise."""
+
+    if value not in ITEM_LEGAL_SCORES[item]:
+        legal = sorted(ITEM_LEGAL_SCORES[item])
+        raise ValueError(f"{item} score {value} is not one of {legal}")
+    return value
+
+
 class RucamScores(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    time_to_onset: int = Field(ge=-3, le=3)
-    course: int = Field(ge=-3, le=3)
-    risk_factors: int = Field(ge=-2, le=2)
-    concomitant_drugs: int = Field(ge=-3, le=3)
+    time_to_onset: int
+    course: int
+    risk_factors: int
+    concomitant_drugs: int
     other_causes_excluded: int = Field(
-        ge=-3,
-        le=3,
         validation_alias=AliasChoices(
             "other_causes_excluded", "alternative_causes_excluded"
         ),
     )
-    known_hepatotoxicity: int = Field(ge=-3, le=3)
-    rechallenge: int = Field(ge=-3, le=3)
+    known_hepatotoxicity: int
+    rechallenge: int
+
+    @model_validator(mode="after")
+    def validate_legal_sets(self) -> RucamScores:
+        for item in ITEM_LEGAL_SCORES:
+            check_item_score(item, getattr(self, item))
+        return self
 
     @property
     def total(self) -> int:
@@ -111,6 +135,8 @@ def _reject_non_standard_json_constant(_constant: str) -> None:
 
 __all__ = [
     "CausalityCategory",
+    "ITEM_LEGAL_SCORES",
+    "check_item_score",
     "RucamScores",
     "RucamReport",
     "expected_category",
