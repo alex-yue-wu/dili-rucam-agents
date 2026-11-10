@@ -660,6 +660,13 @@ deferred to this task by Task 2's review:
    which does not exist on `anthropic 0.71.1` but does on `>=1.11.0`. Add a test
    asserting the two agree on a representative schema before removing the local
    one. The local transform was written only because the symbol was unavailable.
+   Two known gaps in it are expected to disappear with the swap, and the
+   agreement test should cover both: sub-schema keywords outside its table
+   (`contains`, `propertyNames`, `dependentSchemas`, `unevaluatedItems`,
+   `unevaluatedProperties`) are neither recursed nor closed; and an
+   `additionalProperties` *sub-schema* is overwritten with `False` on any
+   `type: object` node, which discards the value schema pydantic emits for a
+   `dict[str, X]` field.
 2. Re-verify every `google_request` kwarg against `google-genai>=2.28.0`.
    Task 2's facts were checked against the installed `1.49.0`, where
    `HttpOptions.timeout` is in milliseconds and `HttpRetryOptions(attempts=...)`
