@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional, Sequence
 
+from dotenv import load_dotenv
 from openpyxl import Workbook
 
 from dili_rucam_agents.analysts import AnalystExecutionError
@@ -456,6 +457,12 @@ def _write_summary_workbook(
 
 
 def _main(argv: Sequence[str] | None = None) -> None:
+    # Keys may live in a .env file: importing crewai used to load one as a side
+    # effect, and python-dotenv is a declared dependency, so a run started from
+    # the command line still reads it. Called here rather than at import time,
+    # so a library caller keeps control of its own environment. Values already
+    # exported win, which is load_dotenv's default.
+    load_dotenv()
     parser = argparse.ArgumentParser(
         description="Score a folder of PDFs with the declared analyst roster."
     )

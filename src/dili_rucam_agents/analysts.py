@@ -261,10 +261,15 @@ async def _run_one(
             return  # success: reported after the run
         if output_dir is not None and attempt.raw_text is not None:
             _persist_invalid_attempt(output_dir, key, attempt.number, attempt.raw_text)
+        if attempt.number >= max_attempts:
+            # The last attempt's failure ends the run, so its event is emitted
+            # from the error handler below instead, where the retry counters
+            # exist. A failed analyst is where they matter most: it spent its
+            # whole validation budget and nothing else records how.
+            return
         emit(attempt.number, "validation_failed", validation_diagnostic=_INVALID)
-        if attempt.number < max_attempts:
-            current = attempt.number + 1
-            emit(current, "running")
+        current = attempt.number + 1
+        emit(current, "running")
 
     emit(current, "running")
     try:
@@ -277,10 +282,29 @@ async def _run_one(
             on_attempt=on_runner_attempt,
         )
     except RunnerError as exc:
+        # Every terminal event carries the counters, so a caller that persists
+        # them records what the failed run actually spent.
         if exc.kind in ("execution", "terminal"):
-            emit(current, "execution_failed", execution_diagnostic=exc.execution_diagnostic)
+            emit(
+                current,
+                "execution_failed",
+                counters=exc.counters,
+                execution_diagnostic=exc.execution_diagnostic,
+            )
         elif exc.kind == "truncation":
-            emit(current, "validation_failed", validation_diagnostic=_TRUNCATED)
+            emit(
+                current,
+                "validation_failed",
+                counters=exc.counters,
+                validation_diagnostic=_TRUNCATED,
+            )
+        else:  # the validation budget ran out on the attempt in flight
+            emit(
+                current,
+                "validation_failed",
+                counters=exc.counters,
+                validation_diagnostic=exc.validation_diagnostic or _INVALID,
+            )
         raise AnalystExecutionError(
             analyst_key=key,
             attempts=exc.attempts,

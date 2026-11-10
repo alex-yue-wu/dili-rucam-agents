@@ -35,7 +35,7 @@ from dili_rucam_agents.validators.analyst_report import (
     AnalystReportValidationError,
     validate_analyst_report,
 )
-from fakes import FakeProvider
+from fakes import FakeProvider, StatusError
 from test_rucam_assessment import _assessment, _causes, _item
 
 #: The three analysts the pre-roster topology ran by default. Most tests below
@@ -1019,6 +1019,7 @@ def test_a_truncated_reply_is_recorded_as_a_truncation(tmp_path, monkeypatch):
     assert entry["failure_kind"] == "truncation"
     assert "stops partway" in entry["last_error"]
     assert entry["status"] == "failed"
+    assert entry["truncation_escalations"] == 1
     # How far the model got, kept for judging the output budget.
     assert sorted(path.name for path in (output_dir / "attempts").iterdir()) == [
         "analyst_alpha.1.truncated1.invalid.txt",
@@ -2170,3 +2171,101 @@ def test_a_malformed_roster_names_the_file_and_runs_nothing(tmp_path: Path, monk
             output_dir=str(tmp_path / "output"),
             roster_path=str(roster_path),
         )
+
+
+# -- the CLI reads .env, and a failed analyst records what it spent ---------
+
+
+def test_both_clis_load_dotenv_before_doing_any_work(tmp_path: Path, monkeypatch):
+    """Keys in a .env file used to be loaded by importing crewai.
+
+    python-dotenv is a declared dependency and .gitignore anticipates a .env,
+    so a command-line run still reads one. It must happen before the API-key
+    pre-flight, which is the first thing a run does.
+    """
+
+    order: list[str] = []
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.load_dotenv", lambda: order.append("dotenv")
+    )
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_batch_folder",
+        lambda **kwargs: order.append("run") or Path("batch_summary.xlsx"),
+    )
+    batch_main([str(tmp_path / "input"), str(tmp_path / "output")])
+    assert order == ["dotenv", "run"]
+
+    order.clear()
+    monkeypatch.setattr(
+        pipeline_module, "load_dotenv", lambda: order.append("dotenv")
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_end_to_end",
+        lambda *args, **kwargs: order.append("run") or "ok",
+    )
+    monkeypatch.setattr(sys, "argv", ["pipeline", "case.pdf"])
+    pipeline_module._main()
+    assert order == ["dotenv", "run"]
+
+
+def test_a_failed_analysts_retry_counters_reach_the_manifest(tmp_path, monkeypatch):
+    """The gate counts validation retries, and a failure is where they land.
+
+    An analyst that fails has by definition spent its whole validation budget,
+    so its counters are the ones the acceptance gate most needs.
+    """
+
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    fake_ingestion(monkeypatch)
+    use_provider(
+        monkeypatch,
+        FakeProvider(*[json.dumps({"nonsense": n}) for n in range(1, 4)]),
+    )
+
+    with pytest.raises(AnalystExecutionError) as exc_info:
+        run_end_to_end(
+            str(pdf_path),
+            output_dir=str(output_dir),
+            roster_path=write_roster(tmp_path, ("analyst_alpha",)),
+            max_restarts=2,
+        )
+
+    entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
+    assert entry["status"] == "failed"
+    assert entry["failure_kind"] == "validation"
+    # Three attempts, so two retries -- the same units the error reports.
+    assert entry["validation_retries"] == 2
+    assert exc_info.value.counters.validation_retries == 2
+    assert entry["transient_retries"] == 0
+    assert entry["truncation_escalations"] == 0
+    assert entry["mode_downgrades"] == 0
+    assert entry["final_mode"] == "json_schema"
+    # One history entry per attempt, not two for the last one.
+    assert [item["total_attempt"] for item in entry["attempt_history"]] == [1, 2, 3]
+
+
+def test_a_failed_analysts_execution_counters_reach_the_manifest(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    fake_ingestion(monkeypatch)
+    use_provider(monkeypatch, FakeProvider(StatusError(401, "bad key")))
+
+    with pytest.raises(AnalystExecutionError):
+        run_end_to_end(
+            str(pdf_path),
+            output_dir=str(output_dir),
+            roster_path=write_roster(tmp_path, ("analyst_alpha",)),
+            max_restarts=0,
+        )
+
+    entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
+    assert entry["failure_kind"] == "execution"
+    assert entry["validation_retries"] == 0
+    assert entry["transient_retries"] == 0
+    assert entry["final_mode"] == "json_schema"
