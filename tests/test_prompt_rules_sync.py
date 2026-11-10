@@ -18,7 +18,15 @@ from dili_rucam_agents.crew.tasks import (
 )
 from dili_rucam_agents.hepatotoxicity.dailymed import DAILYMED_SECTION_SCORES
 from dili_rucam_agents.hepatotoxicity.dilirank import DILIRANK_CONCERN_SCORES
-from dili_rucam_agents.validators.rucam_json import RucamReport, RucamScores
+from dili_rucam_agents.validators.rucam_assessment import (
+    EvidenceRef,
+    ItemFiveCauses,
+    ItemScore,
+    PreFlight,
+    RRatioBasis,
+    RucamAssessment,
+)
+from dili_rucam_agents.validators.rucam_json import ITEM_LEGAL_SCORES
 
 RULES_VERSION = "RUCAM_DananBenichou1993_modified_sheet_v3"
 # A tag is retired, never reused: a score still carries the rules that produced
@@ -85,35 +93,85 @@ def test_r_ratio_boundaries_are_stated_once_and_without_contradiction():
             assert contradiction not in text, f"{name} still states {contradiction!r}"
 
 
-def test_section_c_template_matches_the_validated_schema():
-    """The JSON the prompts ask for must be the JSON the validator accepts."""
-    for name, text in _prompt_texts().items():
-        blocks = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
-        assert len(blocks) == 1, f"{name} must show exactly one SECTION C template"
-        template = json.loads(
-            re.sub(
-                r'"([a-z_]+)": "[^"]*\|[^"]*"',
-                lambda match: f'"{match.group(1)}": "cholestatic"'
-                if match.group(1) == "injury_pattern"
-                else f'"{match.group(1)}": "Excluded"',
-                blocks[0],
-            )
-        )
+def _output_region(text: str) -> str:
+    """Everything after the frozen core: the model-facing contract and workflow."""
+    return text.split("<!-- END SHARED RUCAM CORE v3 -->", 1)[1]
 
-        assert set(template) == set(RucamReport.model_fields) | {
-            "rules_version",
-            "notes",
-        }, name
-        assert set(template["rucam_scores"]) == set(RucamScores.model_fields), name
-        assert template["rules_version"] == RULES_VERSION, name
-        assert template["notes"] == [], name
+
+def _requested_object(text: str) -> dict:
+    blocks = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
+    assert len(blocks) == 1, "exactly one requested-object template"
+    return json.loads(blocks[0])
+
+
+def test_section_c_template_matches_the_assessment_schema():
+    """The object the prompts request is the object RucamAssessment accepts."""
+    item_fields = set(ItemScore.model_fields)
+    for name, text in _prompt_texts().items():
+        template = _requested_object(text)
+
+        assert set(template) == set(RucamAssessment.model_fields), name
+        assert set(template["pre_flight"]) == set(PreFlight.model_fields), name
+        assert set(template["item_5_causes"]) == set(ItemFiveCauses.model_fields), name
+        assert set(template["r_ratio_basis"]) == set(RRatioBasis.model_fields), name
+        for item in ITEM_LEGAL_SCORES:
+            assert set(template[item]) == item_fields, f"{name}: {item}"
+            (quote,) = template[item]["evidence"]
+            # The model never certifies a quote; code does.
+            assert set(quote) == set(EvidenceRef.model_fields) - {"verified"}, name
+
+        # The rules tag is a constant the renderer supplies, not a model field.
+        assert f"rules_version: **{RULES_VERSION}**" in text, name
+        assert "rules_version" not in template, name
+
+
+def test_prompts_no_longer_ask_for_a_total_or_a_category():
+    """Code sums the items and derives the category; the model supplies neither."""
+    for name, text in _prompt_texts().items():
+        region = _output_region(text)
+        template = _requested_object(text)
+        for computed in ("total_score", "category"):
+            assert computed not in template, f"{name} requests {computed}"
+        assert '"total_score"' not in region, name
+        assert '"category"' not in region, name
+        assert "## SECTION A" not in region, name
+        assert "## SECTION B" not in region, name
+        assert "## SECTION C" not in region, name
+        assert "Produce **three sections**" not in region, name
+
+
+def test_pre_flight_check_covers_the_item_6_source():
+    for name, text in _prompt_texts().items():
+        assert "answer all eleven lines" in text, name
+        assert "ten-line" not in text, name
+        assert "6. Item 6 `tier` and `score` as read from the evidence block" in text, name
+        template = _requested_object(text)
+        # One numbered line per structured pre-flight answer, item 6 included.
+        assert len(template["pre_flight"]) == 11, name
+        assert "item_6_source" in template["pre_flight"], name
+        numbered = re.findall(
+            r"^(\d+)\. ", text.split("## 4. Pre-flight check", 1)[1], re.MULTILINE
+        )
+        assert numbered[:11] == [str(n) for n in range(1, 12)], name
 
 
 def test_every_scoring_item_declares_its_allowed_values():
     """D8 is what stops an analyst inventing an off-sheet score."""
     for name, text in _prompt_texts().items():
-        for item in RucamScores.model_fields:
+        for item in ITEM_LEGAL_SCORES:
             assert f"| {item} |" in text, f"{name} omits {item} from the D8 table"
+
+
+def test_d8_table_matches_the_code_constant():
+    """D8 stays literal text; this fails when it and ITEM_LEGAL_SCORES drift."""
+    row = re.compile(r"^\| (\w+) \| ([+\-\d, ]+) \|$", re.MULTILINE)
+    for name, text in _prompt_texts().items():
+        d8 = text.split("### D8 -- Allowed score per item", 1)[1].split("###", 1)[0]
+        documented = {
+            item: frozenset(int(v) for v in values.split(","))
+            for item, values in row.findall(d8)
+        }
+        assert documented == ITEM_LEGAL_SCORES, name
 
 
 def test_boundary_conventions_and_worked_cases_are_present():
@@ -226,8 +284,3 @@ def test_prompt_score_tables_match_the_resolver_constants():
         }
         assert documented_sections == dict(DAILYMED_SECTION_SCORES), name
 
-
-def test_pre_flight_check_covers_the_item_6_source():
-    for name, text in _prompt_texts().items():
-        assert "answer all eleven lines" in text, name
-        assert "6. Item 6 `tier` and `score` as read from the evidence block" in text, name

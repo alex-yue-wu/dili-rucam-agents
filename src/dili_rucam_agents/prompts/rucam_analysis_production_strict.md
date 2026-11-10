@@ -712,8 +712,8 @@ its score.
 
 ## 4. Pre-flight check
 
-Before writing SECTION B, answer all eleven lines in SECTION A. Each must be
-answered with the actual value, not "yes".
+Before you finish, answer all eleven lines in the `pre_flight` object. Each must
+be answered with the actual value, not "yes".
 
 1. Suspect drug (D6)
 2. `onset_date`, whether it came from a symptom or a lab value, and
@@ -738,64 +738,114 @@ total that does not equal the sum of the seven items.
 
 # OUTPUT FORMAT (STRICT)
 
-Produce **three sections** in order, each headed with exactly two hash marks.
+Return **one JSON object and nothing else**: no prose before or after it, no
+markdown headings and no code fence. Your reasoning belongs in the fields below.
+The report a reader sees is written from this object by code.
 
----
+Wherever the rules above say "SECTION A", write it in the `rationale` of the
+item concerned, or in the matching `pre_flight` answer. Wherever they say to add
+a `notes` entry, put it in the `inference_note` of the item concerned. Wherever
+they say "SECTION B" or "SECTION C", the item scores in this object are those
+values.
 
-## SECTION A -- HUMAN-READABLE FULL REPORT
+Fixed by code, not yours to emit:
 
-- Extracted clinical data
-- R-ratio arithmetic and pattern choice
-- Item-by-item scoring, with evidence, rung and conventions applied
-- The item 5 checklist and `g1` count
-- The ten-line pre-flight check
-- Final total, category, and any limitation (D7, missing R, inference used)
+- the total and the category: code sums your seven item scores and derives the
+  category from the table, so write neither
+- the rules tag, rules_version: **RUCAM_DananBenichou1993_modified_sheet_v3**.
+  Code writes `"rules_version": "RUCAM_DananBenichou1993_modified_sheet_v3"` into
+  the report, and it is not a key of your object
+- whether a quote was verified against the case bundle
 
----
+## The object
 
-## SECTION B -- RUCAM SCORING TABLE
-
-Use these exact row labels, in this order:
-
-| RUCAM Item | Score | Evidence |
-| --- | --- | --- |
-| Time to onset | +X | "..." |
-| Course | +X | "..." |
-| Risk factors | +X | "..." |
-| Concomitant drugs | +X | "..." |
-| Other causes excluded | +X | "..." |
-| Known hepatotoxicity | +X | "..." |
-| Rechallenge | +X | "..." |
-| **Total** | **XX** | **Category: (Excluded / Unlikely / Possible / Probable / Highly probable)** |
-
----
-
-## SECTION C -- MACHINE-READABLE JSON
-
-Exactly one fenced JSON object, with these keys and no others. Numbers must be
-JSON numbers, not strings. `R_ratio` is a number rounded to 2 decimal places, or
-`null` when it cannot be computed. `notes` is always present and may be empty.
+Exactly these keys, and no others. Numbers must be JSON numbers, not strings.
+Placeholders such as `"..."` stand for your own text, and `|` separates the
+allowed values of an enumerated field: write one of them.
 
 ```json
 {
   "injury_pattern": "hepatocellular | mixed | cholestatic | Not reported",
-  "R_ratio": 0.0,
-  "rucam_scores": {
-    "time_to_onset": 0,
-    "course": 0,
-    "risk_factors": 0,
-    "concomitant_drugs": 0,
-    "other_causes_excluded": 0,
-    "known_hepatotoxicity": 0,
-    "rechallenge": 0
+  "r_ratio": 0.0,
+  "r_ratio_basis": {
+    "alt": 0.0,
+    "alp": 0.0,
+    "alt_uln": 0.0,
+    "alp_uln": 0.0
   },
-  "total_score": 0,
-  "category": "Excluded | Unlikely | Possible | Probable | Highly probable",
-  "rules_version": "RUCAM_DananBenichou1993_modified_sheet_v3",
-  "notes": []
+  "onset_day": 1,
+  "onset_anchor_dose": "...",
+  "pre_flight": {
+    "suspect_drug": "...",
+    "onset": "...",
+    "r_ratio_pattern": "...",
+    "course_basis": "...",
+    "g1_count": "...",
+    "item_6_source": "...",
+    "scores_in_legal_sets": "...",
+    "total_sum": "...",
+    "category_match": "...",
+    "section_b_matches_section_c": "...",
+    "notes_complete": "..."
+  },
+  "item_5_causes": {
+    "hepatitis_a": "ruled_out | not_documented | present",
+    "hepatitis_b": "ruled_out | not_documented | present",
+    "hepatitis_c": "ruled_out | not_documented | present",
+    "biliary_obstruction": "ruled_out | not_documented | present",
+    "alcoholism": "ruled_out | not_documented | present",
+    "hypotension_or_ischaemia": "ruled_out | not_documented | present",
+    "underlying_disease": "ruled_out | not_documented | present",
+    "acute_viral_infection": "ruled_out | not_documented | present",
+    "g1": 0
+  },
+  "time_to_onset": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
+  "course": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
+  "risk_factors": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
+  "concomitant_drugs": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
+  "other_causes_excluded": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
+  "known_hepatotoxicity": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
+  "rechallenge": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]}
 }
 ```
 
-`total_score` must equal the sum of the seven values in `rucam_scores`, and
-`category` must follow from `total_score` by the category table. A report that
-breaks either rule is rejected.
+## Field rules
+
+- `injury_pattern`, `r_ratio` and `r_ratio_basis`: the pattern from step 2.
+  `r_ratio` is rounded to 2 decimal places. `r_ratio_basis` holds the ALT and ALP
+  of the draw used and the ULNs applied, and the quotient of those four numbers
+  must equal `r_ratio`. When R cannot be computed, set `r_ratio` to `null` and
+  `injury_pattern` to `"Not reported"`, and set `alt` and `alp` to `null` where
+  they are not documented; the two ULNs are always numbers.
+- `onset_day` is the integer `N` of `onset_day = N`, numbered from 1, or `null`
+  when no onset can be dated. `onset_anchor_dose` names the dose it is counted
+  from.
+- `pre_flight` holds one answer per numbered line of step 4: `suspect_drug` (1),
+  `onset` (2), `r_ratio_pattern` (3), `course_basis` (4), `g1_count` (5),
+  `item_6_source` (6), `scores_in_legal_sets` (7), `total_sum` (8),
+  `category_match` (9), `section_b_matches_section_c` (10) and `notes_complete`
+  (11). Each is a non-empty string holding the actual value.
+- `item_5_causes` holds the six Group I causes (`hepatitis_a` to
+  `hypotension_or_ischaemia`) and the two Group II categories
+  (`underlying_disease`, `acute_viral_infection`). Use `ruled_out` only for a
+  cause the bundle shows was excluded, `present` for one it shows was present,
+  and `not_documented` otherwise. `g1` is the number of the six Group I causes
+  marked `ruled_out`, 0 to 6, and a `g1` that does not equal that count is
+  rejected. Group II is not part of `g1`; it enters the item 5 rung logic
+  separately.
+- Each of the seven item objects, `time_to_onset` to `rechallenge`:
+  - `score` is an integer inside that item's D8 set; anything else is rejected
+  - `data_status` is `reported` when the bundle states the facts the rung needs,
+    `inferred` when an enumerated inference in this prompt supplied them, and
+    `not_reported` when the bundle is silent
+  - `rationale` is the rung you matched and the conventions you applied, by name
+  - `inference_note` is `null`, except that it is required and non-blank whenever
+    `data_status` is `inferred`, and it carries any `notes` entry the rules
+    require for that item
+  - `evidence` lists the quotes from the case bundle behind the score, each as
+    `{"quote": "..."}` copied exactly from the bundle; use `[]` when there is
+    nothing to quote. Do not add a `verified` key
+
+Item 5's `rationale` must show the Group I / Group II checklist and the
+`g1 = <n>` line. Item 6's `rationale` must carry the line
+`item 6: <score> via <tier> -- <rationale>`.
