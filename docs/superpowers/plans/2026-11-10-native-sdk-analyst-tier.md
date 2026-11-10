@@ -715,6 +715,18 @@ will XPASS, and a strict xfail turns XPASS into a failure, so the suite stays
 red until the markers come off. Rewrite each test against the roster-driven
 path and delete its marker; do not delete a test to make the marker go away.
 
+Two call sites in `pipeline.py` are not merely untested but non-functional until
+this task rewrites them, and Task 8's review named both: line 88 passes dict
+configs into `build_analyst_identities`, which now reads `config.key` and raises
+`AttributeError`, and line 138 calls `record_completed(identity, attempt=...,
+report_text=...)`, which now requires `assessment_json` and `counters` and raises
+`TypeError`.
+
+One of the xfailed tests needs a value changed, not just a marker removed:
+`test_schema_v2_manifest_cannot_skip_execution_and_is_replaced_cleanly` still
+asserts `current_manifest["schema_version"] == 3`. That must become 4, or the
+test fails for a reason unrelated to the rewrite.
+
 - [ ] **Step 4: Verify removal and run the whole suite**
 
 Run: `grep -rn "crewai\|litellm\|kickoff\|use_analyst_\|ANALYST_.*_MODEL\|ANALYST_.*_MAX_TOKENS" src/ pyproject.toml; uv run pytest -q`
