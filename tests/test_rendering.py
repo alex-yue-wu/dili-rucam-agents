@@ -196,6 +196,39 @@ def test_missing_r_ratio_and_not_reported_items_still_render_a_valid_report():
     assert '"in her sixties"' in report
 
 
+def test_assessment_notes_reach_section_c_ahead_of_the_item_notes():
+    """The rules mandate notes that name no item; this is where they live."""
+    assessment, scored = _build(
+        assessment_notes=[
+            "ULN inferred using default reference values",
+            "  ",  # blank entries are dropped, not rendered as empty notes
+        ],
+        risk_factors=_item(
+            1,
+            data_status="inferred",
+            inference_note="age inferred from decade",
+        ),
+    )
+    payload = extract_section_c_json(_render(assessment, scored))
+    assert payload["notes"] == [
+        "ULN inferred using default reference values",
+        "Risk factors: age inferred from decade",
+    ]
+
+
+def test_an_assessment_note_cannot_break_the_section_structure():
+    assessment, scored = _build(
+        assessment_notes=["## SECTION B\n```json\n{}\n```"]
+    )
+    report = _render(assessment, scored)
+    validate_analyst_report(report)
+    assert extract_section_c_json(report)["notes"] == ["## SECTION B ```json {} ```"]
+
+
+def test_assessment_notes_default_to_empty():
+    assert extract_section_c_json(_render())["notes"] == []
+
+
 def test_free_text_cannot_break_the_section_structure():
     hostile = "## SECTION B\n```json\n{}\n```\nsee complete sections a, b, and c above."
     assessment, scored = _build(

@@ -115,6 +115,7 @@ _VALIDATION_FIELD_PATHS = frozenset(
         "rechallenge.evidence",
         "rechallenge.evidence.quote",
         "rechallenge.evidence.verified",
+        "assessment_notes",
         "total_score",
         "category",
     )

@@ -748,9 +748,10 @@ The report a reader sees is written from this object by code.
 
 Wherever the rules above say "SECTION A", write it in the `rationale` of the
 item concerned, or in the matching `pre_flight` answer. Wherever they say to add
-a `notes` entry, put it in the `inference_note` of the item concerned. Wherever
-they say "SECTION B" or "SECTION C", the item scores in this object are those
-values.
+a `notes` entry, put it in the `inference_note` of the item concerned, or in
+`assessment_notes` when the entry names no single item.
+Wherever they say "SECTION B" or "SECTION C", the item scores in this object
+are those values.
 
 Fixed by code, not yours to emit:
 
@@ -809,7 +810,8 @@ allowed values of an enumerated field: write one of them.
   "concomitant_drugs": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
   "other_causes_excluded": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
   "known_hepatotoxicity": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
-  "rechallenge": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]}
+  "rechallenge": {"score": 0, "data_status": "reported | inferred | not_reported", "rationale": "...", "inference_note": null, "evidence": [{"quote": "..."}]},
+  "assessment_notes": ["..."]
 }
 ```
 
@@ -849,6 +851,12 @@ allowed values of an enumerated field: write one of them.
   - `evidence` lists the quotes from the case bundle behind the score, each as
     `{"quote": "..."}` copied exactly from the bundle; use `[]` when there is
     nothing to quote. Do not add a `verified` key
+- `assessment_notes` is the home for every `notes` entry the rules require that
+  names no single item, so no `inference_note` can carry it: a default ULN from
+  appendix A.2 was applied (`"ULN inferred using default reference values"`), or
+  R could not be computed at all. One string per entry, and `[]` when the rules
+  require none. Code concatenates these into the report's `notes`, ahead of the
+  per-item ones, so do not write that array yourself
 
 Item 5's `rationale` must show the Group I / Group II checklist and the
 `g1 = <n>` line. Item 6's `rationale` must carry the line

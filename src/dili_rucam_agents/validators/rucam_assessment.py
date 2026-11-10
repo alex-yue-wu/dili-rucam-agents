@@ -180,6 +180,11 @@ class RucamAssessment(_Strict):
     other_causes_excluded: ItemScore
     known_hepatotoxicity: ItemScore
     rechallenge: ItemScore
+    #: Rules-mandated ``notes`` entries that name no single item, so no item's
+    #: ``inference_note`` can hold them: a default ULN was applied (appendix
+    #: A.2), or R could not be computed at all. The renderer concatenates these
+    #: into SECTION C's ``notes`` ahead of the per-item ones.
+    assessment_notes: list[str] = Field(default_factory=list)
 
     @field_validator(*_ITEMS, mode="after")
     @classmethod

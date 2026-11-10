@@ -204,7 +204,14 @@ def _section_b(assessment: RucamAssessment, scored: ScoredAssessment) -> str:
 
 
 def _notes(assessment: RucamAssessment) -> list[str]:
-    notes = []
+    """SECTION C's ``notes``: the whole-assessment ones, then the per-item ones.
+
+    The rules mandate at least two entries that name no item -- a default ULN
+    was applied, and R could not be computed -- so neither has an
+    ``inference_note`` to live in. They come first because they qualify the
+    basis the items were scored on.
+    """
+    notes = [_text(note) for note in assessment.assessment_notes if note.strip()]
     for field, label in _ITEM_LABELS:
         item: ItemScore = getattr(assessment, field)
         if item.inference_note:

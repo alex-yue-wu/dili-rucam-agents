@@ -338,6 +338,29 @@ def test_a_pattern_boundary_straddle_is_annotated_not_rejected(stated, alt):
     assert r_ratio_disagreement(rounded) is None
 
 
+def test_assessment_notes_are_optional_and_hold_the_item_free_notes():
+    """Appendix A.2 and the R-ratio rule mandate notes that name no item."""
+    default = RucamAssessment.model_validate(_assessment())
+    assert default.assessment_notes == []
+    carried = RucamAssessment.model_validate(
+        _assessment(
+            assessment_notes=[
+                "ULN inferred using default reference values",
+                "R not computable from the reported draws",
+            ]
+        )
+    )
+    assert carried.assessment_notes == [
+        "ULN inferred using default reference values",
+        "R not computable from the reported draws",
+    ]
+    # Still a list of strings: an object here would not survive a round trip.
+    with pytest.raises(ValidationError):
+        RucamAssessment.model_validate(_assessment(assessment_notes=[{"note": "x"}]))
+    with pytest.raises(ValidationError):
+        RucamAssessment.model_validate(_assessment(assessment_notes="one note"))
+
+
 def test_onset_day_has_no_day_zero():
     with pytest.raises(ValidationError):
         RucamAssessment.model_validate(_assessment(onset_day=0))
