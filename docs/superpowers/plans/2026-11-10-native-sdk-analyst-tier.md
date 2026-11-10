@@ -272,12 +272,25 @@ git commit -m "feat: separate transport retries from scoring attempts"
 
 **Files:**
 - Create: `src/dili_rucam_agents/validators/rucam_assessment.py`
-- Modify: `src/dili_rucam_agents/validators/rucam_json.py` (export `ITEM_LEGAL_SCORES`, keep `RucamReport` as the Section C contract)
+- Modify: `src/dili_rucam_agents/validators/rucam_json.py` (define `ITEM_LEGAL_SCORES`, tighten `RucamScores` to it, keep `RucamReport` as the Section C contract)
 - Test: `tests/test_rucam_assessment.py`
 
 **Interfaces:**
 - Consumes: `expected_category` from `validators/rucam_json.py`.
 - Produces: `ITEM_LEGAL_SCORES: dict[str, frozenset[int]]`; `DataStatus` (StrEnum `reported`/`inferred`/`not_reported`); `EvidenceRef(quote: str, verified: bool = False)`; `ItemScore(score: int, data_status: DataStatus, rationale: str, inference_note: str | None = None, evidence: list[EvidenceRef] = [])`; `PreFlight` with the eleven named fields; `CauseStatus` (StrEnum `ruled_out`/`not_documented`/`present`); `ItemFiveCauses` with the six Group I and two Group II fields plus `g1: int`; `RRatioBasis(alt: float | None, alp: float | None, alt_uln: float, alp_uln: float)`; `RucamAssessment` carrying `injury_pattern`, `r_ratio`, `r_ratio_basis`, `onset_day`, `onset_anchor_dose`, `pre_flight`, `item_5_causes`, the seven `ItemScore` fields, and no total and no category; `ScoredAssessment(total_score: int, category: CausalityCategory)`; `score_assessment(assessment: RucamAssessment) -> ScoredAssessment`.
+
+`ITEM_LEGAL_SCORES` is defined in `rucam_json.py`, not in the new module:
+`rucam_assessment.py` already imports `expected_category` from it, so that is the
+lower layer and placing the constant there cannot cycle, while Task 6's prompt test
+needs it without pulling in the assessment schema.
+
+**Both validators enforce it, from that one constant.** `RucamScores` keeps its
+field names and its `other_causes_excluded` / `alternative_causes_excluded`
+`AliasChoices`, but its `Field(ge=.., le=..)` envelopes are replaced by exact set
+membership. Verified on this checkout: none of the nine tests in
+`tests/test_rucam_json_validator.py` relies on a value outside the legal sets, so
+this tightening breaks nothing. Without it a rendered Section C carrying
+`concomitant_drugs: +2` would still validate, which is the hole the spec names.
 
 `ITEM_LEGAL_SCORES` holds the exact D8 sets: `time_to_onset {0,1,2}`, `course {-2,0,1,2,3}`, `risk_factors {0,1,2}`, `concomitant_drugs {-3,-2,-1,0}`, `other_causes_excluded {-3,-2,0,1,2}`, `known_hepatotoxicity {0,1,2}`, `rechallenge {-2,0,1,3}`.
 
