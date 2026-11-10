@@ -5,8 +5,6 @@ import json
 import re
 from typing import Any
 
-from crewai.tools import BaseTool
-
 
 MASK_TOKEN = "[RUCAM_SCORE_MASKED]"
 RUCAM_CATEGORIES = ("Highly probable", "Probable", "Possible", "Unlikely", "Excluded")
@@ -537,22 +535,6 @@ def _format_review_reason(
     return " and ".join(parts)
 
 
-class ScoreMaskingTool(BaseTool):
-    """CrewAI tool wrapper for deterministic RUCAM score redaction."""
-
-    name: str = "score_masker"
-    description: str = "Mask prior RUCAM scores, score tables, and causality categories from a case_bundle_json payload."
-
-    def _run(self, case_bundle_json: str) -> str:
-        payload = parse_case_bundle_json(case_bundle_json)
-        return json.dumps(mask_case_bundle_payload(payload), indent=2)
-
-    async def _arun(
-        self, case_bundle_json: str
-    ) -> str:  # pragma: no cover - async parity
-        return self._run(case_bundle_json)
-
-
 def parse_case_bundle_json(raw_input: str) -> dict[str, Any]:
     decoder = json.JSONDecoder()
     candidate = raw_input.strip()
@@ -581,7 +563,6 @@ def parse_case_bundle_json(raw_input: str) -> dict[str, Any]:
 
 __all__ = [
     "MASK_TOKEN",
-    "ScoreMaskingTool",
     "extract_rucam_grade_labels",
     "extract_rucam_score_ints",
     "mask_case_bundle_payload",

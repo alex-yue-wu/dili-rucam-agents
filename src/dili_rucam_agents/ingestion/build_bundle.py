@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import List
-
-from crewai.tools import BaseTool
 
 from .case_bundle import (
     CaseBundle,
@@ -79,25 +76,7 @@ def build_case_bundle(pdf_path: Path) -> CaseBundle:
     )
 
 
-class CaseBundleExtractionTool(BaseTool):
-    """CrewAI tool wrapper around the deterministic case bundle pipeline."""
-
-    name: str = "case_bundle_extractor"
-    description: str = (
-        "Convert a PDF path into the canonical case_bundle_json contract "
-        "defined in agent.md using deterministic ingestion."
-    )
-
-    def _run(self, pdf_path: str) -> str:
-        bundle = build_case_bundle(Path(pdf_path))
-        return json.dumps(bundle.to_dict(), indent=2)
-
-    async def _arun(self, pdf_path: str) -> str:  # pragma: no cover - async parity
-        return self._run(pdf_path)
-
-
 __all__ = [
     "CaseBundleExtractionError",
-    "CaseBundleExtractionTool",
     "build_case_bundle",
 ]

@@ -6,7 +6,6 @@ import pytest
 
 from dili_rucam_agents.ingestion.build_bundle import (
     CaseBundleExtractionError,
-    CaseBundleExtractionTool,
     build_case_bundle,
 )
 from dili_rucam_agents.ingestion.case_bundle import CaseBundleBlock, CaseBundleTable
@@ -31,10 +30,8 @@ def test_build_case_bundle_missing_file():
         build_case_bundle(missing_pdf)
 
 
-def test_case_bundle_extraction_tool_outputs_valid_json():
-    tool = CaseBundleExtractionTool()
-    output = tool._run(str(FIXTURE_PDF))
-    payload = json.loads(output)
+def test_case_bundle_serializes_to_the_canonical_json_contract():
+    payload = json.loads(json.dumps(build_case_bundle(FIXTURE_PDF).to_dict(), indent=2))
 
     assert payload["pdf_path"].endswith("example_case.pdf")
     assert "blocks" in payload and isinstance(payload["blocks"], list)

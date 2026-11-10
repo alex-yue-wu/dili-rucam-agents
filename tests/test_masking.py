@@ -1,11 +1,13 @@
+import json
+
 from dili_rucam_agents.masking import (
     MASK_TOKEN,
-    ScoreMaskingTool,
     extract_patient_specific_rucam_scores,
     extract_rucam_grade_labels,
     extract_rucam_score_ints,
     is_patient_specific_outcome_line,
     mask_case_bundle_payload,
+    parse_case_bundle_json,
     review_masked_case_bundle,
 )
 
@@ -328,19 +330,25 @@ def test_review_masked_case_bundle_flags_likely_unmasked_mentions():
     assert findings[0]["likely_missed_grades"] == ["Probable"]
 
 
-def test_score_masking_tool_returns_json():
-    tool = ScoreMaskingTool()
-    output = tool._run(
-        '{"pdf_path":"example.pdf","extraction_notes":[],"blocks":[],"normalized_text":"RUCAM score 9","tables":[],"unknowns":[],"quality":{"unstructured_total_score":0,"fallback_pages":[],"fallback_total_score":0}}'
-    )
+_BUNDLE_TEXT = (
+    '{"pdf_path":"example.pdf","extraction_notes":[],"blocks":[],'
+    '"normalized_text":"RUCAM score 9","tables":[],"unknowns":[],'
+    '"quality":{"unstructured_total_score":0,"fallback_pages":[],"fallback_total_score":0}}'
+)
+
+
+def test_parsing_then_masking_a_bundle_payload_returns_masked_json():
+    payload = parse_case_bundle_json(_BUNDLE_TEXT)
+
+    output = json.dumps(mask_case_bundle_payload(payload), indent=2)
 
     assert MASK_TOKEN in output
 
 
-def test_score_masking_tool_accepts_wrapped_json_with_extra_text():
-    tool = ScoreMaskingTool()
-    output = tool._run(
-        'Here is the payload:\n{"pdf_path":"example.pdf","extraction_notes":[],"blocks":[],"normalized_text":"RUCAM score 9","tables":[],"unknowns":[],"quality":{"unstructured_total_score":0,"fallback_pages":[],"fallback_total_score":0}}\nTrailing note'
+def test_parse_case_bundle_json_accepts_wrapped_json_with_extra_text():
+    payload = parse_case_bundle_json(
+        f"Here is the payload:\n{_BUNDLE_TEXT}\nTrailing note"
     )
 
-    assert MASK_TOKEN in output
+    assert payload["pdf_path"] == "example.pdf"
+    assert MASK_TOKEN in json.dumps(mask_case_bundle_payload(payload))
