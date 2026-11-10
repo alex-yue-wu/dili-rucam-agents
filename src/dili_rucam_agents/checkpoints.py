@@ -294,6 +294,11 @@ class AnalystCheckpointStore:
         attempt: int,
         counters: RetryCounters | None,
     ) -> None:
+        # Counter keys may be absent (legacy adoption passes counters=None and
+        # invents none) or carried over from an earlier attempt (record_failure
+        # without counters leaves what a previous call wrote). A consumer must
+        # read them with .get and must not attribute a present value to the
+        # current attempt.
         manifest = self._read_manifest() or self._new_manifest()
         entry = self._entry(manifest, identity.key)
         entry.pop("failure_kind", None)

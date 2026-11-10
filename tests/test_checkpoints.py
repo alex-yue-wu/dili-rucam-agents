@@ -104,9 +104,9 @@ def assessment_json() -> str:
 
 COUNTERS = RetryCounters(
     validation_retries=2,
-    transient_retries=1,
-    truncation_escalations=1,
-    mode_downgrades=1,
+    transient_retries=3,
+    truncation_escalations=5,
+    mode_downgrades=7,
     final_mode=StructuredMode.json_object,
 )
 
@@ -904,9 +904,9 @@ def test_completed_entry_records_the_four_counters(tmp_path: Path):
         "analysts"
     ]["analyst_alpha"]
     assert entry["validation_retries"] == 2
-    assert entry["transient_retries"] == 1
-    assert entry["truncation_escalations"] == 1
-    assert entry["mode_downgrades"] == 1
+    assert entry["transient_retries"] == 3
+    assert entry["truncation_escalations"] == 5
+    assert entry["mode_downgrades"] == 7
     assert entry["final_mode"] == "json_object"
     assert entry["assessment_file"] == "analyst-alpha_assessment.json"
 
@@ -926,7 +926,7 @@ def test_failure_entry_records_the_counters_and_the_new_kinds(tmp_path: Path):
     ]["analyst_alpha"]
     assert entry["failure_kind"] == "truncation"
     assert "cut off" in entry["last_error"]
-    assert (entry["validation_retries"], entry["mode_downgrades"]) == (2, 1)
+    assert (entry["validation_retries"], entry["mode_downgrades"]) == (2, 7)
     assert entry["final_mode"] == "json_object"
 
     store.record_failure(

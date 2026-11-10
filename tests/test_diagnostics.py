@@ -169,7 +169,10 @@ def test_unknown_field_names_never_reach_the_diagnostic():
     issues = _issues(payload)
 
     # Each unknown key collapses onto its nearest allowlisted ancestor.
-    assert set(issues) == {("report", "invalid_value"), ("pre_flight", "invalid_value")}
+    assert set(issues) == {
+        ("report", "unexpected_field"),
+        ("pre_flight", "unexpected_field"),
+    }
     rendered = render_validation_diagnostic(SafeValidationDiagnostic(issues))
     assert SECRET not in repr(issues)
     assert SECRET not in rendered
@@ -206,3 +209,20 @@ def test_duplicate_issues_collapse_and_the_list_is_bounded():
 
 def test_no_errors_still_yields_a_valid_diagnostic():
     assert validation_diagnostic_from_errors([]).issues == (("report", "invalid_report"),)
+
+
+def test_type_and_bound_errors_use_their_precise_codes():
+    payload = _assessment()
+    payload["course"]["rationale"] = 5
+    payload["course"]["evidence"] = [{"quote": "q", "verified": "maybe"}]
+    assert set(_issues(payload)) == {
+        ("course.rationale", "invalid_string"),
+        ("course.evidence.verified", "invalid_boolean"),
+    }
+    for kind in ("less_than", "less_than_equal"):
+        assert validation_diagnostic_from_errors(
+            [{"loc": ("onset_day",), "type": kind}]
+        ).issues == (("onset_day", "number_too_large"),)
+    assert validation_diagnostic_from_errors(
+        [{"loc": ("onset_day",), "type": "some_unmapped_type"}]
+    ).issues == (("onset_day", "invalid_value"),)

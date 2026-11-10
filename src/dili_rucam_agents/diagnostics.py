@@ -151,6 +151,10 @@ _VALIDATION_ISSUE_MESSAGES = {
     "invalid_literal": "{field}: Input is not an allowed value.",
     "score_sum_mismatch": "total_score does not match the seven-item score sum.",
     "category_mismatch": "category does not match total_score.",
+    "number_too_large": "{field}: Number exceeds the allowed maximum.",
+    "invalid_string": "{field}: Input should be a valid string.",
+    "invalid_boolean": "{field}: Input should be a valid boolean.",
+    "unexpected_field": "{field}: Contains a field that is not part of the schema.",
     "invalid_value": "{field}: Value is invalid.",
 }
 
@@ -241,6 +245,12 @@ _ERROR_TYPE_CODES = {
     "literal_error": "invalid_literal",
     "greater_than": "number_too_small",
     "greater_than_equal": "number_too_small",
+    "less_than": "number_too_large",
+    "less_than_equal": "number_too_large",
+    "string_type": "invalid_string",
+    "bool_type": "invalid_boolean",
+    "bool_parsing": "invalid_boolean",
+    "extra_forbidden": "unexpected_field",
 }
 
 
