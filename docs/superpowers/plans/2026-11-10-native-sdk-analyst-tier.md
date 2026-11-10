@@ -186,11 +186,14 @@ git commit -m "feat: call each vendor SDK directly"
 **Files:**
 - Create: `src/dili_rucam_agents/runner.py`
 - Create: `tests/fakes.py`
-- Test: `tests/test_runner.py`
+- Modify: `src/dili_rucam_agents/providers.py` (add `SUPPORTED_MODES` / `starting_mode`)
+- Test: `tests/test_runner.py`, `tests/test_providers.py`
 
 **Interfaces:**
 - Consumes: `CompletionProvider`, `ModelSpec`, `ModelResponse`, `StructuredMode` from Task 2.
-- Produces: `Attempt(number: int, mode: StructuredMode, outcome: str, raw_text: str | None)`; `RunResult(value, attempts, counters: RetryCounters, input_tokens, output_tokens)`; `RetryCounters(validation_retries: int, transient_retries: int, truncation_escalations: int, mode_downgrades: int, final_mode: StructuredMode)`; `RunnerError(kind: FailureKind, attempts: int, counters: RetryCounters, execution_diagnostic, validation_diagnostic)`; `async def run_contract(*, instructions: str, model_class: type[BaseModel], spec: ModelSpec, provider: CompletionProvider, max_retries: int = 2, max_output_ceiling: int = 64000, on_attempt: Callable[[Attempt], None] | None = None, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> RunResult`; `FakeProvider` in `tests/fakes.py`, queueing scripted `ModelResponse` values or exceptions.
+- Produces: `SUPPORTED_MODES: dict[Provider, tuple[StructuredMode, ...]]` and
+  `starting_mode(provider: Provider) -> StructuredMode` in `providers.py`;
+  `Attempt(number: int, mode: StructuredMode, outcome: str, raw_text: str | None)`; `RunResult(value, attempts, counters: RetryCounters, input_tokens, output_tokens)`; `RetryCounters(validation_retries: int, transient_retries: int, truncation_escalations: int, mode_downgrades: int, final_mode: StructuredMode)`; `RunnerError(kind: FailureKind, attempts: int, counters: RetryCounters, execution_diagnostic, validation_diagnostic)`; `async def run_contract(*, instructions: str, model_class: type[BaseModel], spec: ModelSpec, provider: CompletionProvider, max_retries: int = 2, max_output_ceiling: int = 64000, on_attempt: Callable[[Attempt], None] | None = None, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> RunResult`; `FakeProvider` in `tests/fakes.py`, queueing scripted `ModelResponse` values or exceptions.
 
 The correction turn sends the model's own previous reply followed by the correction, so "keep every other value the same" refers to values the model can see.
 
@@ -218,6 +221,18 @@ def test_recurring_format_rejection_in_text_mode_is_terminal():
 def test_401_fails_immediately_with_terminal_kind():
 def test_mode_downgrade_does_not_append_an_attempt():
 def test_schema_is_in_the_prompt_in_every_mode():
+def test_the_ladder_starts_at_the_highest_mode_the_provider_supports():
+    # DeepSeek declares json_object as its highest, so a DeepSeek run starts
+    # there and never spends a call discovering json_schema is unsupported
+    assert starting_mode(Provider.deepseek) is StructuredMode.json_object
+    assert starting_mode(Provider.openai) is StructuredMode.json_schema
+def test_a_mode_never_supported_is_not_counted_as_a_downgrade():
+    # counters.mode_downgrades stays 0 on a clean DeepSeek run, so the counter
+    # keeps measuring real provider refusals
+def test_openrouter_format_refusal_is_a_format_rejection_not_a_terminal_404():
+    # OpenRouter signals "this endpoint cannot honour response_format" with a
+    # 404, which is in TERMINAL_STATUS_CODES; treated as terminal it would kill
+    # the run instead of stepping down the ladder
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -226,6 +241,15 @@ Run: `uv run pytest tests/test_runner.py -v`
 Expected: FAIL with `ModuleNotFoundError: dili_rucam_agents.runner`
 
 - [ ] **Step 3: Implement `runner.py`**
+
+The ladder starts at `starting_mode(spec.provider)`, not unconditionally at
+`json_schema`: a provider that never supported a mode should not cost a call to
+discover that, and should not inflate `mode_downgrades`, which is the counter the
+acceptance gate reads to confirm or kill the OpenRouter routing hypothesis.
+
+`_is_format_rejection` must recognise OpenRouter's format refusal, which arrives
+as a 404 — a status code otherwise in `TERMINAL_STATUS_CODES`. Classifying it as
+terminal would end the run where the ladder should step down.
 
 One `while len(attempts) <= max_retries` loop. A transient error or a mode downgrade `continue`s without appending to `attempts`, which is why `RetryCounters` exists: a counter derived from `attempts` cannot see them. Backoff is `0.5 * 2**transient_used` capped at 4.0 seconds plus jitter, through the injected `sleep`. A status code in `TERMINAL_STATUS_CODES` that is not a format rejection raises immediately.
 
