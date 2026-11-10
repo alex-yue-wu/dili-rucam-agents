@@ -653,6 +653,19 @@ Expected: FAIL
 
 Remove `crewai[anthropic,google-genai,tools]>=1.8.1` and `litellm>=1.52.0` from `pyproject.toml`; add `anthropic>=1.11.0`, `openai>=2.54.0`, `google-genai>=2.28.0`.
 
+Two things can only be done here, once the SDK floors are raised, and both were
+deferred to this task by Task 2's review:
+
+1. Delete `providers._anthropic_schema` in favour of `anthropic.transform_schema`,
+   which does not exist on `anthropic 0.71.1` but does on `>=1.11.0`. Add a test
+   asserting the two agree on a representative schema before removing the local
+   one. The local transform was written only because the symbol was unavailable.
+2. Re-verify every `google_request` kwarg against `google-genai>=2.28.0`.
+   Task 2's facts were checked against the installed `1.49.0`, where
+   `HttpOptions.timeout` is in milliseconds and `HttpRetryOptions(attempts=...)`
+   exists; both may differ across the major bump, and neither is exercised by a
+   test because neither runs without a live call.
+
 Add `COPY config /app/config` to the `Dockerfile` beside the existing `COPY dilirank_v2 /app/dilirank_v2`. `DEFAULT_ROSTER_PATH` resolves relative to the source tree, exactly as `default_dilirank_path()` does, so without this a container run with no `--analysts` cannot find the default roster. Commit 70c572c is the same bug for the DILIrank workbook.
 
 - [ ] **Step 4: Verify removal and run the whole suite**
