@@ -25,6 +25,7 @@ from dili_rucam_agents.hepatotoxicity.settings import (
     apply_hepatotoxicity_evidence,
 )
 from dili_rucam_agents.ingestion.build_bundle import build_case_bundle
+from dili_rucam_agents.runner import validate_max_restarts
 from dili_rucam_agents.masking import mask_case_bundle_payload
 from dili_rucam_agents.validators.analyst_report import (
     AnalystReportValidationError,
@@ -174,16 +175,6 @@ class AnalystExecutionError(RuntimeError):
             f"{analyst_key} failed after {attempts} attempts "
             f"({self.failure_kind}): {self.last_error}"
         )
-
-
-def validate_max_restarts(max_restarts: int) -> int:
-    if (
-        isinstance(max_restarts, bool)
-        or not isinstance(max_restarts, int)
-        or not 0 <= max_restarts <= 2
-    ):
-        raise ValueError("max_restarts must be an integer from 0 through 2")
-    return max_restarts
 
 
 def build_crew(

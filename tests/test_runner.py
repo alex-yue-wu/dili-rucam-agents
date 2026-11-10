@@ -15,7 +15,12 @@ from dili_rucam_agents.providers import (
     starting_mode,
 )
 from dili_rucam_agents.roster import Provider
-from dili_rucam_agents.runner import RetryCounters, RunnerError, run_contract
+from dili_rucam_agents.runner import (
+    RetryCounters,
+    RunnerError,
+    run_contract,
+    validate_max_restarts,
+)
 from fakes import FakeProvider, StatusError
 
 
@@ -335,3 +340,14 @@ def test_runner_module_imports_no_vendor_sdk():
     source = Path(runner_module.__file__).read_text()
     for sdk in ("openai", "anthropic", "google.genai", "crewai", "litellm"):
         assert f"import {sdk}" not in source and f"from {sdk}" not in source
+
+
+@pytest.mark.parametrize("value", (1.5, -1, 3, True, "2", None))
+def test_validate_max_restarts_rejects_anything_but_zero_one_or_two(value):
+    with pytest.raises(ValueError, match="integer from 0 through 2"):
+        validate_max_restarts(value)
+
+
+@pytest.mark.parametrize("value", (0, 1, 2))
+def test_validate_max_restarts_returns_a_legal_budget_unchanged(value):
+    assert validate_max_restarts(value) == value

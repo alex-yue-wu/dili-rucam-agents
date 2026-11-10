@@ -13,7 +13,8 @@ from openpyxl import Workbook
 
 from dili_rucam_agents.crew.agents import resolve_rucam_model
 from dili_rucam_agents.crew.config import get_enabled_analyst_configs
-from dili_rucam_agents.crew.crew import AnalystExecutionError, validate_max_restarts
+from dili_rucam_agents.crew.crew import AnalystExecutionError
+from dili_rucam_agents.runner import validate_max_restarts
 from dili_rucam_agents.diagnostics import (
     SafeValidationDiagnostic,
     format_execution_error,

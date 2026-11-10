@@ -18,7 +18,7 @@ from dili_rucam_agents.batch import (
     _run_pdf_analysis,
 )
 from dili_rucam_agents.crew.agents import resolve_ground_truth_score_finder_model
-from dili_rucam_agents.crew.crew import validate_max_restarts
+from dili_rucam_agents.runner import validate_max_restarts
 
 
 RESUME_HINT = (

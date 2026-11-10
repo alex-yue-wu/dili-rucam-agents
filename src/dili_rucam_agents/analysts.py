@@ -42,7 +42,13 @@ from dili_rucam_agents.providers import (
 )
 from dili_rucam_agents.rendering import render_report
 from dili_rucam_agents.roster import AnalystConfig, AnalystRoster
-from dili_rucam_agents.runner import Attempt, RetryCounters, RunnerError, run_contract
+from dili_rucam_agents.runner import (
+    Attempt,
+    RetryCounters,
+    RunnerError,
+    run_contract,
+    validate_max_restarts,
+)
 from dili_rucam_agents.validators.analyst_report import (
     AnalystReportValidationError,
     validate_analyst_report,
@@ -145,7 +151,8 @@ def run_analysts(
     are built here.
     """
 
-    # Before any call, so a missing key costs nothing.
+    # Both before any call, so a bad budget or a missing key costs nothing.
+    max_retries = validate_max_restarts(max_retries)
     require_api_keys({config.provider for config in roster.analysts})
 
     outcome = AnalystRunOutcome()

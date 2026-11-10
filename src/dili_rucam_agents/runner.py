@@ -206,6 +206,23 @@ def _validation_diagnostic(exc: ValidationError | ValueError) -> SafeValidationD
     return SafeValidationDiagnostic((("report", "invalid_report"),))
 
 
+def validate_max_restarts(max_restarts: int) -> int:
+    """Bound a caller-supplied restart budget to 0, 1 or 2.
+
+    Lives here rather than on a call site because every caller shares it: the
+    two CLIs, the batch and reproducibility drivers, and ``run_analysts``. An
+    unbounded negative budget reaches ``run_contract``'s loop as "no attempt at
+    all", which raises a validation error carrying no diagnostic.
+    """
+    if (
+        isinstance(max_restarts, bool)
+        or not isinstance(max_restarts, int)
+        or not 0 <= max_restarts <= 2
+    ):
+        raise ValueError("max_restarts must be an integer from 0 through 2")
+    return max_restarts
+
+
 async def run_contract(
     *,
     instructions: str,
@@ -352,4 +369,5 @@ __all__ = [
     "RunResult",
     "RunnerError",
     "run_contract",
+    "validate_max_restarts",
 ]

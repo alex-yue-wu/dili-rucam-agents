@@ -8,11 +8,8 @@ from typing import Optional
 
 from dili_rucam_agents.crew.config import get_enabled_analyst_configs
 from dili_rucam_agents.crew.agents import resolve_rucam_model
-from dili_rucam_agents.crew.crew import (
-    AnalystAttemptEvent,
-    run_crew,
-    validate_max_restarts,
-)
+from dili_rucam_agents.crew.crew import AnalystAttemptEvent, run_crew
+from dili_rucam_agents.runner import validate_max_restarts
 from dili_rucam_agents.crew.tasks import (
     AnalystInstructionContract,
     build_analyst_instruction_contract,
