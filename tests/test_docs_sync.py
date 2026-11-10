@@ -48,6 +48,25 @@ def test_agents_md_describes_the_roster():
         assert f"`{provider}`" in AGENTS, provider
 
 
+def test_repository_layout_names_the_analyst_tier():
+    """Section 2 is normative, so an unlisted module is described by omission."""
+    layout = AGENTS.split("### Repository Layout", 1)[1].split("```")[1]
+    for module in (
+        "roster.py",
+        "providers.py",
+        "runner.py",
+        "contracts.py",
+        "analysts.py",
+        "rendering.py",
+        "ground_truth.py",
+        "checkpoints.py",
+        "diagnostics.py",
+    ):
+        assert (ROOT / "src" / "dili_rucam_agents" / module).exists(), module
+        assert module in layout, module
+    assert "crew/" not in layout
+
+
 def test_definition_of_done_is_in_terms_of_the_roster():
     done = AGENTS.split("## 9. Definition Of Done", 1)[1]
     assert "declared roster" in done

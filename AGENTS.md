@@ -56,6 +56,15 @@ src/dili_rucam_agents/
   pipeline.py
   prompts/
   validators/
+  roster.py          who scores, on which vendor, and with what budget
+  providers.py       one vendor SDK call each; the CompletionProvider protocol
+  runner.py          render, call, parse, validate, retry; the four budgets
+  contracts.py       the instruction contract an analyst is sent, and its hash
+  analysts.py        run every roster analyst over one case bundle
+  rendering.py       Sections A, B and C, written from the returned object
+  ground_truth.py    the published RUCAM score, read in one free-text call
+  checkpoints.py     the resume manifest, its fingerprints and its counters
+  diagnostics.py     the safe-diagnostic boundary: no provider text escapes
 tests/
 README.md
 AGENTS.md
