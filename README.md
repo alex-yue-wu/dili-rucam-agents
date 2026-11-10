@@ -521,6 +521,16 @@ uv run python scripts/run_batch.py --analysts config/analysts.study.json --repro
 Read the same four counter columns. The gate passes at fewer than 5 validation
 retries across the 70 analyst runs, with none above 1 in any single run.
 
+Two things about those numbers. They are **cumulative across invocations**, so if
+a repeat fails and you re-run the command to resume it, the retries the failed
+invocation spent are still counted — which is the point, since those are the runs
+the gate most needs to see. For a repeat that completes in one sitting the number
+is identical to a non-cumulative one, so the bar is read against the same
+quantity it was set against. And `--force-rerun` does **not** reset them: it
+re-scores into the same manifest, adding to the totals of the run it is
+discarding. Point a forced repeat at a fresh output directory if you want its
+numbers to be its own.
+
 ## Baseline shift in `masked_rucam_score`
 
 The ground-truth prompt interpolates the configured model's name. The former code

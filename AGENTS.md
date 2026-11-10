@@ -182,8 +182,8 @@ written before that version is invalidated.
 Four budgets are separate and are never pooled:
 
 - validation retries, for a reply that parsed but broke the schema (default 2);
-- transient transport retries, for provider errors worth retrying (3, with
-  backoff);
+- transient transport retries, for provider errors worth retrying (4, with
+  backoff of 0.5/1/2/4 seconds plus jitter, reset by any successful call);
 - one truncation escalation, which widens the output budget up to a ceiling of
   64000;
 - structured-output mode downgrades along a `json_schema` -> `json_object` ->
@@ -192,6 +192,10 @@ Four budgets are separate and are never pooled:
 
 The manifest records `validation_retries`, `transient_retries`,
 `truncation_escalations` and `mode_downgrades` per analyst, plus the final mode.
+The four counts are **cumulative across invocations**: a resumed run adds its
+spend to what the earlier invocation recorded, so a retry an analyst spent before
+a failure is not erased by the resume that the failure message recommends. Each
+failed invocation's own block is also kept in that analyst's `attempt_history`.
 
 ## 7. Required Output Format
 
