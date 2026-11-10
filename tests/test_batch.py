@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -2186,7 +2187,7 @@ def test_both_clis_load_dotenv_before_doing_any_work(tmp_path: Path, monkeypatch
 
     order: list[str] = []
     monkeypatch.setattr(
-        "dili_rucam_agents.batch.load_dotenv", lambda: order.append("dotenv")
+        "dili_rucam_agents.batch.load_dotenv", lambda _path: order.append("dotenv")
     )
     monkeypatch.setattr(
         "dili_rucam_agents.batch.run_batch_folder",
@@ -2197,7 +2198,7 @@ def test_both_clis_load_dotenv_before_doing_any_work(tmp_path: Path, monkeypatch
 
     order.clear()
     monkeypatch.setattr(
-        pipeline_module, "load_dotenv", lambda: order.append("dotenv")
+        pipeline_module, "load_dotenv", lambda _path: order.append("dotenv")
     )
     monkeypatch.setattr(
         pipeline_module,
@@ -2207,6 +2208,24 @@ def test_both_clis_load_dotenv_before_doing_any_work(tmp_path: Path, monkeypatch
     monkeypatch.setattr(sys, "argv", ["pipeline", "case.pdf"])
     pipeline_module._main()
     assert order == ["dotenv", "run"]
+
+
+def test_the_clis_look_for_dotenv_from_the_invocation_directory(
+    tmp_path: Path, monkeypatch
+):
+    """Not from this package's own directory, which is where the default looks."""
+
+    (tmp_path / ".env").write_text("DILI_PROBE_VAR=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DILI_PROBE_VAR", raising=False)
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_batch_folder",
+        lambda **kwargs: Path("batch_summary.xlsx"),
+    )
+
+    batch_main([str(tmp_path / "input"), str(tmp_path / "output")])
+
+    assert os.environ["DILI_PROBE_VAR"] == "from-dotenv"
 
 
 def test_a_failed_analysts_retry_counters_reach_the_manifest(tmp_path, monkeypatch):

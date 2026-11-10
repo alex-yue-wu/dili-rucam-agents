@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from dili_rucam_agents.analysts import AnalystAttemptEvent, run_analysts
 from dili_rucam_agents.checkpoints import (
@@ -423,12 +423,16 @@ def _prepare_case_bundle_json(
 
 
 def _main() -> None:
-    # Keys may live in a .env file: importing crewai used to load one as a side
-    # effect, and python-dotenv is a declared dependency, so a run started from
-    # the command line still reads it. Called here rather than at import time,
-    # so a library caller keeps control of its own environment. Values already
-    # exported win, which is load_dotenv's default.
-    load_dotenv()
+    # Keys may live in a .env file: the agent framework this tier replaced
+    # loaded one as an import side effect, and python-dotenv is a declared
+    # dependency, so a run started from the command line still reads it.
+    # Called here rather than at import time, so a library caller keeps control
+    # of its own environment. Values already exported win, which is
+    # load_dotenv's default. usecwd searches upward from the directory the
+    # command was run in, rather than from this file, so the .env a user sees
+    # beside their work is the one that is read; find_dotenv returns "" when
+    # there is none and load_dotenv("") is a no-op.
+    load_dotenv(find_dotenv(usecwd=True))
     parser = argparse.ArgumentParser(
         description="Score a clinical case report PDF with the declared analyst roster."
     )
