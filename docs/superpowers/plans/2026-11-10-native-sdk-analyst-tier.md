@@ -209,7 +209,8 @@ def test_validation_retry_sends_back_the_previous_reply_then_the_correction():
 def test_exhausted_validation_budget_raises_validation_kind():
 def test_transient_error_does_not_consume_a_validation_attempt():
     # 429 then a valid reply -> counters.validation_retries == 0, len(attempts) == 1
-def test_three_transient_errors_raise_execution_kind():
+def test_a_fourth_consecutive_transient_error_raises_execution_kind():
+    # the budget is 3 retries, so three errors still recover; the fourth fails
 def test_transient_backoff_grows_and_is_jittered(recorded_sleeps):
 def test_truncated_reply_doubles_max_output_tokens_once():
 def test_second_truncation_raises_truncation_kind():
@@ -487,6 +488,10 @@ git commit -m "feat: build one instruction contract per analyst"
 ```python
 def test_failure_kind_accepts_truncation_and_terminal():
 def test_validation_field_paths_cover_the_assessment_schema():
+def test_runner_validation_diagnostic_carries_assessment_field_paths():
+    # until the allowlist admits them the runner can only emit
+    # ("report", "invalid_value"); widening the frozenset alone does not make
+    # the diagnostic precise, so the pydantic-error-to-path mapping lands here
 def test_schema_version_is_four():
 def test_a_manifest_at_version_three_is_discarded():
 def test_completed_entry_records_the_four_counters():
@@ -504,7 +509,7 @@ Expected: FAIL on the new assertions
 
 - [ ] **Step 3: Implement the changes**
 
-`_VALIDATION_FIELD_PATHS` is a closed frozenset that raises on an unknown path, so every new assessment path is added to it. `enabled_analysts` stays in the manifest and out of the fingerprint: adding or removing an analyst must not invalidate the others.
+`_VALIDATION_FIELD_PATHS` is a closed frozenset that raises on an unknown path, so every new assessment path is added to it. Widening it is necessary but not sufficient: `runner.run_contract` currently emits a generic `("report", "invalid_value")` because no finer path was admissible, so this task also maps pydantic error locations to those paths. Without it the four retry counters record *that* a validation retry happened but never which field caused it, which is most of their diagnostic value. `enabled_analysts` stays in the manifest and out of the fingerprint: adding or removing an analyst must not invalidate the others.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
