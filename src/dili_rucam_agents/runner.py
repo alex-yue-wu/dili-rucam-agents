@@ -45,7 +45,7 @@ from dili_rucam_agents.providers import (
 #: Status codes where retrying cannot help: bad key, bad model, bad request.
 TERMINAL_STATUS_CODES: frozenset[int] = frozenset({400, 401, 403, 404, 422})
 
-#: Transient provider errors retried before giving up; the next one raises.
+#: Consecutive transient errors retried before giving up; the next one raises.
 _MAX_TRANSIENT_RETRIES = 3
 _TRUNCATION_MULTIPLIER = 2
 
@@ -54,7 +54,15 @@ _BACKOFF_CAP_SECONDS = 4.0
 _BACKOFF_JITTER = 0.1
 
 #: Phrases an endpoint uses to say it cannot honour a structured-output request.
-_FORMAT_MARKERS = ("response_format", "requested parameters", "json_schema")
+_FORMAT_MARKERS = (
+    "response_format",
+    "requested parameters",
+    "json_schema",
+    "response_schema",
+    "input_schema",
+    "response_mime_type",
+    "structured output",
+)
 
 
 @dataclass(frozen=True)
@@ -129,16 +137,14 @@ def _error_text(exc: BaseException) -> str:
 def _is_format_rejection(exc: BaseException) -> bool:
     """Did the provider reject the structured-output request specifically?
 
-    A 400 counts whatever it says: the next mode drops only that request, so a
-    400 with another cause recurs on the last mode and is terminal there.
-    OpenRouter instead answers 404 (sometimes 422) when no endpoint can honour
-    ``response_format``; that needs the message too, because a 404 for a wrong
-    model id ("No endpoints found for <model>") must stay terminal.
+    Every status needs a marker in the message: a 400 for another cause (a
+    context length, say) would only recur on every lower mode. OpenRouter
+    answers 404 (sometimes 422) when no endpoint can honour ``response_format``,
+    and a 404 for a wrong model id ("No endpoints found for <model>") must stay
+    terminal.
     """
     status = _status_code(exc)
-    if status == 400:
-        return True
-    if status in (404, 422, None):
+    if status in (400, 404, 422, None):
         text = _error_text(exc)
         return any(marker in text for marker in _FORMAT_MARKERS)
     return False
@@ -287,13 +293,14 @@ async def run_contract(
             transient_retries += 1
             continue
 
+        transient_errors = 0  # the stall, if there was one, is over
         if response.input_tokens is not None:
             input_tokens = (input_tokens or 0) + response.input_tokens
         if response.output_tokens is not None:
             output_tokens = (output_tokens or 0) + response.output_tokens
 
         if response.truncated:
-            record(Attempt(number, mode, "truncated"), keep=False)
+            record(Attempt(number, mode, "truncated", response.text), keep=False)
             if truncation_escalations >= 1 or current_spec.max_output_tokens >= max_output_ceiling:
                 # Already widened, or nowhere left to widen: another call would
                 # spend as much and end the same way.

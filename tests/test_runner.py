@@ -142,6 +142,39 @@ def test_three_transient_errors_are_each_retried_and_the_run_succeeds(sleeps):
     assert len(sleeps.recorded) == 3
 
 
+def test_the_transient_budget_is_per_stall_not_per_run(sleeps):
+    err = StatusError
+    fake = FakeProvider(err(429), err(429), err(429), BAD, err(429), err(429), err(429), GOOD)
+    result = run(fake, sleeps)
+    assert result.counters.transient_retries == 6
+    assert result.counters.validation_retries == 1
+
+
+def test_a_400_that_is_not_about_the_format_is_terminal_without_a_downgrade(sleeps):
+    fake = FakeProvider(StatusError(400, "maximum context length exceeded"), GOOD)
+    error = run_error(fake, sleeps)
+    assert error.kind == "terminal"
+    assert error.counters.mode_downgrades == 0
+    assert len(fake.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["tools.0.input_schema: too many optional parameters", "bad response_schema",
+     "unsupported response_mime_type", "structured output is not supported"],
+)
+def test_vendor_spellings_of_a_format_refusal_step_down(sleeps, message):
+    result = run(FakeProvider(StatusError(400, message), GOOD), sleeps)
+    assert result.counters.mode_downgrades == 1
+
+
+def test_a_truncated_reply_keeps_its_partial_text_in_the_attempt(sleeps):
+    seen = []
+    truncated = ModelResponse(text='{"score": 3, "lab', truncated=True)
+    run_error(FakeProvider(truncated, truncated), sleeps, on_attempt=seen.append)
+    assert [(a.outcome, a.raw_text) for a in seen] == [("truncated", truncated.text)] * 2
+
+
 def test_transient_backoff_grows_and_is_jittered(sleeps, monkeypatch):
     jitter_args = []
 
