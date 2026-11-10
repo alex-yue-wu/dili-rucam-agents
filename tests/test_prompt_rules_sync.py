@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import get_args
 
 from dili_rucam_agents.crew.tasks import (
     DEFAULT_RUCAM_INFERRING_PROMPT_PATH,
@@ -19,6 +20,8 @@ from dili_rucam_agents.crew.tasks import (
 from dili_rucam_agents.hepatotoxicity.dailymed import DAILYMED_SECTION_SCORES
 from dili_rucam_agents.hepatotoxicity.dilirank import DILIRANK_CONCERN_SCORES
 from dili_rucam_agents.validators.rucam_assessment import (
+    CauseStatus,
+    DataStatus,
     EvidenceRef,
     ItemFiveCauses,
     ItemScore,
@@ -26,7 +29,7 @@ from dili_rucam_agents.validators.rucam_assessment import (
     RRatioBasis,
     RucamAssessment,
 )
-from dili_rucam_agents.validators.rucam_json import ITEM_LEGAL_SCORES
+from dili_rucam_agents.validators.rucam_json import ITEM_LEGAL_SCORES, InjuryPattern
 
 RULES_VERSION = "RUCAM_DananBenichou1993_modified_sheet_v3"
 # A tag is retired, never reused: a score still carries the rules that produced
@@ -111,6 +114,22 @@ def test_section_c_template_matches_the_assessment_schema():
         template = _requested_object(text)
 
         assert set(template) == set(RucamAssessment.model_fields), name
+        # Enumerated placeholders must list exactly the values the schema accepts.
+        def options(value: str) -> set[str]:
+            return {part.strip() for part in value.split("|")}
+
+        assert options(template["injury_pattern"]) == set(
+            get_args(InjuryPattern)
+        ), name
+        for field, status in template["item_5_causes"].items():
+            if field != "g1":
+                assert options(status) == {s.value for s in CauseStatus}, name
+        for item in ITEM_LEGAL_SCORES:
+            assert options(template[item]["data_status"]) == {
+                s.value for s in DataStatus
+            }, name
+        # ALP of 0 is rejected by the schema, so the placeholder must not be 0.
+        assert template["r_ratio_basis"]["alp"] > 0, name
         assert set(template["pre_flight"]) == set(PreFlight.model_fields), name
         assert set(template["item_5_causes"]) == set(ItemFiveCauses.model_fields), name
         assert set(template["r_ratio_basis"]) == set(RRatioBasis.model_fields), name
@@ -138,6 +157,20 @@ def test_prompts_no_longer_ask_for_a_total_or_a_category():
         assert "## SECTION B" not in region, name
         assert "## SECTION C" not in region, name
         assert "Produce **three sections**" not in region, name
+        # The core still says the contract needs three sections; this sentence is
+        # the only thing that supersedes it, so its absence must fail loudly.
+        assert (
+            "This section is the whole output contract. It supersedes every "
+            "instruction above\nabout how to emit the report, including any "
+            "statement that the contract requires\nthree sections: emit no "
+            "headings, no table and no `notes` array."
+        ) in region, name
+        for bridge in (
+            'Wherever the rules above say "SECTION A"',
+            "put it in the `inference_note` of the item concerned",
+            'they say "SECTION B" or "SECTION C"',
+        ):
+            assert bridge in region, f"{name} lost the mapping clause {bridge!r}"
 
 
 def test_pre_flight_check_covers_the_item_6_source():
@@ -152,7 +185,7 @@ def test_pre_flight_check_covers_the_item_6_source():
         numbered = re.findall(
             r"^(\d+)\. ", text.split("## 4. Pre-flight check", 1)[1], re.MULTILINE
         )
-        assert numbered[:11] == [str(n) for n in range(1, 12)], name
+        assert numbered == [str(n) for n in range(1, 12)], name
 
 
 def test_every_scoring_item_declares_its_allowed_values():

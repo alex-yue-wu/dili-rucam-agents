@@ -771,6 +771,10 @@ total that does not equal the sum of the seven items.
 
 # OUTPUT FORMAT (STRICT)
 
+This section is the whole output contract. It supersedes every instruction above
+about how to emit the report, including any statement that the contract requires
+three sections: emit no headings, no table and no `notes` array.
+
 Return **one JSON object and nothing else**: no prose before or after it, no
 markdown headings and no code fence. Your reasoning belongs in the fields below.
 The report a reader sees is written from this object by code.
@@ -802,7 +806,7 @@ allowed values of an enumerated field: write one of them.
   "r_ratio": 0.0,
   "r_ratio_basis": {
     "alt": 0.0,
-    "alp": 0.0,
+    "alp": 1.0,
     "alt_uln": 0.0,
     "alp_uln": 0.0
   },
@@ -852,7 +856,7 @@ allowed values of an enumerated field: write one of them.
   they are not documented; the two ULNs are always numbers.
 - `onset_day` is the integer `N` of `onset_day = N`, numbered from 1, or `null`
   when no onset can be dated. `onset_anchor_dose` names the dose it is counted
-  from.
+  from, and is `Not reported` when no onset can be dated.
 - `pre_flight` holds one answer per numbered line of step 4: `suspect_drug` (1),
   `onset` (2), `r_ratio_pattern` (3), `course_basis` (4), `g1_count` (5),
   `item_6_source` (6), `scores_in_legal_sets` (7), `total_sum` (8),
