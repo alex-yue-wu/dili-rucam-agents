@@ -423,6 +423,18 @@ Expected: FAIL on the four rewritten/new tests
 
 - [ ] **Step 3: Edit the two prompts' output regions**
 
+Also fix a pre-existing inconsistency Task 4's review surfaced: the workflow
+section says "answer all eleven lines" (line 748) while the output-format
+section says "The ten-line pre-flight check" (line 784). Both are outside the
+frozen core, which ends at line 613, so both are in scope here. Eleven is
+correct — the schema carries eleven named pre-flight fields.
+
+Leave the pre-flight's own wording otherwise alone, including the lines telling
+the model to show the addition and to check the category against the total.
+Code now recomputes both and does not read the model's answers, but those lines
+are forced-reasoning scaffold whose answers the schema captures as pre-flight
+fields, and rewording them is a prompt change that could move scores.
+
 - [ ] **Step 4: Run the whole sync file to verify the frozen region is untouched**
 
 Run: `uv run pytest tests/test_prompt_rules_sync.py -v && git diff -U0 -- src/dili_rucam_agents/prompts/ | grep -c 'SHARED RUCAM CORE'`
