@@ -593,7 +593,7 @@ git commit -m "feat: find the published score without CrewAI"
 - Modify: `src/dili_rucam_agents/batch.py` (`run_batch_folder`, `_run_pdf_analysis`, `_get_resolved_analyst_configs`, `_main` argparse)
 - Modify: `src/dili_rucam_agents/reproducibility.py` (`run_reproducibility_folder`)
 - Modify: `src/dili_rucam_agents/masking.py:8` and `src/dili_rucam_agents/ingestion/build_bundle.py:7` (drop the `crewai.tools.BaseTool` subclasses `ScoreMaskingTool` and `CaseBundleExtractionTool`; the pipeline calls the functions directly)
-- Modify: `scripts/run_batch.py`, `pyproject.toml`
+- Modify: `scripts/run_batch.py`, `pyproject.toml`, `Dockerfile`
 - Delete: `src/dili_rucam_agents/crew/` (all four modules), `src/dili_rucam_agents/litellm_runtime.py`, `tests/test_crew_topology.py`, `tests/test_agents.py`
 - Modify: `tests/test_batch.py` (35 `use_analyst_*` sites), `tests/test_reproducibility.py` (5 sites), `tests/test_masking.py`, `tests/test_ingestion.py`
 - Test: `tests/test_batch.py`, `tests/test_reproducibility.py`
@@ -628,6 +628,8 @@ Expected: FAIL
 - [ ] **Step 3: Thread `roster_path` through and delete the CrewAI surface**
 
 Remove `crewai[anthropic,google-genai,tools]>=1.8.1` and `litellm>=1.52.0` from `pyproject.toml`; add `anthropic>=1.11.0`, `openai>=2.54.0`, `google-genai>=2.28.0`.
+
+Add `COPY config /app/config` to the `Dockerfile` beside the existing `COPY dilirank_v2 /app/dilirank_v2`. `DEFAULT_ROSTER_PATH` resolves relative to the source tree, exactly as `default_dilirank_path()` does, so without this a container run with no `--analysts` cannot find the default roster. Commit 70c572c is the same bug for the DILIrank workbook.
 
 - [ ] **Step 4: Verify removal and run the whole suite**
 
