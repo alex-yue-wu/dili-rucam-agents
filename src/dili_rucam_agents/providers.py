@@ -61,6 +61,23 @@ class StructuredMode(StrEnum):
     text = "text"
 
 
+#: Modes each provider can honour, highest first. DeepSeek has no native
+#: ``json_schema``; a run that began there would spend a call learning so, and
+#: log a downgrade that is really a property of the provider.
+SUPPORTED_MODES: dict[Provider, tuple[StructuredMode, ...]] = {
+    Provider.openai: tuple(StructuredMode),
+    Provider.anthropic: tuple(StructuredMode),
+    Provider.google: tuple(StructuredMode),
+    Provider.openrouter: tuple(StructuredMode),
+    Provider.deepseek: (StructuredMode.json_object, StructuredMode.text),
+}
+
+
+def starting_mode(provider: Provider) -> StructuredMode:
+    """The highest structured-output mode ``provider`` supports."""
+    return SUPPORTED_MODES[provider][0]
+
+
 class ModelSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

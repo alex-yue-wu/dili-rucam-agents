@@ -425,3 +425,20 @@ def test_google_client_is_built_with_no_sdk_retries(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     _complete(SdkProvider(), spec(Provider.google, "gemini-3.1-pro-preview"))
     assert captured["http_options"].retry_options.attempts == 1
+
+
+def test_every_provider_declares_modes_highest_first_and_ending_in_text():
+    from dili_rucam_agents.providers import SUPPORTED_MODES, starting_mode
+
+    assert set(SUPPORTED_MODES) == set(Provider)
+    for provider, modes in SUPPORTED_MODES.items():
+        assert modes[-1] is StructuredMode.text
+        assert list(modes) == sorted(modes, key=list(StructuredMode).index)
+        assert starting_mode(provider) is modes[0]
+
+
+def test_only_deepseek_lacks_native_json_schema():
+    from dili_rucam_agents.providers import SUPPORTED_MODES
+
+    lacking = {p for p, m in SUPPORTED_MODES.items() if StructuredMode.json_schema not in m}
+    assert lacking == {Provider.deepseek}
