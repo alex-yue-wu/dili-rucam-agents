@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from dili_rucam_agents.checkpoints import atomic_write_text
 from dili_rucam_agents.contracts import (
@@ -142,10 +143,11 @@ def run_analysts(
     ``on_report(key, report_text, assessment)`` fires as each analyst finishes,
     so a caller can persist it before the next one starts. When ``output_dir``
     is given, each rejected reply is kept under ``attempts/`` as
-    ``<key>.<n>.invalid.json`` (a JSON object parsed but broke the schema) or
-    ``.invalid.txt`` (nothing parsed). The first failure raises
-    ``AnalystExecutionError``; analysts already finished stay with the caller
-    through ``on_report`` and ``AnalystExecutionError.outcome``.
+    ``<key>.<n>.<uid>.invalid.json`` (a JSON object parsed but broke the schema)
+    or ``.invalid.txt`` (nothing parsed); the unique id makes the name survive a
+    later invocation, whose attempt numbers start again at 1. The first failure
+    raises ``AnalystExecutionError``; analysts already finished stay with the
+    caller through ``on_report`` and ``AnalystExecutionError.outcome``.
     ``instruction_contracts`` supplies the contract sent for a key (so a caller
     that fingerprints the contract sends the very one it hashed); the others
     are built here.
@@ -346,9 +348,16 @@ async def _run_one(
 def _persist_invalid_attempt(
     output_dir: Path, key: str, number: int | str, raw: str, *, force_text: bool = False
 ) -> None:
-    """Keep a rejected reply: as JSON when an object parsed, as text otherwise."""
+    """Keep a rejected reply: as JSON when an object parsed, as text otherwise.
+
+    The stem carries a short unique id because the attempt number restarts at 1
+    inside every fresh run, and ``atomic_write_text`` replaces its destination:
+    without it, a resumed invocation's first rejected reply would overwrite the
+    first invocation's and the evidence of the failure that forced the resume
+    would be gone.
+    """
     parsed = None if force_text else _parse_object(raw)
-    stem = output_dir / "attempts" / f"{key}.{number}.invalid"
+    stem = output_dir / "attempts" / f"{key}.{number}.{uuid4().hex[:8]}.invalid"
     if parsed is not None:
         atomic_write_text(
             stem.with_name(stem.name + ".json"),

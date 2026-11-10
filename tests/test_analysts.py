@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -239,6 +240,14 @@ def test_api_keys_are_checked_before_any_call(monkeypatch):
     assert provider.calls == []
 
 
+def _attempt_stems(directory: Path) -> list[str]:
+    """Attempt filenames with the unique id replaced by ``<uid>``."""
+    return sorted(
+        re.sub(r"\.[0-9a-f]{8}\.invalid\.", ".<uid>.invalid.", path.name)
+        for path in directory.iterdir()
+    )
+
+
 def test_rejected_attempts_persist_as_invalid_artifacts(tmp_path: Path):
     parsed_but_wrong = '{"nonsense": 1}'
     unparseable = "I could not produce JSON, sorry"
@@ -246,16 +255,14 @@ def test_rejected_attempts_persist_as_invalid_artifacts(tmp_path: Path):
     outcome = _run(provider, output_dir=tmp_path)
 
     attempts = tmp_path / "attempts"
-    as_json = attempts / "analyst_0.1.invalid.json"
-    as_text = attempts / "analyst_0.2.invalid.txt"
+    assert _attempt_stems(attempts) == [
+        "analyst_0.1.<uid>.invalid.json",
+        "analyst_0.2.<uid>.invalid.txt",
+    ]
+    (as_json,) = attempts.glob("analyst_0.1.*.invalid.json")
+    (as_text,) = attempts.glob("analyst_0.2.*.invalid.txt")
     assert json.loads(as_json.read_text()) == {"nonsense": 1}
     assert as_text.read_text() == unparseable
-    assert not (attempts / "analyst_0.1.invalid.txt").exists()
-    assert not (attempts / "analyst_0.2.invalid.json").exists()
-    assert sorted(p.name for p in attempts.iterdir()) == [
-        "analyst_0.1.invalid.json",
-        "analyst_0.2.invalid.txt",
-    ]
     assert outcome.counters["analyst_0"].validation_retries == 2
 
 
@@ -269,14 +276,35 @@ def test_truncated_text_persists_without_colliding_with_a_validation_failure(tmp
     provider = FakeProvider(cut, '{"nonsense": 1}', _reply())
     _run(provider, output_dir=tmp_path)
 
-    names = sorted(p.name for p in (tmp_path / "attempts").iterdir())
+    attempts = tmp_path / "attempts"
     # Both are runner attempt 1: the truncation did not advance the number.
-    assert names == [
-        "analyst_0.1.invalid.json",
-        "analyst_0.1.truncated1.invalid.txt",
+    assert _attempt_stems(attempts) == [
+        "analyst_0.1.<uid>.invalid.json",
+        "analyst_0.1.truncated1.<uid>.invalid.txt",
     ]
-    assert (tmp_path / "attempts" / "analyst_0.1.truncated1.invalid.txt").read_text() == cut.text
-    assert json.loads((tmp_path / "attempts" / "analyst_0.1.invalid.json").read_text()) == {"nonsense": 1}
+    (truncated,) = attempts.glob("analyst_0.1.truncated1.*.invalid.txt")
+    (rejected,) = attempts.glob("analyst_0.1.*.invalid.json")
+    assert truncated.read_text() == cut.text
+    assert json.loads(rejected.read_text()) == {"nonsense": 1}
+
+
+def test_a_second_invocation_does_not_overwrite_the_first_rejected_reply(
+    tmp_path: Path,
+):
+    """The attempt number restarts at 1, so the name must not be the only key."""
+    for marker in ("first", "second"):
+        with pytest.raises(AnalystExecutionError):
+            _run(
+                FakeProvider(json.dumps({"rejected": marker})),
+                output_dir=tmp_path,
+                max_retries=0,
+            )
+
+    attempts = tmp_path / "attempts"
+    assert _attempt_stems(attempts) == ["analyst_0.1.<uid>.invalid.json"] * 2
+    assert sorted(
+        json.loads(path.read_text())["rejected"] for path in attempts.iterdir()
+    ) == ["first", "second"]
 
 
 def test_a_supplied_contract_is_the_one_rendered():

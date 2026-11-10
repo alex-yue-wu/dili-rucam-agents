@@ -207,11 +207,15 @@ When `--output-dir` is supplied, the pipeline writes artifacts for the enabled w
   per-analyst checkpoint state, compatible fingerprint, completed-report filename,
   attempt counts, and failure diagnostics.
 
-- `attempts/` contains invalid model outputs as
-  `analyst-<name>_attempt-<cumulative-number>-<unique-id>.invalid.md`. Names are
-  cumulative and collision-resistant, so a later invocation cannot overwrite an
-  earlier invalid output. An execution exception without a report has no markdown
-  artifact. Public attempt callbacks receive only validated structured
+- `attempts/` contains rejected model replies as
+  `<analyst_key>.<attempt-number>.<unique-id>.invalid.json` when a JSON object
+  parsed but broke the schema, and `.invalid.txt` when nothing parsed. A reply cut
+  off by the output budget is kept as
+  `<analyst_key>.<attempt-number>.truncated<n>.<unique-id>.invalid.txt`. The
+  attempt number restarts at 1 in every invocation, so the unique id is what makes
+  the names collision-resistant: a later invocation cannot overwrite an earlier
+  invalid output. An execution exception without a reply has no artifact at all.
+  Public attempt callbacks receive only validated structured
   diagnostics: execution failures contain a conservative exception type and
   allowlisted numeric identifiers, while validation failures contain only
   allowlisted field paths and issue codes rendered through fixed messages. Raw
@@ -426,11 +430,16 @@ Four retry budgets are separate and never pooled:
 
 Each analyst's entry in `analyst_checkpoints.json` records `validation_retries`,
 `transient_retries`, `truncation_escalations` and `mode_downgrades`, plus the final
-mode. The escalation is transient: the checkpoint is fingerprinted against the
-configured `max_output_tokens`, not the escalated one. Changing the configured
-budget does invalidate that analyst's checkpoints, which is deliberate, because a
-report produced under a binding cap is not the same output as one produced with
-room to finish.
+mode. The four counts are cumulative across invocations: a resumed run adds what it
+spends to what the earlier run spent, so a resume that succeeds first time cannot
+erase the retries that forced it. Each `attempt_history` entry written at the end
+of an invocation also carries that invocation's own counts, so the total and the
+breakdown both survive. The final mode is a state rather than a count, so it is the
+last invocation's. The escalation is transient: the checkpoint is fingerprinted
+against the configured `max_output_tokens`, not the escalated one. Changing the
+configured budget does invalidate that analyst's checkpoints, which is deliberate,
+because a report produced under a binding cap is not the same output as one
+produced with room to finish.
 
 Validated analyst reports are checkpointed independently in each PDF result
 directory. Re-running a single PDF with the same `--output-dir` or re-running a

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -936,9 +937,8 @@ def test_run_end_to_end_persists_invalid_attempt_then_valid_report(
         roster_path=write_roster(tmp_path, ("analyst_alpha",)),
     )
 
-    attempt_paths = sorted((output_dir / "attempts").glob("analyst_alpha.*"))
-    assert [path.name for path in attempt_paths] == ["analyst_alpha.1.invalid.json"]
-    assert json.loads(attempt_paths[0].read_text()) == json.loads(rejected)
+    (attempt_path,) = (output_dir / "attempts").glob("analyst_alpha.1.*.invalid.json")
+    assert json.loads(attempt_path.read_text()) == json.loads(rejected)
     assert (
         validate_analyst_report(
             (output_dir / "analyst-alpha_report.md").read_text()
@@ -954,11 +954,11 @@ def test_run_end_to_end_persists_invalid_attempt_then_valid_report(
 
 
 def test_attempt_history_accumulates_across_invocations(tmp_path, monkeypatch):
-    """The manifest history grows; the artifact is named per attempt number.
+    """The history grows, and every rejected reply keeps its own file.
 
-    ``run_analysts`` writes ``attempts/<key>.<n>.invalid.*``, so the second
-    invocation's first attempt replaces the first invocation's rather than
-    adding a second file. The history is what accumulates.
+    ``run_analysts`` writes ``attempts/<key>.<n>.<uid>.invalid.*``. The attempt
+    number restarts at 1 in each invocation, so the unique id is what stops the
+    second invocation's first rejected reply replacing the first invocation's.
     """
 
     pdf_path = tmp_path / "example.pdf"
@@ -980,8 +980,10 @@ def test_attempt_history_accumulates_across_invocations(tmp_path, monkeypatch):
             )
 
     attempt_paths = sorted((output_dir / "attempts").glob("*.invalid.*"))
-    assert [path.name for path in attempt_paths] == ["analyst_alpha.1.invalid.json"]
-    assert json.loads(attempt_paths[0].read_text()) == {"rejected": "second"}
+    assert len(attempt_paths) == 2
+    assert sorted(
+        json.loads(path.read_text())["rejected"] for path in attempt_paths
+    ) == ["first", "second"]
     entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
     assert entry["total_attempts"] == 2
     assert [item["total_attempt"] for item in entry["attempt_history"]] == [1, 2]
@@ -990,6 +992,55 @@ def test_attempt_history_accumulates_across_invocations(tmp_path, monkeypatch):
         "validation",
     ]
     assert entry["status"] == "failed"
+
+
+def test_a_resumed_run_keeps_the_failed_invocations_retry_count(
+    tmp_path, monkeypatch
+):
+    """The gate's own measurement must survive the resume it recommends.
+
+    An analyst that exhausts its validation budget fails the repeat, and
+    ``RESUME_HINT`` tells the user to re-run the same command. The resumed
+    invocation succeeds on its first attempt, so a last-write-wins counter
+    would report 0 validation retries for a run that spent 2 -- the direction
+    that passes the acceptance bar.
+    """
+
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    fake_ingestion(monkeypatch)
+    roster_path = write_roster(tmp_path, ("analyst_alpha",))
+
+    rejected = json.dumps({"rejected": "spent the budget"})
+    use_provider(monkeypatch, FakeProvider(rejected, rejected, rejected))
+    with pytest.raises(AnalystExecutionError):
+        run_end_to_end(
+            str(pdf_path),
+            output_dir=str(output_dir),
+            roster_path=roster_path,
+            max_restarts=2,
+        )
+    failed = read_manifest(output_dir)["analysts"]["analyst_alpha"]
+    assert failed["validation_retries"] == 2
+
+    use_provider(monkeypatch, FakeProvider(reply()))
+    run_end_to_end(
+        str(pdf_path),
+        output_dir=str(output_dir),
+        roster_path=roster_path,
+        max_restarts=2,
+    )
+
+    entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
+    assert entry["status"] == "completed"
+    assert entry["validation_retries"] == 2
+    # The breakdown: only the attempt that ended the failed invocation carries
+    # the counters, and it says that invocation spent its whole budget.
+    history = entry["attempt_history"]
+    assert [item.get("validation_retries") for item in history] == [None, None, 2]
+    # Every rejected reply of the failed invocation is still on disk.
+    assert len(list((output_dir / "attempts").glob("*.invalid.json"))) == 3
 
 
 def test_a_truncated_reply_is_recorded_as_a_truncation(tmp_path, monkeypatch):
@@ -1022,9 +1073,12 @@ def test_a_truncated_reply_is_recorded_as_a_truncation(tmp_path, monkeypatch):
     assert entry["status"] == "failed"
     assert entry["truncation_escalations"] == 1
     # How far the model got, kept for judging the output budget.
-    assert sorted(path.name for path in (output_dir / "attempts").iterdir()) == [
-        "analyst_alpha.1.truncated1.invalid.txt",
-        "analyst_alpha.1.truncated2.invalid.txt",
+    assert sorted(
+        re.sub(r"\.[0-9a-f]{8}\.invalid\.", ".<uid>.invalid.", path.name)
+        for path in (output_dir / "attempts").iterdir()
+    ) == [
+        "analyst_alpha.1.truncated1.<uid>.invalid.txt",
+        "analyst_alpha.1.truncated2.<uid>.invalid.txt",
     ]
 
 

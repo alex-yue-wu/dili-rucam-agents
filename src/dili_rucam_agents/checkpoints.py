@@ -205,9 +205,10 @@ class AnalystCheckpointStore:
         """Record a rejected or failed attempt in the manifest.
 
         The rejected reply itself is not written here: ``run_analysts`` keeps it
-        under ``attempts/<key>.<n>.invalid.json`` or ``.invalid.txt``, which is
-        the scheme the spec mandates. Only the sanitized diagnostic is persisted
-        here, so the manifest never carries model- or provider-controlled text.
+        under ``attempts/<key>.<n>.<uid>.invalid.json`` or ``.invalid.txt``,
+        which is the scheme the spec mandates. Only the sanitized diagnostic is
+        persisted here, so the manifest never carries model- or
+        provider-controlled text.
         """
         failure_kind = validate_failure_kind(failure_kind)
         # An execution or terminal failure is a provider error and carries
@@ -246,6 +247,11 @@ class AnalystCheckpointStore:
                 "failure_kind": failure_kind,
                 "error": error,
                 "failed_at": failed_at,
+                # This invocation's own counters, beside the accumulated totals
+                # on the entry: the total says how much was spent in all, the
+                # history says by which invocation. No block is invented where
+                # none was passed.
+                **(_counter_fields(counters) if counters is not None else {}),
             }
         )
         entry.update(
@@ -258,7 +264,7 @@ class AnalystCheckpointStore:
             }
         )
         if counters is not None:
-            entry.update(_counter_fields(counters))
+            _accumulate_counters(entry, counters)
         self._write_manifest(manifest)
 
     def record_completed(
@@ -292,8 +298,8 @@ class AnalystCheckpointStore:
         # Counter keys may be absent (legacy adoption passes counters=None and
         # invents none) or carried over from an earlier attempt (record_failure
         # without counters leaves what a previous call wrote). A consumer must
-        # read them with .get and must not attribute a present value to the
-        # current attempt.
+        # read them with .get, and a present value is the total across every
+        # invocation rather than this attempt's own.
         manifest = self._read_manifest() or self._new_manifest()
         entry = self._entry(manifest, identity.key)
         entry.pop("failure_kind", None)
@@ -310,7 +316,7 @@ class AnalystCheckpointStore:
             }
         )
         if counters is not None:
-            entry.update(_counter_fields(counters))
+            _accumulate_counters(entry, counters)
         self._write_manifest(manifest)
 
     def all_completed(
@@ -465,14 +471,39 @@ def _validate_assessment_text(assessment_json: object) -> None:
         raise ValueError("assessment_json is not a valid RUCAM assessment") from None
 
 
+#: The four counts that accumulate. ``final_mode`` is a state, not a count.
+_COUNTER_KEYS = (
+    "validation_retries",
+    "transient_retries",
+    "truncation_escalations",
+    "mode_downgrades",
+)
+
+
 def _counter_fields(counters: RetryCounters) -> dict[str, Any]:
-    return {
-        "validation_retries": counters.validation_retries,
-        "transient_retries": counters.transient_retries,
-        "truncation_escalations": counters.truncation_escalations,
-        "mode_downgrades": counters.mode_downgrades,
-        "final_mode": counters.final_mode.value,
-    }
+    """One invocation's own counters, for the ``attempt_history`` breakdown."""
+    fields: dict[str, Any] = {key: getattr(counters, key) for key in _COUNTER_KEYS}
+    fields["final_mode"] = counters.final_mode.value
+    return fields
+
+
+def _accumulate_counters(entry: dict[str, Any], counters: RetryCounters) -> None:
+    """Add this invocation's counters to the entry's running totals.
+
+    Last-write-wins would erase the measurement this manifest exists to carry.
+    A failed analyst has by definition spent its whole validation budget, and
+    the resume that follows succeeds with 0 retries; overwriting would report
+    the 0 and lose the 2, in the direction that passes an acceptance bar. So
+    the four counts accumulate and ``final_mode``, which is a state rather than
+    a count, stays last-write. A key may be absent (legacy adoption records
+    none) and a hand-edited manifest may hold a non-integer, so both read as 0.
+    """
+    for key in _COUNTER_KEYS:
+        previous = entry.get(key, 0)
+        if not isinstance(previous, int) or isinstance(previous, bool):
+            previous = 0
+        entry[key] = previous + getattr(counters, key)
+    entry["final_mode"] = counters.final_mode.value
 
 
 def _utc_now_isoformat() -> str:

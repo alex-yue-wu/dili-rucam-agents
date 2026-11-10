@@ -912,6 +912,83 @@ def test_completed_entry_records_the_four_counters(tmp_path: Path):
     assert entry["assessment_file"] == "analyst-alpha_assessment.json"
 
 
+def test_counters_accumulate_across_invocations(tmp_path: Path):
+    """A resumed invocation must not erase what the failed one spent.
+
+    The failed invocation spent its whole validation budget; the resume
+    succeeds with none. Last-write-wins would report the 0 and lose the 2, in
+    the direction that passes an acceptance bar, so the four counts add up.
+    """
+    store = make_store(tmp_path)
+    spent = RetryCounters(
+        validation_retries=2,
+        transient_retries=1,
+        truncation_escalations=1,
+        mode_downgrades=3,
+        final_mode=StructuredMode.text,
+    )
+    store.record_running(identity(), attempt=1)
+    store.record_failure(
+        identity(),
+        attempt=3,
+        failure_kind="validation",
+        error="ignored",
+        counters=spent,
+    )
+
+    # Second invocation: succeeds first time, so it spends nothing.
+    clean = RetryCounters(0, 0, 0, 0, StructuredMode.json_schema)
+    store.record_running(identity(), attempt=1)
+    complete(store, attempt=1, counters=clean)
+
+    entry = json.loads((tmp_path / "analyst_checkpoints.json").read_text())[
+        "analysts"
+    ]["analyst_alpha"]
+    assert entry["status"] == "completed"
+    assert entry["validation_retries"] == 2
+    assert entry["transient_retries"] == 1
+    assert entry["truncation_escalations"] == 1
+    assert entry["mode_downgrades"] == 3
+    # final_mode is a state, not a count: the last invocation's mode stands.
+    assert entry["final_mode"] == "json_schema"
+    # And the breakdown says which invocation spent them.
+    (failed,) = entry["attempt_history"]
+    assert failed["validation_retries"] == 2
+    assert failed["mode_downgrades"] == 3
+    assert failed["final_mode"] == "text"
+
+
+def test_a_history_entry_invents_no_counter_block(tmp_path: Path):
+    """An intermediate rejected attempt carries no counters; none are made up."""
+    store = make_store(tmp_path)
+    store.record_running(identity(), attempt=1)
+    store.record_failure(
+        identity(), attempt=1, failure_kind="validation", error="ignored"
+    )
+
+    entry = json.loads((tmp_path / "analyst_checkpoints.json").read_text())[
+        "analysts"
+    ]["analyst_alpha"]
+    (only,) = entry["attempt_history"]
+    for key in ("validation_retries", "transient_retries", "mode_downgrades"):
+        assert key not in only
+        assert key not in entry
+
+
+def test_a_corrupt_counter_total_reads_as_zero(tmp_path: Path):
+    """A hand-edited manifest must not make the next write raise."""
+    store = make_store(tmp_path)
+    complete(store)
+    manifest_path = tmp_path / "analyst_checkpoints.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["analysts"]["analyst_alpha"]["validation_retries"] = "two"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    complete(store)
+    entry = json.loads(manifest_path.read_text())["analysts"]["analyst_alpha"]
+    assert entry["validation_retries"] == 2
+
+
 def test_failure_entry_records_the_counters_and_the_new_kinds(tmp_path: Path):
     store = make_store(tmp_path)
     store.record_running(identity(), attempt=1)
