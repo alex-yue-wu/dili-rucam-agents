@@ -1,20 +1,21 @@
+"""The end-to-end run: ingest a PDF, resolve item 6, mask, score, persist.
+
+Who scores is declared in a roster file rather than switched on by flags, so
+the number of analysts is whatever that file lists. Everything above the
+provider layer is deterministic: the bundle, the evidence cascade, the masking
+and the instruction contracts are all built before the first call.
+"""
+
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
+import json
 from pathlib import Path
 from typing import Optional
 
-from dili_rucam_agents.crew.config import get_enabled_analyst_configs
-from dili_rucam_agents.crew.agents import resolve_rucam_model
-from dili_rucam_agents.crew.crew import AnalystAttemptEvent, run_crew
-from dili_rucam_agents.runner import validate_max_restarts
-from dili_rucam_agents.crew.tasks import (
-    AnalystInstructionContract,
-    build_analyst_instruction_contract,
-    load_rucam_prompt,
-)
+from dili_rucam_agents.analysts import AnalystAttemptEvent, run_analysts
 from dili_rucam_agents.checkpoints import (
     AnalystCheckpointStore,
     AnalystIdentity,
@@ -22,27 +23,55 @@ from dili_rucam_agents.checkpoints import (
     atomic_write_text,
     build_analyst_identities,
 )
+from dili_rucam_agents.contracts import (
+    AnalystInstructionContract,
+    build_analyst_instruction_contract,
+    load_rucam_prompt,
+)
+from dili_rucam_agents.diagnostics import (
+    SafeValidationDiagnostic,
+    validate_validation_diagnostic,
+)
+from dili_rucam_agents.ground_truth import run_ground_truth_score_finder
 from dili_rucam_agents.hepatotoxicity.evidence import DEFAULT_EVIDENCE_AS_OF
-from dili_rucam_agents.hepatotoxicity.settings import HepatotoxicityEvidenceSettings
+from dili_rucam_agents.hepatotoxicity.report import render_hepatotoxicity_report
+from dili_rucam_agents.hepatotoxicity.settings import (
+    HepatotoxicityEvidenceSettings,
+    apply_hepatotoxicity_evidence,
+)
+from dili_rucam_agents.ingestion.build_bundle import build_case_bundle
 from dili_rucam_agents.masking import (
     MASK_TOKEN,
     extract_patient_specific_rucam_scores,
     is_patient_specific_outcome_line,
+    mask_case_bundle_payload,
     parse_case_bundle_json,
 )
+from dili_rucam_agents.providers import CompletionProvider, SdkProvider, require_api_keys
+from dili_rucam_agents.roster import AnalystRoster, load_roster
+from dili_rucam_agents.runner import RetryCounters, validate_max_restarts
 
+#: The reports that are not an analyst's. Analyst filenames are not listed here:
+#: they come from ``AnalystConfig.report_filename``, so adding a roster entry
+#: adds its report without editing this module.
 _REPORT_FILENAME_MAP = {
     "hepatotoxicity_evidence": "hepatotoxicity-evidence_report.md",
     "masked_case_bundle": "masked-case-bundle_report.md",
     "ground_truth_rucam_score": "ground-truth-rucam-score_report.md",
-    "analyst_alpha": "analyst-alpha_report.md",
-    "analyst_beta": "analyst-beta_report.md",
-    "analyst_gamma": "analyst-gamma_report.md",
-    "analyst_delta": "analyst-delta_report.md",
-    "analyst_epsilon": "analyst-epsilon_report.md",
-    "analyst_zeta": "analyst-zeta_report.md",
-    "analyst_eta": "analyst-eta_report.md",
 }
+
+_INVALID_REPORT = SafeValidationDiagnostic((("report", "invalid_report"),))
+
+
+def _build_provider() -> CompletionProvider:
+    """One transport per call site.
+
+    ``run_analysts`` and ``run_ground_truth_score_finder`` each own an
+    ``asyncio.run``, so a client built inside one loop must not be handed to the
+    next; a provider per call site keeps every client inside one loop. Tests
+    replace this function with one that returns a fake.
+    """
+    return SdkProvider()
 
 
 @dataclass(frozen=True)
@@ -51,40 +80,51 @@ class PipelineCheckpointContext:
     identities: dict[str, AnalystIdentity]
     instruction_contracts: dict[str, AnalystInstructionContract]
     legacy_context: LegacyRunContext
+    #: Written by the "completed" attempt event and read by the ``on_report``
+    #: call that follows it for the same analyst. ``run_analysts`` emits the
+    #: event first and the report second, and the event is the only carrier of
+    #: the attempt number and the retry counters ``record_completed`` needs.
+    completions: dict[str, tuple[int, RetryCounters]] = field(default_factory=dict)
+
+
+def _build_instruction_contracts(
+    *,
+    roster: AnalystRoster,
+    prompt_text: str,
+    bundle_input_name: str,
+) -> dict[str, AnalystInstructionContract]:
+    """One contract per roster analyst, built once and both hashed and sent."""
+    return {
+        config.key: build_analyst_instruction_contract(
+            analyst_label=config.label,
+            prompt_text=prompt_text,
+            model_name=config.model,
+            bundle_input_name=bundle_input_name,
+        )
+        for config in roster.analysts
+    }
+
+
+def _bundle_input_name(enable_score_masking: bool) -> str:
+    return "masked_case_bundle_json" if enable_score_masking else "raw_case_bundle_json"
 
 
 def _build_checkpoint_context(
     *,
     pdf_path: Path,
     output_dir: Path,
-    prompt_path: Path | None,
+    roster: AnalystRoster,
+    instruction_contracts: dict[str, AnalystInstructionContract],
     enable_score_masking: bool,
     strict_scoring: bool,
-    analyst_flags: dict[str, bool],
     hepatotoxicity_settings: HepatotoxicityEvidenceSettings,
 ) -> PipelineCheckpointContext:
-    prompt_text = load_rucam_prompt(prompt_path, strict_scoring=strict_scoring)
     pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
-    configs = get_enabled_analyst_configs(**analyst_flags)
-    bundle_input_name = (
-        "masked_case_bundle_json" if enable_score_masking else "raw_case_bundle_json"
-    )
-    instruction_contracts = {}
-    for config in configs:
-        model_name = resolve_rucam_model(
-            model_env=config["model_env"],
-            fallback_envs=config["fallback_envs"],
-            default_model=config["default_model"],
-        )
-        instruction_contracts[config["key"]] = build_analyst_instruction_contract(
-            analyst_label=config["label"],
-            prompt_text=prompt_text,
-            model_name=model_name,
-            bundle_input_name=bundle_input_name,
-        )
     identities = build_analyst_identities(
-        configs=configs,
-        report_filename_map=_REPORT_FILENAME_MAP,
+        configs=list(roster.analysts),
+        report_filename_map={
+            config.key: config.report_filename for config in roster.analysts
+        },
         pdf_sha256=pdf_sha256,
         analyst_instruction_sha256={
             key: contract.sha256 for key, contract in instruction_contracts.items()
@@ -110,6 +150,25 @@ def _build_checkpoint_context(
     )
 
 
+def _failure_kind_for(event: AnalystAttemptEvent) -> str:
+    """Which failure the manifest records for a rejected attempt.
+
+    A cut-off reply and a reply that broke the schema arrive as the same event
+    status, so the diagnostic decides. It is revalidated before anything reads
+    its issues, since the store refuses a forged one anyway.
+    """
+    if event.status == "execution_failed":
+        # Both an exhausted transient budget and a terminal status code reach
+        # the pipeline as this one status; the execution diagnostic carries the
+        # status code that tells them apart.
+        return "execution"
+    diagnostic = validate_validation_diagnostic(
+        event.validation_diagnostic or _INVALID_REPORT
+    )
+    truncated = any(code == "report_truncated" for _field, code in diagnostic.issues)
+    return "truncation" if truncated else "validation"
+
+
 def _handle_attempt_event(
     context: PipelineCheckpointContext,
     event: AnalystAttemptEvent,
@@ -118,25 +177,47 @@ def _handle_attempt_event(
     if event.status == "running":
         context.store.record_running(identity, attempt=event.attempt)
         return
-    if event.status == "validation_failed":
-        return
-    if event.status == "execution_failed":
+    if event.status in ("validation_failed", "execution_failed"):
         context.store.record_failure(
             identity,
             attempt=event.attempt,
-            failure_kind="execution",
-            error=event.error or "Unknown execution error",
+            failure_kind=_failure_kind_for(event),
+            # Ignored: the store recomputes the message from the diagnostic so
+            # no caller-supplied text can reach the manifest.
+            error="",
             execution_diagnostic=event.execution_diagnostic,
+            validation_diagnostic=event.validation_diagnostic,
+            counters=event.counters,
         )
         return
     if event.status == "completed":
-        if event.report_text is None:
-            raise ValueError("completed analyst attempt is missing report text")
-        context.store.record_completed(
-            identity, attempt=event.attempt, report_text=event.report_text
-        )
+        if event.counters is None:
+            raise ValueError("completed analyst attempt is missing retry counters")
+        context.completions[event.analyst_key] = (event.attempt, event.counters)
         return
     raise ValueError(f"Unsupported analyst attempt status: {event.status}")
+
+
+def _persist_completed_analyst(
+    context: PipelineCheckpointContext,
+    analyst_key: str,
+    report_text: str,
+    assessment: dict,
+) -> None:
+    """Hand both artifacts to the store, which validates and writes them."""
+    completion = context.completions.get(analyst_key)
+    if completion is None:
+        raise ValueError(
+            f"{analyst_key} reported a completed report without a completed attempt"
+        )
+    attempt, counters = completion
+    context.store.record_completed(
+        context.identities[analyst_key],
+        attempt=attempt,
+        report_text=report_text,
+        assessment_json=json.dumps(assessment, indent=2, sort_keys=True) + "\n",
+        counters=counters,
+    )
 
 
 def run_end_to_end(
@@ -144,47 +225,61 @@ def run_end_to_end(
     prompt_path: Optional[str] = None,
     output_dir: Optional[str] = None,
     *,
+    roster_path: str | None = None,
     enable_score_masking: bool = False,
     strict_scoring: bool = False,
-    use_analyst_delta: bool = False,
-    use_analyst_epsilon: bool = False,
-    use_analyst_zeta: bool = False,
-    use_analyst_eta: bool = False,
     max_restarts: int = 2,
     resume: bool = True,
     hepatotoxicity_settings: HepatotoxicityEvidenceSettings | None = None,
 ) -> str:
-    """Public helper used by scripts/tests to run the full pipeline."""
+    """Score one PDF with every analyst the roster declares.
+
+    Returns the last roster analyst's report, or an empty string when no
+    analyst produced one. Reports and their assessment sidecars are persisted
+    as each analyst finishes, so a failure part-way through keeps the work
+    already paid for.
+    """
 
     max_restarts = validate_max_restarts(max_restarts)
     evidence_settings = hepatotoxicity_settings or HepatotoxicityEvidenceSettings()
-    resolved_pdf = str(Path(pdf_path).expanduser().resolve())
+    resolved_pdf = Path(pdf_path).expanduser().resolve()
     resolved_prompt = Path(prompt_path).expanduser().resolve() if prompt_path else None
     resolved_output_dir = (
         Path(output_dir).expanduser().resolve() if output_dir else None
     )
+    roster = load_roster(roster_path)
+
+    # Before ingestion: the ingestion stack and the item 6 cascade are the
+    # expensive part of a run and a missing key is knowable without them. The
+    # ground-truth model is only called when masking is on.
+    needed_providers = {config.provider for config in roster.analysts}
+    if enable_score_masking:
+        needed_providers.add(roster.ground_truth.provider)
+    require_api_keys(needed_providers)
 
     if resolved_output_dir:
         resolved_output_dir.mkdir(parents=True, exist_ok=True)
 
-    analyst_flags = {
-        "use_analyst_delta": use_analyst_delta,
-        "use_analyst_epsilon": use_analyst_epsilon,
-        "use_analyst_zeta": use_analyst_zeta,
-        "use_analyst_eta": use_analyst_eta,
-    }
+    prompt_text = load_rucam_prompt(resolved_prompt, strict_scoring=strict_scoring)
+    bundle_input_name = _bundle_input_name(enable_score_masking)
+    instruction_contracts = _build_instruction_contracts(
+        roster=roster,
+        prompt_text=prompt_text,
+        bundle_input_name=bundle_input_name,
+    )
+
     checkpoint_context = (
         _build_checkpoint_context(
-            pdf_path=Path(resolved_pdf),
+            pdf_path=resolved_pdf,
             output_dir=resolved_output_dir,
-            prompt_path=resolved_prompt,
+            roster=roster,
+            instruction_contracts=instruction_contracts,
             enable_score_masking=enable_score_masking,
             strict_scoring=strict_scoring,
-            analyst_flags=analyst_flags,
             hepatotoxicity_settings=evidence_settings,
         )
         if resolved_output_dir
-        else {}
+        else None
     )
     completed_reports = (
         checkpoint_context.store.load_compatible_reports(
@@ -192,63 +287,59 @@ def run_end_to_end(
             resume=resume,
             legacy_context=checkpoint_context.legacy_context,
         )
-        if resolved_output_dir
+        if checkpoint_context
         else {}
     )
 
-    def persist_invalid_report_audit(
-        analyst_key: str, attempt: int, report_text: str, diagnostic: object
-    ) -> None:
-        checkpoint_context.store.record_failure(
-            checkpoint_context.identities[analyst_key],
-            attempt=attempt,
-            failure_kind="validation",
-            error="caller-supplied validation text is ignored",
-            report_text=report_text,
-            validation_diagnostic=diagnostic,
-        )
-
-    def handle_attempt(event: AnalystAttemptEvent) -> None:
-        _handle_attempt_event(checkpoint_context, event)
-
-    result = run_crew(
-        resolved_pdf,
-        resolved_prompt,
-        capture_reports=resolved_output_dir is not None,
+    (
+        raw_case_bundle_json,
+        masked_case_bundle_json,
+        evidence_markdown,
+    ) = _prepare_case_bundle_json(
+        pdf_path=resolved_pdf,
         enable_score_masking=enable_score_masking,
-        strict_scoring=strict_scoring,
-        use_analyst_delta=use_analyst_delta,
-        use_analyst_epsilon=use_analyst_epsilon,
-        use_analyst_zeta=use_analyst_zeta,
-        use_analyst_eta=use_analyst_eta,
-        completed_reports=completed_reports,
-        max_restarts=max_restarts,
-        on_attempt=(handle_attempt if resolved_output_dir else None),
-        _on_invalid_report_audit=(
-            persist_invalid_report_audit if resolved_output_dir else None
-        ),
-        instruction_contracts=(
-            checkpoint_context.instruction_contracts if resolved_output_dir else None
-        ),
         hepatotoxicity_settings=evidence_settings,
     )
 
-    if isinstance(result, tuple):
-        final_output, reports = result
-    else:
-        final_output, reports = result, {}
+    def handle_attempt(event: AnalystAttemptEvent) -> None:
+        assert checkpoint_context is not None  # only wired when there is one
+        _handle_attempt_event(checkpoint_context, event)
 
-    if resolved_output_dir and isinstance(reports, dict):
-        _persist_reports(
-            {
-                key: content
-                for key, content in reports.items()
-                if key not in checkpoint_context.identities
-            },
-            resolved_output_dir,
+    def persist_report(analyst_key: str, report_text: str, assessment: dict) -> None:
+        assert checkpoint_context is not None
+        _persist_completed_analyst(
+            checkpoint_context, analyst_key, report_text, assessment
         )
 
-    return final_output
+    outcome = run_analysts(
+        case_bundle_json=masked_case_bundle_json or raw_case_bundle_json,
+        roster=roster,
+        prompt_text=prompt_text,
+        bundle_input_name=bundle_input_name,
+        provider=_build_provider(),
+        max_retries=max_restarts,
+        completed_reports=completed_reports,
+        on_report=persist_report if checkpoint_context else None,
+        on_attempt=handle_attempt if checkpoint_context else None,
+        output_dir=resolved_output_dir,
+        instruction_contracts=instruction_contracts,
+    )
+
+    if resolved_output_dir:
+        reports: dict[str, Optional[str]] = {}
+        if masked_case_bundle_json:
+            reports["raw_case_bundle"] = raw_case_bundle_json
+            reports["masked_case_bundle"] = masked_case_bundle_json
+            reports["ground_truth_rucam_score"] = run_ground_truth_score_finder(
+                raw_case_bundle_json=raw_case_bundle_json,
+                config=roster.ground_truth,
+                provider=_build_provider(),
+            )
+        if evidence_markdown:
+            reports["hepatotoxicity_evidence"] = evidence_markdown
+        _persist_reports(reports, resolved_output_dir)
+
+    return next(reversed(outcome.reports.values()), "") or ""
 
 
 def is_end_to_end_complete(
@@ -256,31 +347,29 @@ def is_end_to_end_complete(
     output_dir: str,
     prompt_path: str | None = None,
     *,
+    roster_path: str | None = None,
     enable_score_masking: bool = False,
     strict_scoring: bool = False,
-    use_analyst_delta: bool = False,
-    use_analyst_epsilon: bool = False,
-    use_analyst_zeta: bool = False,
-    use_analyst_eta: bool = False,
     hepatotoxicity_settings: HepatotoxicityEvidenceSettings | None = None,
 ) -> bool:
-    """Return whether all enabled analyst checkpoints are compatible and valid."""
+    """Return whether every roster analyst's checkpoint is compatible and valid."""
 
     resolved_pdf = Path(pdf_path).expanduser().resolve()
     resolved_output_dir = Path(output_dir).expanduser().resolve()
     resolved_prompt = Path(prompt_path).expanduser().resolve() if prompt_path else None
+    roster = load_roster(roster_path)
+    prompt_text = load_rucam_prompt(resolved_prompt, strict_scoring=strict_scoring)
     context = _build_checkpoint_context(
         pdf_path=resolved_pdf,
         output_dir=resolved_output_dir,
-        prompt_path=resolved_prompt,
+        roster=roster,
+        instruction_contracts=_build_instruction_contracts(
+            roster=roster,
+            prompt_text=prompt_text,
+            bundle_input_name=_bundle_input_name(enable_score_masking),
+        ),
         enable_score_masking=enable_score_masking,
         strict_scoring=strict_scoring,
-        analyst_flags={
-            "use_analyst_delta": use_analyst_delta,
-            "use_analyst_epsilon": use_analyst_epsilon,
-            "use_analyst_zeta": use_analyst_zeta,
-            "use_analyst_eta": use_analyst_eta,
-        },
         hepatotoxicity_settings=(
             hepatotoxicity_settings or HepatotoxicityEvidenceSettings()
         ),
@@ -296,20 +385,58 @@ def is_end_to_end_complete(
         return False
     if enable_score_masking:
         return all(
-            (resolved_output_dir / filename).exists()
-            for filename in (
-                "masked-case-bundle_report.md",
-                "ground-truth-rucam-score_report.md",
-            )
+            (resolved_output_dir / _REPORT_FILENAME_MAP[key]).exists()
+            for key in ("masked_case_bundle", "ground_truth_rucam_score")
         )
     return True
 
 
+def _prepare_case_bundle_json(
+    *,
+    pdf_path: Path,
+    enable_score_masking: bool,
+    hepatotoxicity_settings: HepatotoxicityEvidenceSettings | None = None,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Build the bundle, resolve item 6 evidence into it, then optionally mask.
+
+    The evidence block is attached before masking so that the raw bundle, the
+    masked bundle and the persisted evidence report all describe one resolution.
+    Masking rewrites only the extracted text surfaces, never this block.
+    """
+
+    raw_payload = build_case_bundle(pdf_path).to_dict()
+    settings = hepatotoxicity_settings or HepatotoxicityEvidenceSettings()
+    raw_payload, resolution = apply_hepatotoxicity_evidence(raw_payload, settings)
+    evidence_markdown = (
+        render_hepatotoxicity_report(resolution) if resolution is not None else None
+    )
+    raw_case_bundle_json = json.dumps(raw_payload, indent=2)
+
+    if not enable_score_masking:
+        return raw_case_bundle_json, None, evidence_markdown
+
+    masked_payload = mask_case_bundle_payload(raw_payload)
+    return (
+        raw_case_bundle_json,
+        json.dumps(masked_payload, indent=2),
+        evidence_markdown,
+    )
+
+
 def _main() -> None:
     parser = argparse.ArgumentParser(
-        description="Execute the full RUCAM crew on a PDF."
+        description="Score a clinical case report PDF with the declared analyst roster."
     )
     parser.add_argument("pdf_path", help="Path to the clinical case report PDF.")
+    parser.add_argument(
+        "--analysts",
+        dest="roster_path",
+        metavar="PATH",
+        help=(
+            "Analyst roster JSON (default: config/analysts.json, one analyst). "
+            "config/analysts.study.json declares the seven-analyst study roster."
+        ),
+    )
     parser.add_argument(
         "--prompt-path",
         dest="prompt_path",
@@ -318,43 +445,19 @@ def _main() -> None:
     parser.add_argument(
         "--output-dir",
         dest="output_dir",
-        help="Directory to store markdown reports for enabled analysts.",
+        help="Directory to store markdown reports for the roster's analysts.",
     )
     parser.add_argument(
         "--mask-scores",
         dest="enable_score_masking",
         action="store_true",
-        help="Enable the optional score masking agent between ingestion and analysts.",
+        help="Enable the optional score masking step between ingestion and analysts.",
     )
     parser.add_argument(
         "--strict-scoring",
         dest="strict_scoring",
         action="store_true",
         help="Use the strict scoring prompt instead of the default inferring prompt.",
-    )
-    parser.add_argument(
-        "--analyst-delta",
-        dest="use_analyst_delta",
-        action="store_true",
-        help="Enable the optional Analyst Delta agent (ANALYST_DELTA_MODEL).",
-    )
-    parser.add_argument(
-        "--analyst-epsilon",
-        dest="use_analyst_epsilon",
-        action="store_true",
-        help="Enable the optional Analyst Epsilon agent (ANALYST_EPSILON_MODEL).",
-    )
-    parser.add_argument(
-        "--analyst-zeta",
-        dest="use_analyst_zeta",
-        action="store_true",
-        help="Enable the optional Analyst Zeta agent (ANALYST_ZETA_MODEL).",
-    )
-    parser.add_argument(
-        "--analyst-eta",
-        dest="use_analyst_eta",
-        action="store_true",
-        help="Enable the optional Analyst Eta agent (ANALYST_ETA_MODEL).",
     )
     parser.add_argument(
         "--no-hepatotoxicity-evidence",
@@ -425,12 +528,9 @@ def _main() -> None:
             args.pdf_path,
             args.prompt_path,
             args.output_dir,
+            roster_path=args.roster_path,
             enable_score_masking=args.enable_score_masking,
             strict_scoring=args.strict_scoring,
-            use_analyst_delta=args.use_analyst_delta,
-            use_analyst_epsilon=args.use_analyst_epsilon,
-            use_analyst_zeta=args.use_analyst_zeta,
-            use_analyst_eta=args.use_analyst_eta,
             max_restarts=args.analyst_restarts,
             hepatotoxicity_settings=HepatotoxicityEvidenceSettings(
                 enabled=args.hepatotoxicity_evidence,

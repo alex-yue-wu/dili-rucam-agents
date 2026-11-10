@@ -198,11 +198,17 @@ class AnalystCheckpointStore:
         attempt: int,
         failure_kind: str,
         error: str,
-        report_text: str | None = None,
         execution_diagnostic: SafeExecutionDiagnostic | None = None,
         validation_diagnostic: SafeValidationDiagnostic | None = None,
         counters: RetryCounters | None = None,
     ) -> None:
+        """Record a rejected or failed attempt in the manifest.
+
+        The rejected reply itself is not written here: ``run_analysts`` keeps it
+        under ``attempts/<key>.<n>.invalid.json`` or ``.invalid.txt``, which is
+        the scheme the spec mandates. Only the sanitized diagnostic is persisted
+        here, so the manifest never carries model- or provider-controlled text.
+        """
         failure_kind = validate_failure_kind(failure_kind)
         # An execution or terminal failure is a provider error and carries
         # execution metadata; a validation or truncation failure is about the
@@ -225,20 +231,10 @@ class AnalystCheckpointStore:
                 (("report", default_code),)
             )
             error = render_validation_diagnostic(validate_validation_diagnostic(source))
-        if report_text is not None and type(report_text) is not str:
-            raise TypeError("report_text must be a string or None")
         manifest = self._read_manifest() or self._new_manifest()
         entry = self._entry(manifest, identity.key)
         failed_at = _utc_now_isoformat()
         total_attempt = int(entry.get("total_attempts", 0))
-        artifact_file = None
-        if report_text is not None:
-            artifact_file = (
-                "attempts/"
-                f"{identity.key.replace('_', '-')}_attempt-{total_attempt:06d}-"
-                f"{uuid4().hex}.invalid.md"
-            )
-            atomic_write_text(self.output_dir / artifact_file, report_text)
         history = entry.get("attempt_history")
         if not isinstance(history, list):
             history = []
@@ -249,7 +245,6 @@ class AnalystCheckpointStore:
                 "total_attempt": total_attempt,
                 "failure_kind": failure_kind,
                 "error": error,
-                "artifact_file": artifact_file,
                 "failed_at": failed_at,
             }
         )

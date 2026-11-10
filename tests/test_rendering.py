@@ -11,7 +11,10 @@ from dili_rucam_agents.validators.rucam_assessment import (
 )
 from dili_rucam_agents.validators.rucam_json import RucamReport
 
-from tests.test_rucam_assessment import (
+# Sibling test module, imported the way pytest puts tests/ on sys.path. A
+# "tests." prefix only ever resolved because importing crewai inserted the
+# repository root into sys.path as a side effect.
+from test_rucam_assessment import (
     GROUP_I,
     GROUP_II,
     ITEMS,

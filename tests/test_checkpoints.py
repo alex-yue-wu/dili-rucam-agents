@@ -1,5 +1,4 @@
 import json
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -15,7 +14,7 @@ from dili_rucam_agents.checkpoints import (
     build_analyst_identities,
 )
 from dili_rucam_agents.checkpoints import CHECKPOINT_SCHEMA_VERSION
-from dili_rucam_agents.crew.tasks import build_analyst_instruction_contract
+from dili_rucam_agents.contracts import build_analyst_instruction_contract
 from dili_rucam_agents.diagnostics import (
     SafeExecutionDiagnostic,
     SafeValidationDiagnostic,
@@ -197,9 +196,8 @@ def test_static_instruction_change_invalidates_only_affected_analyst(monkeypatch
         enable_score_masking=False,
         strict_scoring=False,
     )
-    changed_alpha = replace(
-        contracts["analyst_alpha"],
-        task_expected_output="Changed static output contract.",
+    changed_alpha = contracts["analyst_alpha"].model_copy(
+        update={"expected_output": "Changed static output contract."}
     )
     changed = build_analyst_identities(
         configs=configs,
@@ -226,17 +224,24 @@ def test_instruction_fingerprint_excludes_case_content_and_retry_diagnostics():
     )
     fingerprint = contract.sha256
 
-    first_description = contract.render_task_description(
-        retry_instruction="first sanitized diagnostic"
+    first_instructions = contract.render(
+        raw_case_bundle_json="PATIENT-CASE-CONTENT",
+        retry_requirement=contract.render_retry("first sanitized diagnostic"),
     )
-    second_description = contract.render_task_description(
-        retry_instruction="second sanitized diagnostic"
+    second_instructions = contract.render(
+        raw_case_bundle_json="PATIENT-CASE-CONTENT",
+        retry_requirement=contract.render_retry("second sanitized diagnostic"),
     )
 
-    assert first_description != second_description
+    assert first_instructions != second_instructions
+    assert "first sanitized diagnostic" in first_instructions
+    assert "PATIENT-CASE-CONTENT" in first_instructions
+    # Neither the case content nor the retry diagnostic is in the contract, so
+    # neither can move the fingerprint the resume check compares.
     assert contract.sha256 == fingerprint
-    assert "{raw_case_bundle_json}" in first_description
-    assert "PATIENT-CASE-CONTENT" not in first_description
+    assert "{raw_case_bundle_json}" in contract.instruction_template
+    assert "PATIENT-CASE-CONTENT" not in contract.instruction_template
+    assert "first sanitized diagnostic" not in contract.retry_instruction_template
 
 
 def test_static_retry_wrapper_is_part_of_instruction_fingerprint():
@@ -247,12 +252,13 @@ def test_static_retry_wrapper_is_part_of_instruction_fingerprint():
         bundle_input_name="raw_case_bundle_json",
     )
 
-    changed = replace(
-        contract,
-        retry_instruction_template=(
-            contract.retry_instruction_template
-            + "\nReturn every required field before stopping."
-        ),
+    changed = contract.model_copy(
+        update={
+            "retry_instruction_template": (
+                contract.retry_instruction_template
+                + "\nReturn every required field before stopping."
+            )
+        }
     )
 
     assert changed.sha256 != contract.sha256
@@ -408,7 +414,6 @@ def test_completion_clears_current_failure_fields_but_retains_history(tmp_path: 
         attempt=1,
         failure_kind="validation",
         error="Missing SECTION C",
-        report_text="invalid report",
     )
 
     complete(store, identity(), attempt=2, report=complete_report())
@@ -519,7 +524,6 @@ def test_checkpoint_store_rejects_forged_structured_diagnostic_before_any_write(
                 attempt=1,
                 failure_kind="execution",
                 error=f"forged display string with {secret}",
-                report_text=f"provider request containing {secret}",
                 execution_diagnostic=invalid_diagnostic,
             )
 
@@ -549,7 +553,6 @@ def test_checkpoint_store_revalidates_validation_diagnostic_before_any_write(
             attempt=1,
             failure_kind="validation",
             error=f"caller text {secret}",
-            report_text=f"invalid report {secret}",
             validation_diagnostic=forged,
         )
 
@@ -561,17 +564,17 @@ def test_checkpoint_store_revalidates_validation_diagnostic_before_any_write(
         attempt=1,
         failure_kind="validation",
         error=f"caller text {secret}",
-        report_text=f"invalid report {secret}",
         validation_diagnostic=SafeValidationDiagnostic(
             (("total_score", "score_sum_mismatch"),)
         ),
     )
 
     manifest_text = manifest_path.read_text(encoding="utf-8")
-    artifact_text = next(tmp_path.joinpath("attempts").glob("*.invalid.md")).read_text()
     assert secret not in manifest_text
     assert "total_score does not match" in manifest_text
-    assert secret in artifact_text
+    # The store persists the diagnostic and nothing else; the rejected reply is
+    # run_analysts' attempts/<key>.<n>.invalid.* artifact.
+    assert not (tmp_path / "attempts").exists()
 
 
 def test_checkpoint_store_never_executes_hostile_validation_issues_before_write(
@@ -615,7 +618,6 @@ def test_checkpoint_store_never_executes_hostile_validation_issues_before_write(
             attempt=1,
             failure_kind="validation",
             error=f"caller text {secret}",
-            report_text=f"invalid report {secret}",
             validation_diagnostic=forged,
         )
 
@@ -666,7 +668,6 @@ def test_checkpoint_store_rejects_invalid_failure_kind_before_any_write(
             attempt=1,
             failure_kind="execuiton",
             error="unsafe",
-            report_text="must not be written",
         )
 
     assert manifest_path.read_bytes() == manifest_before

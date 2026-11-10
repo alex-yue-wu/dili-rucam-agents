@@ -11,10 +11,7 @@ from typing import Any, Literal, Optional, Sequence
 
 from openpyxl import Workbook
 
-from dili_rucam_agents.crew.agents import resolve_rucam_model
-from dili_rucam_agents.crew.config import get_enabled_analyst_configs
-from dili_rucam_agents.crew.crew import AnalystExecutionError
-from dili_rucam_agents.runner import validate_max_restarts
+from dili_rucam_agents.analysts import AnalystExecutionError
 from dili_rucam_agents.diagnostics import (
     SafeValidationDiagnostic,
     format_execution_error,
@@ -26,6 +23,8 @@ from dili_rucam_agents.ground_truth import (
     extract_ground_truth_rucam_score,
 )
 from dili_rucam_agents.pipeline import is_end_to_end_complete, run_end_to_end
+from dili_rucam_agents.roster import AnalystConfig, load_roster
+from dili_rucam_agents.runner import validate_max_restarts
 from dili_rucam_agents.validators.analyst_report import (
     AnalystReportValidationError,
     parse_section_c_payload,
@@ -81,12 +80,9 @@ def run_batch_folder(
     input_dir: str,
     output_dir: str,
     prompt_path: Optional[str] = None,
+    roster_path: Optional[str] = None,
     enable_score_masking: bool = False,
     strict_scoring: bool = False,
-    use_analyst_delta: bool = False,
-    use_analyst_epsilon: bool = False,
-    use_analyst_zeta: bool = False,
-    use_analyst_eta: bool = False,
     debug: bool = False,
     force_rerun: bool = False,
     max_restarts: int = 2,
@@ -96,12 +92,7 @@ def run_batch_folder(
     results_dir = Path(output_dir).expanduser().resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    enabled_analyst_configs = _get_resolved_analyst_configs(
-        use_analyst_delta=use_analyst_delta,
-        use_analyst_epsilon=use_analyst_epsilon,
-        use_analyst_zeta=use_analyst_zeta,
-        use_analyst_eta=use_analyst_eta,
-    )
+    roster = load_roster(roster_path)
     summary_rows: list[dict[str, Any]] = []
 
     for pdf_path in sorted(source_dir.glob("*.pdf")):
@@ -114,13 +105,10 @@ def run_batch_folder(
                 pdf_path=pdf_path,
                 pdf_output_dir=pdf_output_dir,
                 prompt_path=prompt_path,
-                enabled_analyst_configs=enabled_analyst_configs,
+                roster_path=roster_path,
+                analysts=roster.analysts,
                 enable_score_masking=enable_score_masking,
                 strict_scoring=strict_scoring,
-                use_analyst_delta=use_analyst_delta,
-                use_analyst_epsilon=use_analyst_epsilon,
-                use_analyst_zeta=use_analyst_zeta,
-                use_analyst_eta=use_analyst_eta,
                 debug=debug,
                 force_rerun=force_rerun,
                 max_restarts=max_restarts,
@@ -132,7 +120,7 @@ def run_batch_folder(
             summary_rows.append(row)
             _write_summary_workbook(
                 summary_rows,
-                enabled_analyst_configs,
+                roster.analysts,
                 results_dir / "batch_summary.xlsx",
             )
             raise RuntimeError(
@@ -143,45 +131,23 @@ def run_batch_folder(
         summary_rows.append(result.row)
 
     summary_path = results_dir / "batch_summary.xlsx"
-    _write_summary_workbook(summary_rows, enabled_analyst_configs, summary_path)
+    _write_summary_workbook(summary_rows, roster.analysts, summary_path)
     print(f"\n===================== Batch analysis completed =====================\n")
     return summary_path
 
 
 def _initialize_summary_row(
     pdf_path: Path,
-    enabled_analyst_configs: list[dict[str, Any]],
+    analysts: Sequence[AnalystConfig],
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "pdf_filename": pdf_path.name,
         "masked_rucam_score": None,
         "masked_rucam_category": "None",
     }
-    for config in enabled_analyst_configs:
-        row[config["key"]] = None
+    for config in analysts:
+        row[config.key] = None
     return row
-
-
-def _get_resolved_analyst_configs(
-    *,
-    use_analyst_delta: bool,
-    use_analyst_epsilon: bool,
-    use_analyst_zeta: bool,
-    use_analyst_eta: bool,
-) -> list[dict[str, Any]]:
-    configs = get_enabled_analyst_configs(
-        use_analyst_delta=use_analyst_delta,
-        use_analyst_epsilon=use_analyst_epsilon,
-        use_analyst_zeta=use_analyst_zeta,
-        use_analyst_eta=use_analyst_eta,
-    )
-    for config in configs:
-        config["resolved_model_name"] = resolve_rucam_model(
-            model_env=config["model_env"],
-            fallback_envs=config["fallback_envs"],
-            default_model=config["default_model"],
-        )
-    return configs
 
 
 def _status_path(pdf_output_dir: Path) -> Path:
@@ -210,13 +176,9 @@ def _is_pdf_run_complete(
     pdf_path: Path,
     pdf_output_dir: Path,
     prompt_path: str | None,
-    enabled_analyst_configs: list[dict[str, Any]],
+    roster_path: str | None,
     enable_score_masking: bool,
     strict_scoring: bool,
-    use_analyst_delta: bool,
-    use_analyst_epsilon: bool,
-    use_analyst_zeta: bool,
-    use_analyst_eta: bool,
     run_context: PdfRunContext = PdfRunContext(),
 ) -> bool:
     status = _read_pdf_run_status(pdf_output_dir)
@@ -235,12 +197,9 @@ def _is_pdf_run_complete(
         str(pdf_path),
         str(pdf_output_dir),
         prompt_path=prompt_path,
+        roster_path=roster_path,
         enable_score_masking=enable_score_masking,
         strict_scoring=strict_scoring,
-        use_analyst_delta=use_analyst_delta,
-        use_analyst_epsilon=use_analyst_epsilon,
-        use_analyst_zeta=use_analyst_zeta,
-        use_analyst_eta=use_analyst_eta,
     )
 
 
@@ -249,37 +208,30 @@ def _run_pdf_analysis(
     pdf_path: Path,
     pdf_output_dir: Path,
     prompt_path: str | None,
-    enabled_analyst_configs: list[dict[str, Any]],
+    roster_path: str | None,
+    analysts: Sequence[AnalystConfig],
     enable_score_masking: bool,
     strict_scoring: bool,
-    use_analyst_delta: bool,
-    use_analyst_epsilon: bool,
-    use_analyst_zeta: bool,
-    use_analyst_eta: bool,
     debug: bool,
     force_rerun: bool,
     max_restarts: int,
     run_context: PdfRunContext = PdfRunContext(),
 ) -> PdfRunResult:
     pdf_output_dir.mkdir(parents=True, exist_ok=True)
-    row = _initialize_summary_row(pdf_path, enabled_analyst_configs)
+    row = _initialize_summary_row(pdf_path, analysts)
     if not force_rerun and _is_pdf_run_complete(
         pdf_path=pdf_path,
         pdf_output_dir=pdf_output_dir,
         prompt_path=prompt_path,
-        enabled_analyst_configs=enabled_analyst_configs,
+        roster_path=roster_path,
         enable_score_masking=enable_score_masking,
         strict_scoring=strict_scoring,
-        use_analyst_delta=use_analyst_delta,
-        use_analyst_epsilon=use_analyst_epsilon,
-        use_analyst_zeta=use_analyst_zeta,
-        use_analyst_eta=use_analyst_eta,
         run_context=run_context,
     ):
         _populate_row_from_reports(
             row,
             pdf_output_dir,
-            enabled_analyst_configs,
+            analysts,
             enable_score_masking,
         )
         return PdfRunResult(row=row, reused=True)
@@ -288,7 +240,7 @@ def _run_pdf_analysis(
         "pdf_filename": pdf_path.name,
         "masking_enabled": enable_score_masking,
         "strict_scoring": strict_scoring,
-        "enabled_analysts": [config["key"] for config in enabled_analyst_configs],
+        "enabled_analysts": [config.key for config in analysts],
         **run_context.status_fields(),
     }
     log_file = None
@@ -319,19 +271,16 @@ def _run_pdf_analysis(
                 str(pdf_path),
                 prompt_path=prompt_path,
                 output_dir=str(pdf_output_dir),
+                roster_path=roster_path,
                 enable_score_masking=enable_score_masking,
                 strict_scoring=strict_scoring,
-                use_analyst_delta=use_analyst_delta,
-                use_analyst_epsilon=use_analyst_epsilon,
-                use_analyst_zeta=use_analyst_zeta,
-                use_analyst_eta=use_analyst_eta,
                 max_restarts=max_restarts,
                 resume=not force_rerun,
             )
             _populate_row_from_reports(
                 row,
                 pdf_output_dir,
-                enabled_analyst_configs,
+                analysts,
                 enable_score_masking,
             )
             _write_pdf_run_status(
@@ -351,7 +300,7 @@ def _run_pdf_analysis(
                 _populate_row_from_reports(
                     row,
                     pdf_output_dir,
-                    enabled_analyst_configs,
+                    analysts,
                     enable_score_masking,
                     tolerate_invalid=True,
                 )
@@ -411,7 +360,7 @@ def _utc_now_isoformat() -> str:
 def _populate_row_from_reports(
     row: dict[str, Any],
     pdf_output_dir: Path,
-    enabled_analyst_configs: list[dict[str, Any]],
+    analysts: Sequence[AnalystConfig],
     enable_score_masking: bool,
     *,
     tolerate_invalid: bool = False,
@@ -425,8 +374,8 @@ def _populate_row_from_reports(
                 report_text
             )
 
-    for config in enabled_analyst_configs:
-        report_path = pdf_output_dir / f"{config['key'].replace('_', '-')}_report.md"
+    for config in analysts:
+        report_path = pdf_output_dir / config.report_filename
         if not report_path.exists():
             continue
         report_text = report_path.read_text(encoding="utf-8")
@@ -439,7 +388,7 @@ def _populate_row_from_reports(
                 report_filename=report_path.name,
                 diagnostic=exc.diagnostic,
             ) from exc
-        row[config["key"]] = validated.payload.total_score
+        row[config.key] = validated.payload.total_score
 
 
 def extract_section_c_json(report_text: str) -> dict[str, Any]:
@@ -468,7 +417,7 @@ def _describe_legacy_missing_section_c(report_text: str) -> str | None:
 
 def _write_summary_workbook(
     rows: list[dict[str, Any]],
-    enabled_analyst_configs: list[dict[str, Any]],
+    analysts: Sequence[AnalystConfig],
     output_path: Path,
 ) -> None:
     workbook = Workbook()
@@ -477,12 +426,12 @@ def _write_summary_workbook(
 
     headers = (
         ["pdf_filename"]
-        + [config["resolved_model_name"] for config in enabled_analyst_configs]
+        + [config.model for config in analysts]
         + ["masked_rucam_score", "masked_rucam_category"]
     )
     row_keys = (
         ["pdf_filename"]
-        + [config["key"] for config in enabled_analyst_configs]
+        + [config.key for config in analysts]
         + ["masked_rucam_score", "masked_rucam_category"]
     )
 
@@ -501,7 +450,7 @@ def _write_summary_workbook(
 
 def _main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Run dili_rucam_agents across a folder of PDFs."
+        description="Score a folder of PDFs with the declared analyst roster."
     )
     parser.add_argument("input_dir", help="Directory containing input PDF files.")
     parser.add_argument(
@@ -518,13 +467,14 @@ def _main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument("--strict-scoring", dest="strict_scoring", action="store_true")
     parser.add_argument(
-        "--analyst-delta", dest="use_analyst_delta", action="store_true"
+        "--analysts",
+        dest="roster_path",
+        metavar="PATH",
+        help=(
+            "Analyst roster JSON (default: config/analysts.json, one analyst). "
+            "config/analysts.study.json declares the seven-analyst study roster."
+        ),
     )
-    parser.add_argument(
-        "--analyst-epsilon", dest="use_analyst_epsilon", action="store_true"
-    )
-    parser.add_argument("--analyst-zeta", dest="use_analyst_zeta", action="store_true")
-    parser.add_argument("--analyst-eta", dest="use_analyst_eta", action="store_true")
     parser.add_argument(
         "--reproducibility",
         action="store_true",
@@ -571,12 +521,9 @@ def _main(argv: Sequence[str] | None = None) -> None:
             output_dir=args.output_dir,
             repeats=args.repeats if args.repeats is not None else 5,
             prompt_path=args.prompt_path,
+            roster_path=args.roster_path,
             enable_score_masking=args.enable_score_masking,
             strict_scoring=args.strict_scoring,
-            use_analyst_delta=args.use_analyst_delta,
-            use_analyst_epsilon=args.use_analyst_epsilon,
-            use_analyst_zeta=args.use_analyst_zeta,
-            use_analyst_eta=args.use_analyst_eta,
             debug=args.debug,
             force_rerun=args.force_rerun,
             max_restarts=args.analyst_restarts,
@@ -590,12 +537,9 @@ def _main(argv: Sequence[str] | None = None) -> None:
         input_dir=args.input_dir,
         output_dir=args.output_dir,
         prompt_path=args.prompt_path,
+        roster_path=args.roster_path,
         enable_score_masking=args.enable_score_masking,
         strict_scoring=args.strict_scoring,
-        use_analyst_delta=args.use_analyst_delta,
-        use_analyst_epsilon=args.use_analyst_epsilon,
-        use_analyst_zeta=args.use_analyst_zeta,
-        use_analyst_eta=args.use_analyst_eta,
         debug=args.debug,
         force_rerun=args.force_rerun,
         max_restarts=args.analyst_restarts,

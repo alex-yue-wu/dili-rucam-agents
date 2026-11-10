@@ -14,10 +14,9 @@ from openpyxl.styles import Font
 from dili_rucam_agents.batch import (
     PdfRunContext,
     PdfRunFailure,
-    _get_resolved_analyst_configs,
     _run_pdf_analysis,
 )
-from dili_rucam_agents.crew.agents import resolve_ground_truth_score_finder_model
+from dili_rucam_agents.roster import AnalystConfig, load_roster
 from dili_rucam_agents.runner import validate_max_restarts
 
 
@@ -80,7 +79,8 @@ def _score_statistics(values: Sequence[int]) -> ScoreStatistics:
 def _write_reproducibility_workbook(
     *,
     records: list[ReproducibilityRunRecord],
-    enabled_analyst_configs: list[dict[str, Any]],
+    analysts: Sequence[AnalystConfig],
+    ground_truth_model: str,
     enable_score_masking: bool,
     output_path: Path,
 ) -> Path:
@@ -95,7 +95,7 @@ def _write_reproducibility_workbook(
         "repeat_directory",
         "status",
         "pdf_filename",
-        *[f"{config['key']}_score" for config in enabled_analyst_configs],
+        *[f"{config.key}_score" for config in analysts],
     ]
     if enable_score_masking:
         run_headers.extend(["masked_rucam_score", "masked_rucam_category"])
@@ -108,10 +108,7 @@ def _write_reproducibility_workbook(
             record.repeat_directory,
             record.status,
             record.pdf_filename,
-            *[
-                record.analyst_scores.get(config["key"])
-                for config in enabled_analyst_configs
-            ],
+            *[record.analyst_scores.get(config.key) for config in analysts],
         ]
         if enable_score_masking:
             values.extend([record.masked_rucam_score, record.masked_rucam_category])
@@ -150,11 +147,11 @@ def _write_reproducibility_workbook(
             ]
         )
 
-    for config in enabled_analyst_configs:
-        key = config["key"]
+    for config in analysts:
+        key = config.key
         append_statistics(
             key,
-            config["resolved_model_name"],
+            config.model,
             [
                 score
                 for record in completed_records
@@ -164,7 +161,7 @@ def _write_reproducibility_workbook(
     if enable_score_masking:
         append_statistics(
             "ground_truth_rucam",
-            resolve_ground_truth_score_finder_model(),
+            ground_truth_model,
             [
                 record.masked_rucam_score
                 for record in completed_records
@@ -218,12 +215,9 @@ def run_reproducibility_folder(
     output_dir: str,
     repeats: int = 5,
     prompt_path: str | None = None,
+    roster_path: str | None = None,
     enable_score_masking: bool = False,
     strict_scoring: bool = False,
-    use_analyst_delta: bool = False,
-    use_analyst_epsilon: bool = False,
-    use_analyst_zeta: bool = False,
-    use_analyst_eta: bool = False,
     debug: bool = False,
     force_rerun: bool = False,
     max_restarts: int = 2,
@@ -234,12 +228,7 @@ def run_reproducibility_folder(
     source_dir = Path(input_dir).expanduser().resolve()
     results_dir = Path(output_dir).expanduser().resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
-    enabled_analyst_configs = _get_resolved_analyst_configs(
-        use_analyst_delta=use_analyst_delta,
-        use_analyst_epsilon=use_analyst_epsilon,
-        use_analyst_zeta=use_analyst_zeta,
-        use_analyst_eta=use_analyst_eta,
-    )
+    roster = load_roster(roster_path)
     summary_paths: list[Path] = []
     failed_repeats: list[str] = []
 
@@ -259,13 +248,10 @@ def run_reproducibility_folder(
                     pdf_path=pdf_path,
                     pdf_output_dir=repeat_dir,
                     prompt_path=prompt_path,
-                    enabled_analyst_configs=enabled_analyst_configs,
+                    roster_path=roster_path,
+                    analysts=roster.analysts,
                     enable_score_masking=enable_score_masking,
                     strict_scoring=strict_scoring,
-                    use_analyst_delta=use_analyst_delta,
-                    use_analyst_epsilon=use_analyst_epsilon,
-                    use_analyst_zeta=use_analyst_zeta,
-                    use_analyst_eta=use_analyst_eta,
                     debug=debug,
                     force_rerun=force_rerun,
                     max_restarts=max_restarts,
@@ -282,8 +268,8 @@ def run_reproducibility_folder(
                         status="failed",
                         pdf_filename=pdf_path.name,
                         analyst_scores={
-                            config["key"]: exc.row.get(config["key"])
-                            for config in enabled_analyst_configs
+                            config.key: exc.row.get(config.key)
+                            for config in roster.analysts
                         },
                         masked_rucam_score=exc.row.get("masked_rucam_score"),
                         masked_rucam_category=exc.row.get("masked_rucam_category"),
@@ -292,7 +278,8 @@ def run_reproducibility_folder(
                 )
                 _write_reproducibility_workbook(
                     records=records,
-                    enabled_analyst_configs=enabled_analyst_configs,
+                    analysts=roster.analysts,
+                    ground_truth_model=roster.ground_truth.model,
                     enable_score_masking=enable_score_masking,
                     output_path=summary_path,
                 )
@@ -314,8 +301,8 @@ def run_reproducibility_folder(
                     status="completed",
                     pdf_filename=pdf_path.name,
                     analyst_scores={
-                        config["key"]: result.row.get(config["key"])
-                        for config in enabled_analyst_configs
+                        config.key: result.row.get(config.key)
+                        for config in roster.analysts
                     },
                     masked_rucam_score=result.row.get("masked_rucam_score"),
                     masked_rucam_category=result.row.get("masked_rucam_category"),
@@ -323,7 +310,8 @@ def run_reproducibility_folder(
             )
             _write_reproducibility_workbook(
                 records=records,
-                enabled_analyst_configs=enabled_analyst_configs,
+                analysts=roster.analysts,
+                ground_truth_model=roster.ground_truth.model,
                 enable_score_masking=enable_score_masking,
                 output_path=summary_path,
             )

@@ -1,4 +1,4 @@
-"""dili_rucam_agents package exposing crew builders and pipeline helpers."""
+"""dili_rucam_agents package exposing the pipeline entry point."""
 
 
 def run_end_to_end(

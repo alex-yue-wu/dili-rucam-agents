@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 import pytest
 
 from dili_rucam_agents.batch import PdfRunFailure, PdfRunResult, _main
+from dili_rucam_agents.roster import AnalystConfig, Provider, load_roster
 from dili_rucam_agents.reproducibility import (
     RESUME_HINT,
     ReproducibilityRunRecord,
@@ -49,6 +50,31 @@ def _write_complete_reports(result_dir: Path) -> None:
         (result_dir / report_name).write_text(_complete_report(), encoding="utf-8")
 
 
+def _analysts(*keys: str, models: dict[str, str] | None = None) -> list[AnalystConfig]:
+    resolved = models or {}
+    return [
+        AnalystConfig(
+            key=key,
+            label=key.replace("_", " ").title(),
+            provider=Provider.openai,
+            model=resolved.get(key, f"{key}-model"),
+        )
+        for key in keys
+    ]
+
+
+def _write_roster(tmp_path: Path, *keys: str, name: str = "analysts.json") -> str:
+    payload = {
+        "analysts": [
+            config.model_dump(mode="json") for config in _analysts(*keys)
+        ],
+        "ground_truth": {"provider": "openai", "model": "ground-truth-model"},
+    }
+    path = tmp_path / name
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(path)
+
+
 def test_score_statistics_computes_sample_spread_and_agreement():
     result = _score_statistics([6, 6, 8, 8, 8])
 
@@ -78,13 +104,13 @@ def test_score_statistics_reports_tied_modes_and_small_samples():
 
 
 def test_reproducibility_workbook_has_runs_and_completed_only_statistics(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ):
-    monkeypatch.setenv("GROUND_TRUTH_SCORE_FINDER_MODEL", "ground-truth-model")
-    configs = [
-        {"key": "analyst_alpha", "resolved_model_name": "alpha-model"},
-        {"key": "analyst_beta", "resolved_model_name": "beta-model"},
-    ]
+    analysts = _analysts(
+        "analyst_alpha",
+        "analyst_beta",
+        models={"analyst_alpha": "alpha-model", "analyst_beta": "beta-model"},
+    )
     records = [
         ReproducibilityRunRecord(
             repeat=1,
@@ -117,7 +143,8 @@ def test_reproducibility_workbook_has_runs_and_completed_only_statistics(
 
     written = _write_reproducibility_workbook(
         records=records,
-        enabled_analyst_configs=configs,
+        analysts=analysts,
+        ground_truth_model="ground-truth-model",
         enable_score_masking=True,
         output_path=output_path,
     )
@@ -173,6 +200,8 @@ def test_reproducibility_runs_sorted_pdfs_and_repeats_in_isolated_directories(
                 kwargs["enable_score_masking"],
                 kwargs["strict_scoring"],
                 kwargs["max_restarts"],
+                kwargs["roster_path"],
+                tuple(config.key for config in kwargs["analysts"]),
             )
         )
         return PdfRunResult(
@@ -192,10 +221,13 @@ def test_reproducibility_runs_sorted_pdfs_and_repeats_in_isolated_directories(
         fake_run_pdf_analysis,
     )
 
+    roster_path = _write_roster(tmp_path, "analyst_alpha", "analyst_beta")
+
     summaries = run_reproducibility_folder(
         input_dir=str(input_dir),
         output_dir=str(output_dir),
         repeats=2,
+        roster_path=roster_path,
         strict_scoring=True,
         max_restarts=1,
     )
@@ -204,11 +236,12 @@ def test_reproducibility_runs_sorted_pdfs_and_repeats_in_isolated_directories(
         "case-a/summary.xlsx",
         "case-b/summary.xlsx",
     ]
+    keys = ("analyst_alpha", "analyst_beta")
     assert calls == [
-        ("case-a.pdf", "case-a/case-a_1", 1, False, True, 1),
-        ("case-a.pdf", "case-a/case-a_2", 2, False, True, 1),
-        ("case-b.pdf", "case-b/case-b_1", 1, False, True, 1),
-        ("case-b.pdf", "case-b/case-b_2", 2, False, True, 1),
+        ("case-a.pdf", "case-a/case-a_1", 1, False, True, 1, roster_path, keys),
+        ("case-a.pdf", "case-a/case-a_2", 2, False, True, 1, roster_path, keys),
+        ("case-b.pdf", "case-b/case-b_1", 1, False, True, 1, roster_path, keys),
+        ("case-b.pdf", "case-b/case-b_2", 2, False, True, 1, roster_path, keys),
     ]
     assert not list(output_dir.rglob("batch_summary.xlsx"))
 
@@ -277,7 +310,7 @@ def test_reproducibility_persists_failed_repeat_then_stops(tmp_path: Path, monke
     assert alpha[2] == 1
 
 
-def test_reproducibility_skips_only_compatible_completed_repeats(
+def test_reproducibility_resume_skips_completed_repeats(
     tmp_path: Path, monkeypatch
 ):
     input_dir = tmp_path / "input"
@@ -534,7 +567,8 @@ def test_batch_cli_dispatches_reproducibility_with_default_five(
             str(tmp_path / "output"),
             "--reproducibility",
             "--mask-scores",
-            "--analyst-delta",
+            "--analysts",
+            "config/analysts.study.json",
             "--analyst-restarts",
             "1",
         ]
@@ -542,7 +576,7 @@ def test_batch_cli_dispatches_reproducibility_with_default_five(
 
     assert captured["repeats"] == 5
     assert captured["enable_score_masking"] is True
-    assert captured["use_analyst_delta"] is True
+    assert captured["roster_path"] == "config/analysts.study.json"
     assert captured["max_restarts"] == 1
     assert "summary.xlsx" in capsys.readouterr().out
 
@@ -609,12 +643,9 @@ def test_batch_cli_keeps_regular_dispatch_unchanged(tmp_path: Path, monkeypatch)
         "input_dir": str(tmp_path / "input"),
         "output_dir": str(tmp_path / "output"),
         "prompt_path": None,
+        "roster_path": None,
         "enable_score_masking": False,
         "strict_scoring": False,
-        "use_analyst_delta": False,
-        "use_analyst_epsilon": False,
-        "use_analyst_zeta": False,
-        "use_analyst_eta": False,
         "debug": False,
         "force_rerun": False,
         "max_restarts": 2,
@@ -803,3 +834,112 @@ def test_batch_cli_rejects_continue_on_failure_without_reproducibility(
         )
 
     assert "--continue-on-failure requires --reproducibility" in capsys.readouterr().err
+
+
+# -- the roster decides the aggregate sheet's rows --------------------------
+
+
+def _row_runner(scores: dict[str, int]):
+    def fake_run_pdf_analysis(**kwargs):
+        pdf_path = kwargs["pdf_path"]
+        return PdfRunResult(
+            row={"pdf_filename": pdf_path.name, "masked_rucam_score": 8, **scores},
+            reused=False,
+        )
+
+    return fake_run_pdf_analysis
+
+
+def test_aggregate_sheet_has_one_row_per_roster_analyst_plus_ground_truth(
+    tmp_path: Path, monkeypatch
+):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+    keys = ("analyst_alpha", "analyst_beta", "analyst_gamma")
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility._run_pdf_analysis",
+        _row_runner({key: 6 for key in keys}),
+    )
+
+    summaries = run_reproducibility_folder(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        repeats=2,
+        roster_path=_write_roster(tmp_path, *keys),
+        enable_score_masking=True,
+    )
+
+    aggregate = list(load_workbook(summaries[0], data_only=True)["Reproducibility"].values)
+    assert [row[0] for row in aggregate[1:]] == [*keys, "ground_truth_rucam"]
+    assert [row[1] for row in aggregate[1:]] == [
+        "analyst_alpha-model",
+        "analyst_beta-model",
+        "analyst_gamma-model",
+        "ground-truth-model",
+    ]
+
+
+def test_single_analyst_aggregate_row_reports_no_sample_standard_deviation(
+    tmp_path: Path, monkeypatch
+):
+    """One repeat is one observation: a sample spread needs two."""
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility._run_pdf_analysis",
+        _row_runner({"analyst_alpha": 6}),
+    )
+
+    summaries = run_reproducibility_folder(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        repeats=1,
+        roster_path=_write_roster(tmp_path, "analyst_alpha"),
+    )
+
+    aggregate = list(load_workbook(summaries[0], data_only=True)["Reproducibility"].values)
+    assert len(aggregate) == 2  # header plus the one analyst
+    (scorer, model, valid_repeats, mean_score, stdev, *_rest) = aggregate[1]
+    assert (scorer, model, valid_repeats, mean_score) == (
+        "analyst_alpha",
+        "analyst_alpha-model",
+        1,
+        6,
+    )
+    assert stdev is None
+
+
+def test_the_default_roster_gives_one_score_column_per_repeat(
+    tmp_path: Path, monkeypatch
+):
+    """No --analysts: the Runs sheet carries exactly one analyst column."""
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "case.pdf").write_bytes(b"%PDF-1.4")
+    default_keys = [config.key for config in load_roster().analysts]
+    monkeypatch.setattr(
+        "dili_rucam_agents.reproducibility._run_pdf_analysis",
+        _row_runner({key: 6 for key in default_keys}),
+    )
+
+    summaries = run_reproducibility_folder(
+        input_dir=str(input_dir), output_dir=str(output_dir), repeats=2
+    )
+
+    runs = list(load_workbook(summaries[0], data_only=True)["Runs"].values)
+    assert runs[0] == (
+        "repeat",
+        "repeat_directory",
+        "status",
+        "pdf_filename",
+        "analyst_alpha_score",
+        "error",
+    )
+    assert [row[4] for row in runs[1:]] == [6, 6]

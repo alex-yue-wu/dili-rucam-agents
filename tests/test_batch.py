@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -6,8 +7,10 @@ from openpyxl import load_workbook
 import pytest
 
 import dili_rucam_agents.pipeline as pipeline_module
+from dili_rucam_agents.analysts import AnalystExecutionError, AnalystRunOutcome
 from dili_rucam_agents.batch import (
     PdfRunFailure,
+    _main as batch_main,
     PdfRunContext,
     _is_pdf_run_complete,
     _run_pdf_analysis,
@@ -17,18 +20,77 @@ from dili_rucam_agents.batch import (
     extract_section_c_json,
     run_batch_folder,
 )
-from dili_rucam_agents.crew.config import get_enabled_analyst_configs
-from dili_rucam_agents.crew.crew import AnalystAttemptEvent, AnalystExecutionError
+from dili_rucam_agents.checkpoints import CHECKPOINT_SCHEMA_VERSION
+from dili_rucam_agents.contracts import load_rucam_prompt
 from dili_rucam_agents.diagnostics import SafeValidationDiagnostic
 from dili_rucam_agents.pipeline import is_end_to_end_complete, run_end_to_end
+from dili_rucam_agents.providers import MissingApiKeyError, ModelResponse, api_key_env
+from dili_rucam_agents.roster import (
+    DEFAULT_ROSTER_PATH,
+    Provider,
+    RosterError,
+    load_roster,
+)
 from dili_rucam_agents.validators.analyst_report import (
     AnalystReportValidationError,
     validate_analyst_report,
 )
+from fakes import FakeProvider
+from test_rucam_assessment import _assessment, _causes, _item
+
+#: The three analysts the pre-roster topology ran by default. Most tests below
+#: predate the roster and are kept on this shape so their assertions are
+#: unchanged; the roster is now written per test rather than switched on.
+THREE = ("analyst_alpha", "analyst_beta", "analyst_gamma")
+STUDY_ROSTER_PATH = DEFAULT_ROSTER_PATH.with_name("analysts.study.json")
+
+_MODELS = {
+    "analyst_alpha": "gpt-5.5",
+    "analyst_beta": "gemini-3.1-pro-preview",
+    "analyst_gamma": "moonshotai/kimi-k2.5",
+    "analyst_delta": "deepseek-v4-pro",
+}
 
 
-def complete_report(total_score: int = 6) -> str:
-    rucam_scores = {
+@pytest.fixture(autouse=True)
+def api_keys(monkeypatch):
+    """Every provider has a key, so nothing fails the pre-flight by accident."""
+    for provider in Provider:
+        monkeypatch.setenv(api_key_env(provider), "test-key")
+
+
+def write_roster(
+    tmp_path: Path,
+    keys=THREE,
+    *,
+    name: str = "analysts.json",
+    models: dict[str, str] | None = None,
+    max_output_tokens: int = 32000,
+) -> str:
+    """Write a roster file and return its path, so a test's topology is explicit."""
+    resolved = dict(_MODELS)
+    resolved.update(models or {})
+    payload = {
+        "analysts": [
+            {
+                "key": key,
+                "label": key.replace("_", " ").title(),
+                "provider": "openai",
+                "model": resolved[key],
+                "max_output_tokens": max_output_tokens,
+            }
+            for key in keys
+        ],
+        "ground_truth": {"provider": "openai", "model": "gpt-5.5"},
+    }
+    path = tmp_path / name
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def rucam_scores(total_score: int = 6) -> dict[str, int]:
+    """Seven legal item scores summing to ``total_score`` (6, 7 or 8)."""
+    scores = {
         "time_to_onset": 2,
         "course": 1,
         "risk_factors": 0,
@@ -38,16 +100,20 @@ def complete_report(total_score: int = 6) -> str:
         "rechallenge": 0,
     }
     if total_score == 7:
-        rucam_scores["known_hepatotoxicity"] = 2
+        scores["known_hepatotoxicity"] = 2
     elif total_score == 8:
-        rucam_scores["course"] = 2
-        rucam_scores["known_hepatotoxicity"] = 2
+        scores["course"] = 2
+        scores["known_hepatotoxicity"] = 2
     elif total_score != 6:
-        raise ValueError("complete_report only supports scores from 6 through 8")
+        raise ValueError("only scores from 6 through 8 are supported")
+    return scores
+
+
+def complete_report(total_score: int = 6) -> str:
     payload = {
         "injury_pattern": "hepatocellular",
         "R_ratio": 6.4,
-        "rucam_scores": rucam_scores,
+        "rucam_scores": rucam_scores(total_score),
         "total_score": total_score,
         "category": "Probable",
     }
@@ -58,14 +124,90 @@ def complete_report(total_score: int = 6) -> str:
     )
 
 
-def write_complete_reports(result_dir: Path) -> None:
+def assessment_payload(total_score: int = 6, marker: str = "because") -> dict:
+    """A valid RucamAssessment whose seven items sum to ``total_score``."""
+    return _assessment(
+        item_5_causes=_causes(3),
+        **{
+            name: _item(score, rationale=marker)
+            for name, score in rucam_scores(total_score).items()
+        },
+    )
+
+
+def assessment_json(total_score: int = 6) -> str:
+    return json.dumps(assessment_payload(total_score), indent=2, sort_keys=True) + "\n"
+
+
+def write_complete_reports(result_dir: Path, keys=THREE, total_score: int = 6) -> None:
+    """Only the report, as the markdown-era pipeline left behind."""
     result_dir.mkdir(parents=True, exist_ok=True)
-    for report_name in (
-        "analyst-alpha_report.md",
-        "analyst-beta_report.md",
-        "analyst-gamma_report.md",
-    ):
-        (result_dir / report_name).write_text(complete_report(), encoding="utf-8")
+    for key in keys:
+        (result_dir / f"{key.replace('_', '-')}_report.md").write_text(
+            complete_report(total_score), encoding="utf-8"
+        )
+
+
+def write_complete_artifacts(result_dir: Path, keys=THREE, total_score: int = 6) -> None:
+    """Both artifacts a completed analyst now needs: report and sidecar."""
+    write_complete_reports(result_dir, keys, total_score)
+    for key in keys:
+        (result_dir / f"{key.replace('_', '-')}_assessment.json").write_text(
+            assessment_json(total_score), encoding="utf-8"
+        )
+
+
+def fake_ingestion(monkeypatch, *, counters: dict[str, int] | None = None) -> None:
+    """Replace PDF parsing and the item 6 cascade with a fixed bundle.
+
+    Patched on ``pipeline_module`` rather than on ``_prepare_case_bundle_json``,
+    so a test can still guard that the pipeline is the thing calling them.
+    """
+    counts = counters if counters is not None else {}
+    counts.setdefault("build", 0)
+    counts.setdefault("mask", 0)
+
+    class _Bundle:
+        def to_dict(self):
+            return {"pdf_path": "case.pdf", "normalized_text": "RUCAM score 9"}
+
+    def build(path):
+        counts["build"] += 1
+        return _Bundle()
+
+    def mask(payload):
+        counts["mask"] += 1
+        return {**payload, "normalized_text": "[RUCAM_SCORE_MASKED]"}
+
+    monkeypatch.setattr(pipeline_module, "build_case_bundle", build)
+    monkeypatch.setattr(
+        pipeline_module,
+        "apply_hepatotoxicity_evidence",
+        lambda payload, settings: (payload, None),
+    )
+    monkeypatch.setattr(pipeline_module, "mask_case_bundle_payload", mask)
+
+
+def use_provider(monkeypatch, provider) -> None:
+    """Both of the pipeline's provider call sites get this one fake."""
+    monkeypatch.setattr(pipeline_module, "_build_provider", lambda: provider)
+
+
+def reply(total_score: int = 6, marker: str = "because") -> str:
+    return json.dumps(assessment_payload(total_score, marker))
+
+
+def read_manifest(output_dir: Path) -> dict:
+    return json.loads(
+        (output_dir / "analyst_checkpoints.json").read_text(encoding="utf-8")
+    )
+
+
+GROUND_TRUTH_REPORT = (
+    "# Ground Truth RUCAM Score Report\n\n"
+    "## Stable Fields\n"
+    "```text\nGROUND_TRUTH_RUCAM_SCORE: 8\nGROUND_TRUTH_RUCAM_CATEGORY: Probable\n```\n"
+)
 
 
 def test_shared_pdf_runner_returns_stable_analyst_keys_and_repeat_status(
@@ -74,9 +216,8 @@ def test_shared_pdf_runner_returns_stable_analyst_keys_and_repeat_status(
     pdf_path = tmp_path / "case.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     result_dir = tmp_path / "case" / "case_2"
-    configs = get_enabled_analyst_configs()
-    for config in configs:
-        config["resolved_model_name"] = config["default_model"]
+    roster_path = write_roster(tmp_path)
+    analysts = load_roster(roster_path).analysts
 
     monkeypatch.setattr(
         "dili_rucam_agents.batch.is_end_to_end_complete",
@@ -93,13 +234,10 @@ def test_shared_pdf_runner_returns_stable_analyst_keys_and_repeat_status(
         pdf_path=pdf_path,
         pdf_output_dir=result_dir,
         prompt_path=None,
-        enabled_analyst_configs=configs,
+        roster_path=roster_path,
+        analysts=analysts,
         enable_score_masking=False,
         strict_scoring=False,
-        use_analyst_delta=False,
-        use_analyst_epsilon=False,
-        use_analyst_zeta=False,
-        use_analyst_eta=False,
         debug=False,
         force_rerun=False,
         max_restarts=2,
@@ -141,13 +279,9 @@ def test_repeat_completion_requires_matching_repeat_metadata(tmp_path, monkeypat
         pdf_path=pdf_path,
         pdf_output_dir=result_dir,
         prompt_path=None,
-        enabled_analyst_configs=get_enabled_analyst_configs(),
+        roster_path=write_roster(tmp_path),
         enable_score_masking=False,
         strict_scoring=False,
-        use_analyst_delta=False,
-        use_analyst_epsilon=False,
-        use_analyst_zeta=False,
-        use_analyst_eta=False,
         run_context=PdfRunContext(mode="reproducibility", repeat_index=2),
     )
     validator.assert_not_called()
@@ -159,7 +293,8 @@ def test_shared_pdf_runner_preserves_run_failure_when_partial_report_is_invalid(
     pdf_path = tmp_path / "case.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     result_dir = tmp_path / "case"
-    configs = get_enabled_analyst_configs()
+    roster_path = write_roster(tmp_path)
+    analysts = load_roster(roster_path).analysts
 
     monkeypatch.setattr(
         "dili_rucam_agents.batch.is_end_to_end_complete",
@@ -184,13 +319,10 @@ def test_shared_pdf_runner_preserves_run_failure_when_partial_report_is_invalid(
             pdf_path=pdf_path,
             pdf_output_dir=result_dir,
             prompt_path=None,
-            enabled_analyst_configs=configs,
+            roster_path=roster_path,
+            analysts=analysts,
             enable_score_masking=False,
             strict_scoring=False,
-            use_analyst_delta=False,
-            use_analyst_epsilon=False,
-            use_analyst_zeta=False,
-            use_analyst_eta=False,
             debug=False,
             force_rerun=False,
             max_restarts=2,
@@ -208,7 +340,8 @@ def test_shared_pdf_runner_preserves_run_failure_with_malformed_ground_truth(
     pdf_path = tmp_path / "case.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     result_dir = tmp_path / "case"
-    configs = get_enabled_analyst_configs()
+    roster_path = write_roster(tmp_path)
+    analysts = load_roster(roster_path).analysts
 
     monkeypatch.setattr(
         "dili_rucam_agents.batch.is_end_to_end_complete",
@@ -230,13 +363,10 @@ def test_shared_pdf_runner_preserves_run_failure_with_malformed_ground_truth(
             pdf_path=pdf_path,
             pdf_output_dir=result_dir,
             prompt_path=None,
-            enabled_analyst_configs=configs,
+            roster_path=roster_path,
+            analysts=analysts,
             enable_score_masking=True,
             strict_scoring=False,
-            use_analyst_delta=False,
-            use_analyst_epsilon=False,
-            use_analyst_zeta=False,
-            use_analyst_eta=False,
             debug=False,
             force_rerun=False,
             max_restarts=2,
@@ -443,6 +573,7 @@ def test_run_batch_folder_writes_summary_workbook(tmp_path: Path, monkeypatch):
     summary_path = run_batch_folder(
         input_dir=str(input_dir),
         output_dir=str(output_dir),
+        roster_path=write_roster(tmp_path),
         enable_score_masking=True,
     )
 
@@ -589,7 +720,9 @@ def test_run_batch_folder_records_analyst_failure_details(tmp_path, monkeypatch)
             analyst_key="analyst_beta",
             attempts=3,
             failure_kind="validation",
-            last_error="Invalid SECTION C JSON",
+            validation_diagnostic=SafeValidationDiagnostic(
+                (("SECTION_C", "invalid_json"),)
+            ),
         )
 
     monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
@@ -644,199 +777,338 @@ def test_run_batch_folder_writes_log_only_in_debug_mode(tmp_path: Path, monkeypa
     assert "Running PDF:" in log_path.read_text(encoding="utf-8")
 
 
-def test_run_end_to_end_forwards_strict_scoring(monkeypatch):
-    captured_kwargs = {}
+def test_run_end_to_end_sends_the_strict_prompt_when_asked(tmp_path, monkeypatch):
+    """strict_scoring picks the strict prompt file, not the inferring one."""
 
-    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
-        captured_kwargs.update(kwargs)
-        return "ok"
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    fake_ingestion(monkeypatch)
+    captured = {}
 
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
+    def fake_run_analysts(**kwargs):
+        captured.update(kwargs)
+        return AnalystRunOutcome(reports={"analyst_alpha": complete_report()})
 
-    result = run_end_to_end("example.pdf", strict_scoring=True)
+    monkeypatch.setattr(pipeline_module, "run_analysts", fake_run_analysts)
 
-    assert result == "ok"
-    assert captured_kwargs["strict_scoring"] is True
+    result = run_end_to_end(
+        str(pdf_path), roster_path=write_roster(tmp_path, ("analyst_alpha",)),
+        strict_scoring=True,
+    )
+
+    assert result == complete_report()
+    assert captured["prompt_text"] == load_rucam_prompt(strict_scoring=True)
+    assert captured["prompt_text"] != load_rucam_prompt(strict_scoring=False)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
+def test_run_end_to_end_sends_the_inferring_prompt_by_default(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    fake_ingestion(monkeypatch)
+    captured = {}
+
+    def fake_run_analysts(**kwargs):
+        captured.update(kwargs)
+        return AnalystRunOutcome()
+
+    monkeypatch.setattr(pipeline_module, "run_analysts", fake_run_analysts)
+    run_end_to_end(str(pdf_path), roster_path=write_roster(tmp_path, ("analyst_alpha",)))
+
+    assert captured["prompt_text"] == load_rucam_prompt(strict_scoring=False)
+
+
+def test_run_end_to_end_masks_the_bundle_it_sends_to_the_analysts(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    fake_ingestion(monkeypatch)
+    captured = {}
+
+    def fake_run_analysts(**kwargs):
+        captured.update(kwargs)
+        return AnalystRunOutcome()
+
+    monkeypatch.setattr(pipeline_module, "run_analysts", fake_run_analysts)
+    roster_path = write_roster(tmp_path, ("analyst_alpha",))
+
+    run_end_to_end(str(pdf_path), roster_path=roster_path, enable_score_masking=True)
+    assert captured["bundle_input_name"] == "masked_case_bundle_json"
+    assert "[RUCAM_SCORE_MASKED]" in captured["case_bundle_json"]
+    assert "RUCAM score 9" not in captured["case_bundle_json"]
+
+    run_end_to_end(str(pdf_path), roster_path=roster_path)
+    assert captured["bundle_input_name"] == "raw_case_bundle_json"
+    assert "RUCAM score 9" in captured["case_bundle_json"]
+
+
+def test_missing_api_key_fails_before_the_pdf_is_ingested(tmp_path, monkeypatch):
+    """The ingestion stack and the item 6 cascade are the expensive part."""
+
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    counters: dict[str, int] = {}
+    fake_ingestion(monkeypatch, counters=counters)
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_analysts",
+        Mock(side_effect=AssertionError("ran an analyst without a key")),
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    roster_path = tmp_path / "analysts.json"
+    roster_path.write_text(
+        json.dumps(
+            {
+                "analysts": [
+                    {
+                        "key": "analyst_zeta",
+                        "label": "Analyst Zeta",
+                        "provider": "anthropic",
+                        "model": "claude-opus-4-7",
+                    }
+                ],
+                "ground_truth": {"provider": "openai", "model": "gpt-5.5"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MissingApiKeyError, match="ANTHROPIC_API_KEY"):
+        run_end_to_end(str(pdf_path), roster_path=str(roster_path))
+
+    assert counters["build"] == 0
+
+
+def test_missing_ground_truth_key_fails_the_preflight_only_when_masking(
+    tmp_path, monkeypatch
+):
+    """The ground-truth model is called only when masking is on."""
+
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    fake_ingestion(monkeypatch)
+    monkeypatch.setattr(
+        pipeline_module, "run_analysts", lambda **kwargs: AnalystRunOutcome()
+    )
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    roster_path = tmp_path / "analysts.json"
+    roster_path.write_text(
+        json.dumps(
+            {
+                "analysts": [
+                    {
+                        "key": "analyst_alpha",
+                        "label": "Analyst Alpha",
+                        "provider": "openai",
+                        "model": "gpt-5.5",
+                    }
+                ],
+                "ground_truth": {
+                    "provider": "google",
+                    "model": "gemini-3.1-pro-preview",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_end_to_end(str(pdf_path), roster_path=str(roster_path))
+    with pytest.raises(MissingApiKeyError, match="GEMINI_API_KEY"):
+        run_end_to_end(
+            str(pdf_path), roster_path=str(roster_path), enable_score_masking=True
+        )
+
+
 def test_run_end_to_end_persists_invalid_attempt_then_valid_report(
     tmp_path, monkeypatch
 ):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
+    fake_ingestion(monkeypatch)
+    rejected = json.dumps({"injury_pattern": "not-a-pattern"})
+    use_provider(monkeypatch, FakeProvider(rejected, reply()))
 
-    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
-        callback = kwargs["on_attempt"]
-        diagnostic = SafeValidationDiagnostic((("SECTION_C", "missing_section"),))
-        callback(AnalystAttemptEvent("analyst_alpha", 1, 3, "running"))
-        kwargs["_on_invalid_report_audit"]("analyst_alpha", 1, "incomplete", diagnostic)
-        callback(
-            AnalystAttemptEvent(
-                "analyst_alpha",
-                1,
-                3,
-                "validation_failed",
-                validation_diagnostic=diagnostic,
-            )
-        )
-        callback(AnalystAttemptEvent("analyst_alpha", 2, 3, "running"))
-        callback(
-            AnalystAttemptEvent(
-                "analyst_alpha", 2, 3, "completed", report_text=complete_report()
-            )
-        )
-        return "ok", {"analyst_alpha": complete_report()}
+    run_end_to_end(
+        str(pdf_path),
+        output_dir=str(output_dir),
+        roster_path=write_roster(tmp_path, ("analyst_alpha",)),
+    )
 
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
-    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
-
-    attempt_paths = list((output_dir / "attempts").glob("analyst-alpha_*.invalid.md"))
-    assert len(attempt_paths) == 1
-    assert attempt_paths[0].read_text() == "incomplete"
+    attempt_paths = sorted((output_dir / "attempts").glob("analyst_alpha.*"))
+    assert [path.name for path in attempt_paths] == ["analyst_alpha.1.invalid.json"]
+    assert json.loads(attempt_paths[0].read_text()) == json.loads(rejected)
     assert (
         validate_analyst_report(
             (output_dir / "analyst-alpha_report.md").read_text()
         ).payload.total_score
         == 6
     )
+    sidecar = json.loads((output_dir / "analyst-alpha_assessment.json").read_text())
+    assert sidecar["injury_pattern"] == "hepatocellular"
+    entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
+    assert entry["status"] == "completed"
+    assert [item["failure_kind"] for item in entry["attempt_history"]] == ["validation"]
+    assert entry["validation_retries"] == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
-def test_invalid_attempt_artifacts_and_history_accumulate_across_invocations(
-    tmp_path, monkeypatch
-):
+def test_attempt_history_accumulates_across_invocations(tmp_path, monkeypatch):
+    """The manifest history grows; the artifact is named per attempt number.
+
+    ``run_analysts`` writes ``attempts/<key>.<n>.invalid.*``, so the second
+    invocation's first attempt replaces the first invocation's rather than
+    adding a second file. The history is what accumulates.
+    """
+
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
-    invalid_outputs = iter(("first invalid output", "second invalid output"))
+    fake_ingestion(monkeypatch)
+    roster_path = write_roster(tmp_path, ("analyst_alpha",))
 
-    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
-        report_text = next(invalid_outputs)
-        callback = kwargs["on_attempt"]
-        diagnostic = SafeValidationDiagnostic((("SECTION_C", "missing_section"),))
-        callback(AnalystAttemptEvent("analyst_alpha", 1, 1, "running"))
-        kwargs["_on_invalid_report_audit"]("analyst_alpha", 1, report_text, diagnostic)
-        callback(
-            AnalystAttemptEvent(
-                "analyst_alpha",
-                1,
-                1,
-                "validation_failed",
-                validation_diagnostic=diagnostic,
-            )
+    for marker in ("first", "second"):
+        use_provider(
+            monkeypatch, FakeProvider(json.dumps({"rejected": marker}))
         )
-        raise AnalystExecutionError(
-            analyst_key="analyst_alpha",
-            attempts=1,
-            failure_kind="validation",
-            validation_diagnostic=diagnostic,
-        )
-
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
-
-    for _ in range(2):
         with pytest.raises(AnalystExecutionError):
             run_end_to_end(
                 str(pdf_path),
                 output_dir=str(output_dir),
+                roster_path=roster_path,
                 max_restarts=0,
             )
 
-    attempt_paths = sorted((output_dir / "attempts").glob("*.invalid.md"))
-    assert len(attempt_paths) == 2
-    assert attempt_paths[0] != attempt_paths[1]
-    assert {path.read_text() for path in attempt_paths} == {
-        "first invalid output",
-        "second invalid output",
-    }
-    manifest = json.loads(
-        (output_dir / "analyst_checkpoints.json").read_text(encoding="utf-8")
-    )
-    entry = manifest["analysts"]["analyst_alpha"]
+    attempt_paths = sorted((output_dir / "attempts").glob("*.invalid.*"))
+    assert [path.name for path in attempt_paths] == ["analyst_alpha.1.invalid.json"]
+    assert json.loads(attempt_paths[0].read_text()) == {"rejected": "second"}
+    entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
     assert entry["total_attempts"] == 2
     assert [item["total_attempt"] for item in entry["attempt_history"]] == [1, 2]
-    assert all(item["artifact_file"] for item in entry["attempt_history"])
+    assert [item["failure_kind"] for item in entry["attempt_history"]] == [
+        "validation",
+        "validation",
+    ]
+    assert entry["status"] == "failed"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
+def test_a_truncated_reply_is_recorded_as_a_truncation(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    fake_ingestion(monkeypatch)
+    # The runner widens the budget once before giving up, so a truncation needs
+    # two cut-off replies to become a truncation failure.
+    use_provider(
+        monkeypatch,
+        FakeProvider(
+            ModelResponse(text='{"injury_pattern":', truncated=True),
+            ModelResponse(text='{"injury_pattern": "hepato', truncated=True),
+        ),
+    )
+
+    with pytest.raises(AnalystExecutionError) as exc_info:
+        run_end_to_end(
+            str(pdf_path),
+            output_dir=str(output_dir),
+            roster_path=write_roster(tmp_path, ("analyst_alpha",)),
+            max_restarts=0,
+        )
+
+    assert exc_info.value.failure_kind == "truncation"
+    entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
+    assert entry["failure_kind"] == "truncation"
+    assert "stops partway" in entry["last_error"]
+    assert entry["status"] == "failed"
+    # How far the model got, kept for judging the output budget.
+    assert sorted(path.name for path in (output_dir / "attempts").iterdir()) == [
+        "analyst_alpha.1.truncated1.invalid.txt",
+        "analyst_alpha.1.truncated2.invalid.txt",
+    ]
+
+
 def test_run_end_to_end_resume_false_supplies_no_completed_reports(
     tmp_path, monkeypatch
 ):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
-    output_dir.mkdir()
-    (output_dir / "analyst-alpha_report.md").write_text(
-        complete_report(), encoding="utf-8"
+    fake_ingestion(monkeypatch)
+    roster_path = write_roster(tmp_path, ("analyst_alpha",))
+    use_provider(monkeypatch, FakeProvider(reply()))
+    run_end_to_end(
+        str(pdf_path), output_dir=str(output_dir), roster_path=roster_path
     )
-    captured_kwargs = {}
+    captured = {}
 
-    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
-        captured_kwargs.update(kwargs)
-        return "ok", {}
+    def fake_run_analysts(**kwargs):
+        captured.update(kwargs)
+        return AnalystRunOutcome()
 
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
-    run_end_to_end(str(pdf_path), output_dir=str(output_dir), resume=False)
+    monkeypatch.setattr(pipeline_module, "run_analysts", fake_run_analysts)
 
-    assert captured_kwargs["completed_reports"] == {}
+    run_end_to_end(
+        str(pdf_path),
+        output_dir=str(output_dir),
+        roster_path=roster_path,
+        resume=True,
+    )
+    assert set(captured["completed_reports"]) == {"analyst_alpha"}
+
+    run_end_to_end(
+        str(pdf_path),
+        output_dir=str(output_dir),
+        roster_path=roster_path,
+        resume=False,
+    )
+    assert captured["completed_reports"] == {}
 
 
-def test_run_end_to_end_forwards_max_restarts(monkeypatch):
-    captured_kwargs = {}
+def test_run_end_to_end_forwards_max_restarts(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    fake_ingestion(monkeypatch)
+    captured = {}
 
-    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
-        captured_kwargs.update(kwargs)
-        return "ok"
+    def fake_run_analysts(**kwargs):
+        captured.update(kwargs)
+        return AnalystRunOutcome()
 
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
-    run_end_to_end("example.pdf", max_restarts=1)
+    monkeypatch.setattr(pipeline_module, "run_analysts", fake_run_analysts)
+    run_end_to_end(
+        str(pdf_path),
+        roster_path=write_roster(tmp_path, ("analyst_alpha",)),
+        max_restarts=1,
+    )
 
-    assert captured_kwargs["max_restarts"] == 1
+    assert captured["max_retries"] == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
+def test_run_end_to_end_rejects_more_than_two_restarts(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    counters: dict[str, int] = {}
+    fake_ingestion(monkeypatch, counters=counters)
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_analysts",
+        Mock(side_effect=AssertionError("ran with an illegal restart budget")),
+    )
+
+    with pytest.raises(ValueError, match="0 through 2"):
+        run_end_to_end(str(pdf_path), max_restarts=3)
+
+    assert counters["build"] == 0
+
+
 def test_run_end_to_end_passes_fingerprinted_instruction_contracts_unchanged(
     tmp_path, monkeypatch
 ):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
+    fake_ingestion(monkeypatch)
     checkpoint_contexts = []
-    captured_kwargs = {}
+    captured = {}
     original_builder = pipeline_module._build_checkpoint_context
 
     def capture_checkpoint_context(**kwargs):
@@ -844,224 +1116,180 @@ def test_run_end_to_end_passes_fingerprinted_instruction_contracts_unchanged(
         checkpoint_contexts.append(context)
         return context
 
-    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
-        captured_kwargs.update(kwargs)
-        return "ok", dict(kwargs["completed_reports"])
+    def fake_run_analysts(**kwargs):
+        captured.update(kwargs)
+        return AnalystRunOutcome()
 
     monkeypatch.setattr(
         pipeline_module, "_build_checkpoint_context", capture_checkpoint_context
     )
-    monkeypatch.setattr(pipeline_module, "run_crew", fake_run_crew)
+    monkeypatch.setattr(pipeline_module, "run_analysts", fake_run_analysts)
 
-    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
-
-    assert len(checkpoint_contexts) == 1
-    assert (
-        captured_kwargs["instruction_contracts"]
-        is checkpoint_contexts[0].instruction_contracts
+    run_end_to_end(
+        str(pdf_path),
+        output_dir=str(output_dir),
+        roster_path=write_roster(tmp_path),
     )
 
-
-def test_run_end_to_end_omits_attempt_handler_without_output_dir(monkeypatch):
-    captured_kwargs = {}
-
-    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
-        captured_kwargs.update(kwargs)
-        return "ok"
-
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
-    run_end_to_end("example.pdf")
-
-    assert captured_kwargs["on_attempt"] is None
+    assert len(checkpoint_contexts) == 1
+    # The very object whose sha256 went into the resume fingerprint is the one
+    # sent, so the two cannot disagree.
+    assert (
+        captured["instruction_contracts"]
+        is checkpoint_contexts[0].instruction_contracts
+    )
+    assert set(captured["instruction_contracts"]) == set(THREE)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
+def test_run_end_to_end_omits_both_callbacks_without_output_dir(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    fake_ingestion(monkeypatch)
+    captured = {}
+
+    def fake_run_analysts(**kwargs):
+        captured.update(kwargs)
+        return AnalystRunOutcome()
+
+    monkeypatch.setattr(pipeline_module, "run_analysts", fake_run_analysts)
+    run_end_to_end(str(pdf_path), roster_path=write_roster(tmp_path))
+
+    assert captured["on_attempt"] is None
+    assert captured["on_report"] is None
+    assert captured["output_dir"] is None
+
+
 def test_later_failure_preserves_completed_alpha_checkpoint(tmp_path, monkeypatch):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
+    fake_ingestion(monkeypatch)
+    # Alpha answers, beta never does.
+    use_provider(monkeypatch, FakeProvider(reply(), json.dumps({"bad": True})))
 
-    def fake_run_crew(pdf_path, prompt_path=None, **kwargs):
-        callback = kwargs["on_attempt"]
-        diagnostic = SafeValidationDiagnostic((("SECTION_C", "missing_section"),))
-        callback(AnalystAttemptEvent("analyst_alpha", 1, 3, "running"))
-        callback(
-            AnalystAttemptEvent(
-                "analyst_alpha", 1, 3, "completed", report_text=complete_report()
-            )
-        )
-        callback(AnalystAttemptEvent("analyst_beta", 1, 3, "running"))
-        kwargs["_on_invalid_report_audit"]("analyst_beta", 1, "incomplete", diagnostic)
-        callback(
-            AnalystAttemptEvent(
-                "analyst_beta",
-                1,
-                3,
-                "validation_failed",
-                validation_diagnostic=diagnostic,
-            )
-        )
-        raise AnalystExecutionError(
-            analyst_key="analyst_beta",
-            attempts=3,
-            failure_kind="validation",
-            validation_diagnostic=diagnostic,
+    with pytest.raises(AnalystExecutionError) as exc_info:
+        run_end_to_end(
+            str(pdf_path),
+            output_dir=str(output_dir),
+            roster_path=write_roster(tmp_path, ("analyst_alpha", "analyst_beta")),
+            max_restarts=0,
         )
 
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", fake_run_crew)
-    with pytest.raises(AnalystExecutionError):
-        run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+    assert exc_info.value.analyst_key == "analyst_beta"
     assert (
         validate_analyst_report(
             (output_dir / "analyst-alpha_report.md").read_text()
         ).payload.total_score
         == 6
     )
+    assert (output_dir / "analyst-alpha_assessment.json").exists()
+    analysts = read_manifest(output_dir)["analysts"]
+    assert analysts["analyst_alpha"]["status"] == "completed"
+    assert analysts["analyst_beta"]["status"] == "failed"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
 def test_second_invocation_supplies_all_checkpointed_reports(tmp_path, monkeypatch):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
-    analyst_keys = ("analyst_alpha", "analyst_beta", "analyst_gamma")
+    fake_ingestion(monkeypatch)
+    roster_path = write_roster(tmp_path)
+    use_provider(monkeypatch, FakeProvider(*[reply() for _ in THREE]))
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir), roster_path=roster_path)
+    captured = {}
 
-    def seed_run(pdf_path, prompt_path=None, **kwargs):
-        for key in analyst_keys:
-            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
-            kwargs["on_attempt"](
-                AnalystAttemptEvent(
-                    key, 1, 3, "completed", report_text=complete_report()
-                )
-            )
-        return "ok", {key: complete_report() for key in analyst_keys}
+    def fake_run_analysts(**kwargs):
+        captured.update(kwargs)
+        return AnalystRunOutcome(reports=dict(kwargs["completed_reports"]))
 
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", seed_run)
-    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
-    captured_kwargs = {}
+    monkeypatch.setattr(pipeline_module, "run_analysts", fake_run_analysts)
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir), roster_path=roster_path)
 
-    def resume_run(pdf_path, prompt_path=None, **kwargs):
-        captured_kwargs.update(kwargs)
-        return "ok", dict(kwargs["completed_reports"])
-
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", resume_run)
-    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
-    assert set(captured_kwargs["completed_reports"]) == set(analyst_keys)
+    assert set(captured["completed_reports"]) == set(THREE)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
+def test_a_report_without_its_sidecar_does_not_count_as_completed(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "example.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "case"
+    fake_ingestion(monkeypatch)
+    roster_path = write_roster(tmp_path, ("analyst_alpha",))
+    use_provider(monkeypatch, FakeProvider(reply()))
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir), roster_path=roster_path)
+    assert is_end_to_end_complete(
+        str(pdf_path), str(output_dir), roster_path=roster_path
+    )
+
+    (output_dir / "analyst-alpha_assessment.json").unlink()
+
+    assert not is_end_to_end_complete(
+        str(pdf_path), str(output_dir), roster_path=roster_path
+    )
+
+
 def test_is_end_to_end_complete_uses_validated_checkpoint_manifest(
     tmp_path, monkeypatch
 ):
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
-    analyst_keys = ("analyst_alpha", "analyst_beta", "analyst_gamma")
-
-    def seed_run(pdf_path, prompt_path=None, **kwargs):
-        for key in analyst_keys:
-            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
-            kwargs["on_attempt"](
-                AnalystAttemptEvent(
-                    key, 1, 3, "completed", report_text=complete_report()
-                )
-            )
-        return "ok", {key: complete_report() for key in analyst_keys}
-
-    monkeypatch.setattr("dili_rucam_agents.pipeline.run_crew", seed_run)
-    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+    fake_ingestion(monkeypatch)
+    roster_path = write_roster(tmp_path)
+    use_provider(monkeypatch, FakeProvider(*[reply() for _ in THREE]))
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir), roster_path=roster_path)
     manifest_path = output_dir / "analyst_checkpoints.json"
     manifest_before = manifest_path.read_text(encoding="utf-8")
 
-    assert is_end_to_end_complete(str(pdf_path), str(output_dir))
+    assert is_end_to_end_complete(
+        str(pdf_path), str(output_dir), roster_path=roster_path
+    )
     assert manifest_path.read_text(encoding="utf-8") == manifest_before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
-def test_schema_v2_manifest_cannot_skip_execution_and_is_replaced_cleanly(
+def test_schema_v3_manifest_cannot_skip_execution_and_is_replaced_cleanly(
     tmp_path, monkeypatch
 ):
-    secret = "MODEL-CONTROLLED-V2-MANIFEST-SECRET"
+    secret = "MODEL-CONTROLLED-V3-MANIFEST-SECRET"
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
-    analyst_keys = ("analyst_alpha", "analyst_beta", "analyst_gamma")
-
-    def seed_run(pdf_path, prompt_path=None, **kwargs):
-        for key in analyst_keys:
-            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
-            kwargs["on_attempt"](
-                AnalystAttemptEvent(
-                    key, 1, 3, "completed", report_text=complete_report()
-                )
-            )
-        return "ok", {key: complete_report() for key in analyst_keys}
-
-    monkeypatch.setattr(pipeline_module, "run_crew", seed_run)
-    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+    fake_ingestion(monkeypatch)
+    roster_path = write_roster(tmp_path)
+    use_provider(monkeypatch, FakeProvider(*[reply() for _ in THREE]))
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir), roster_path=roster_path)
     manifest_path = output_dir / "analyst_checkpoints.json"
     legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    legacy_manifest["schema_version"] = 2
+    legacy_manifest["schema_version"] = CHECKPOINT_SCHEMA_VERSION - 1
     for entry in legacy_manifest["analysts"].values():
         entry["last_error"] = secret
         entry["attempt_history"] = [{"failure_kind": "validation", "error": secret}]
     manifest_path.write_text(json.dumps(legacy_manifest, indent=2), encoding="utf-8")
     manifest_before = manifest_path.read_bytes()
 
-    assert not is_end_to_end_complete(str(pdf_path), str(output_dir))
+    assert not is_end_to_end_complete(
+        str(pdf_path), str(output_dir), roster_path=roster_path
+    )
     assert manifest_path.read_bytes() == manifest_before
 
     captured_completed_reports = []
+    real_run_analysts = pipeline_module.run_analysts
 
-    def replacement_run(pdf_path, prompt_path=None, **kwargs):
+    def capture_then_run(**kwargs):
         captured_completed_reports.append(dict(kwargs["completed_reports"]))
-        for key in analyst_keys:
-            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
-            kwargs["on_attempt"](
-                AnalystAttemptEvent(
-                    key, 1, 3, "completed", report_text=complete_report()
-                )
-            )
-        return "ok", {key: complete_report() for key in analyst_keys}
+        return real_run_analysts(**kwargs)
 
-    monkeypatch.setattr(pipeline_module, "run_crew", replacement_run)
-    run_end_to_end(str(pdf_path), output_dir=str(output_dir))
+    monkeypatch.setattr(pipeline_module, "run_analysts", capture_then_run)
+    use_provider(monkeypatch, FakeProvider(*[reply() for _ in THREE]))
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir), roster_path=roster_path)
 
     current_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # The reports on disk are still valid, but an unreadable manifest must not
+    # let them stand in for execution.
     assert captured_completed_reports == [{}]
-    assert current_manifest["schema_version"] == 3
+    assert current_manifest["schema_version"] == CHECKPOINT_SCHEMA_VERSION
+    assert current_manifest["schema_version"] == 4
     assert secret not in json.dumps(current_manifest)
     assert all(
         entry["status"] == "completed"
@@ -1069,50 +1297,29 @@ def test_schema_v2_manifest_cannot_skip_execution_and_is_replaced_cleanly(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
-def test_is_end_to_end_complete_does_not_write_contracted_topology(
+def test_is_end_to_end_complete_does_not_write_a_contracted_roster(
     tmp_path, monkeypatch
 ):
+    """Removing an analyst leaves the others' checkpoints valid and untouched."""
+
     pdf_path = tmp_path / "example.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "case"
-    analyst_keys = (
-        "analyst_alpha",
-        "analyst_beta",
-        "analyst_gamma",
-        "analyst_delta",
-    )
-
-    def seed_run(pdf_path, prompt_path=None, **kwargs):
-        for key in analyst_keys:
-            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
-            kwargs["on_attempt"](
-                AnalystAttemptEvent(
-                    key, 1, 3, "completed", report_text=complete_report()
-                )
-            )
-        return "ok", {key: complete_report() for key in analyst_keys}
-
-    monkeypatch.setattr(pipeline_module, "run_crew", seed_run)
-    run_end_to_end(
-        str(pdf_path),
-        output_dir=str(output_dir),
-        use_analyst_delta=True,
-    )
+    fake_ingestion(monkeypatch)
+    wide = write_roster(tmp_path, (*THREE, "analyst_delta"), name="wide.json")
+    narrow = write_roster(tmp_path, THREE, name="narrow.json")
+    use_provider(monkeypatch, FakeProvider(*[reply() for _ in range(4)]))
+    run_end_to_end(str(pdf_path), output_dir=str(output_dir), roster_path=wide)
     manifest_path = output_dir / "analyst_checkpoints.json"
     manifest_before = manifest_path.read_bytes()
+    assert json.loads(manifest_before)["enabled_analysts"] == [
+        *THREE,
+        "analyst_delta",
+    ]
     writer = Mock(side_effect=AssertionError("completion check wrote manifest"))
     monkeypatch.setattr("dili_rucam_agents.checkpoints.atomic_write_json", writer)
 
-    assert is_end_to_end_complete(str(pdf_path), str(output_dir))
+    assert is_end_to_end_complete(str(pdf_path), str(output_dir), roster_path=narrow)
     writer.assert_not_called()
     assert manifest_path.read_bytes() == manifest_before
 
@@ -1178,33 +1385,23 @@ def test_run_batch_folder_skips_completed_pdf(tmp_path: Path, monkeypatch):
     assert calls == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
 def test_manifestless_completed_batch_enters_pipeline_once_then_skips(
     tmp_path: Path, monkeypatch
 ):
+    """A finished run with no manifest is adopted once, then skipped."""
+
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     input_dir.mkdir()
     pdf_path = input_dir / "case-a.pdf"
     pdf_path.write_bytes(b"%PDF-1.4 legacy")
     result_dir = output_dir / "case-a"
-    write_complete_reports(result_dir)
+    write_complete_artifacts(result_dir)
     result_dir.joinpath("masked-case-bundle_report.md").write_text(
         "# Masked Case Bundle Report\n", encoding="utf-8"
     )
     result_dir.joinpath("ground-truth-rucam-score_report.md").write_text(
-        "# Ground Truth RUCAM Score Report\n\n"
-        "```text\nGROUND_TRUTH_RUCAM_SCORE: 8\n"
-        "GROUND_TRUTH_RUCAM_CATEGORY: Probable\n```\n",
-        encoding="utf-8",
+        GROUND_TRUTH_REPORT, encoding="utf-8"
     )
     result_dir.joinpath("run_status.json").write_text(
         json.dumps(
@@ -1213,48 +1410,45 @@ def test_manifestless_completed_batch_enters_pipeline_once_then_skips(
                 "status": "completed",
                 "masking_enabled": True,
                 "strict_scoring": False,
-                "enabled_analysts": [
-                    "analyst_alpha",
-                    "analyst_beta",
-                    "analyst_gamma",
-                ],
+                "enabled_analysts": list(THREE),
             }
         ),
         encoding="utf-8",
     )
+    roster_path = write_roster(tmp_path)
+    fake_ingestion(monkeypatch)
     pipeline_calls = []
+    real_run_analysts = pipeline_module.run_analysts
 
-    def adopt_legacy_reports(pdf_path, prompt_path=None, **kwargs):
+    def capture_then_run(**kwargs):
         pipeline_calls.append(dict(kwargs["completed_reports"]))
-        return "adopted", dict(kwargs["completed_reports"])
+        return real_run_analysts(**kwargs)
 
-    monkeypatch.setattr(pipeline_module, "run_crew", adopt_legacy_reports)
+    monkeypatch.setattr(pipeline_module, "run_analysts", capture_then_run)
+    # One reply, for the ground-truth finder; no analyst needs scoring.
+    use_provider(monkeypatch, FakeProvider(GROUND_TRUTH_REPORT))
 
     run_batch_folder(
         input_dir=str(input_dir),
         output_dir=str(output_dir),
+        roster_path=roster_path,
         enable_score_masking=True,
     )
 
-    assert [set(reports) for reports in pipeline_calls] == [
-        {"analyst_alpha", "analyst_beta", "analyst_gamma"}
-    ]
+    assert [set(reports) for reports in pipeline_calls] == [set(THREE)]
     assert result_dir.joinpath("analyst_checkpoints.json").exists()
 
     skip_guard = Mock(side_effect=AssertionError("compatible batch entered pipeline"))
     ingestion_guard = Mock(side_effect=AssertionError("compatible batch ingested PDF"))
     masking_guard = Mock(side_effect=AssertionError("compatible batch masked case"))
-    monkeypatch.setattr(pipeline_module, "run_crew", skip_guard)
-    monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew.build_case_bundle", ingestion_guard
-    )
-    monkeypatch.setattr(
-        "dili_rucam_agents.crew.crew.mask_case_bundle_payload", masking_guard
-    )
+    monkeypatch.setattr(pipeline_module, "run_analysts", skip_guard)
+    monkeypatch.setattr(pipeline_module, "build_case_bundle", ingestion_guard)
+    monkeypatch.setattr(pipeline_module, "mask_case_bundle_payload", masking_guard)
 
     run_batch_folder(
         input_dir=str(input_dir),
         output_dir=str(output_dir),
+        roster_path=roster_path,
         enable_score_masking=True,
     )
 
@@ -1263,15 +1457,6 @@ def test_manifestless_completed_batch_enters_pipeline_once_then_skips(
     masking_guard.assert_not_called()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
 @pytest.mark.parametrize("compatibility_change", ("model", "tokens", "prompt", "pdf"))
 def test_adopted_legacy_batch_invalidates_on_compatibility_change(
     tmp_path: Path, monkeypatch, compatibility_change: str
@@ -1281,7 +1466,7 @@ def test_adopted_legacy_batch_invalidates_on_compatibility_change(
     result_dir = tmp_path / "case-a"
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("initial prompt", encoding="utf-8")
-    write_complete_reports(result_dir)
+    write_complete_artifacts(result_dir)
     result_dir.joinpath("run_status.json").write_text(
         json.dumps(
             {
@@ -1289,55 +1474,52 @@ def test_adopted_legacy_batch_invalidates_on_compatibility_change(
                 "status": "completed",
                 "masking_enabled": False,
                 "strict_scoring": False,
-                "enabled_analysts": [
-                    "analyst_alpha",
-                    "analyst_beta",
-                    "analyst_gamma",
-                ],
+                "enabled_analysts": list(THREE),
             }
         ),
         encoding="utf-8",
     )
-
+    roster_path = write_roster(tmp_path)
+    fake_ingestion(monkeypatch)
     monkeypatch.setattr(
         pipeline_module,
-        "run_crew",
-        lambda pdf_path, prompt_path=None, **kwargs: (
-            "adopted",
-            dict(kwargs["completed_reports"]),
-        ),
+        "run_analysts",
+        lambda **kwargs: AnalystRunOutcome(reports=dict(kwargs["completed_reports"])),
     )
+
     run_end_to_end(
-        str(pdf_path), prompt_path=str(prompt_path), output_dir=str(result_dir)
+        str(pdf_path),
+        prompt_path=str(prompt_path),
+        output_dir=str(result_dir),
+        roster_path=roster_path,
     )
     assert is_end_to_end_complete(
-        str(pdf_path), str(result_dir), prompt_path=str(prompt_path)
+        str(pdf_path),
+        str(result_dir),
+        prompt_path=str(prompt_path),
+        roster_path=roster_path,
     )
 
     if compatibility_change == "model":
-        monkeypatch.setenv("ANALYST_ALPHA_MODEL", "changed-model")
+        roster_path = write_roster(
+            tmp_path, models={"analyst_alpha": "changed-model"}
+        )
     elif compatibility_change == "tokens":
-        monkeypatch.setenv("ANALYST_ALPHA_MAX_TOKENS", "16001")
+        roster_path = write_roster(tmp_path, max_output_tokens=16001)
     elif compatibility_change == "prompt":
         prompt_path.write_text("changed prompt", encoding="utf-8")
     else:
         pdf_path.write_bytes(b"%PDF-1.4 changed")
 
     assert not is_end_to_end_complete(
-        str(pdf_path), str(result_dir), prompt_path=str(prompt_path)
+        str(pdf_path),
+        str(result_dir),
+        prompt_path=str(prompt_path),
+        roster_path=roster_path,
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
-def test_batch_contracted_topology_skips_without_mutating_checkpoint(
+def test_batch_contracted_roster_skips_without_mutating_checkpoint(
     tmp_path: Path, monkeypatch
 ):
     input_dir = tmp_path / "input"
@@ -1346,25 +1528,12 @@ def test_batch_contracted_topology_skips_without_mutating_checkpoint(
     pdf_path = input_dir / "case-a.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     result_dir = output_dir / "case-a"
-    analyst_keys = (
-        "analyst_alpha",
-        "analyst_beta",
-        "analyst_gamma",
-        "analyst_delta",
-    )
+    wide = write_roster(tmp_path, (*THREE, "analyst_delta"), name="wide.json")
+    narrow = write_roster(tmp_path, THREE, name="narrow.json")
+    fake_ingestion(monkeypatch)
+    use_provider(monkeypatch, FakeProvider(*[reply() for _ in range(4)]))
 
-    def seed_run(pdf_path, prompt_path=None, **kwargs):
-        for key in analyst_keys:
-            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
-            kwargs["on_attempt"](
-                AnalystAttemptEvent(
-                    key, 1, 3, "completed", report_text=complete_report()
-                )
-            )
-        return "ok", {key: complete_report() for key in analyst_keys}
-
-    monkeypatch.setattr(pipeline_module, "run_crew", seed_run)
-    run_end_to_end(str(pdf_path), output_dir=str(result_dir), use_analyst_delta=True)
+    run_end_to_end(str(pdf_path), output_dir=str(result_dir), roster_path=wide)
     result_dir.joinpath("run_status.json").write_text(
         json.dumps(
             {
@@ -1372,7 +1541,7 @@ def test_batch_contracted_topology_skips_without_mutating_checkpoint(
                 "status": "completed",
                 "masking_enabled": False,
                 "strict_scoring": False,
-                "enabled_analysts": list(analyst_keys),
+                "enabled_analysts": [*THREE, "analyst_delta"],
             }
         ),
         encoding="utf-8",
@@ -1385,43 +1554,26 @@ def test_batch_contracted_topology_skips_without_mutating_checkpoint(
         Mock(side_effect=AssertionError("contracted batch reran pipeline")),
     )
 
-    run_batch_folder(input_dir=str(input_dir), output_dir=str(output_dir))
+    run_batch_folder(
+        input_dir=str(input_dir), output_dir=str(output_dir), roster_path=narrow
+    )
 
     assert manifest_path.read_bytes() == manifest_before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drives the CrewAI path in pipeline.py, which still passes the old "
-        "record_completed/build_analyst_identities arguments (no assessment "
-        "sidecar); Task 11 replaces it with the roster-driven path and "
-        "rewrites this test there"
-    ),
-)
-def test_batch_topology_expansion_reenters_pipeline(tmp_path: Path, monkeypatch):
+def test_batch_roster_expansion_reenters_pipeline(tmp_path: Path, monkeypatch):
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     input_dir.mkdir()
     pdf_path = input_dir / "case-a.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     result_dir = output_dir / "case-a"
+    narrow = write_roster(tmp_path, THREE, name="narrow.json")
+    wide = write_roster(tmp_path, (*THREE, "analyst_delta"), name="wide.json")
+    fake_ingestion(monkeypatch)
+    use_provider(monkeypatch, FakeProvider(*[reply() for _ in THREE]))
 
-    def seed_run(pdf_path, prompt_path=None, **kwargs):
-        for key in ("analyst_alpha", "analyst_beta", "analyst_gamma"):
-            kwargs["on_attempt"](AnalystAttemptEvent(key, 1, 3, "running"))
-            kwargs["on_attempt"](
-                AnalystAttemptEvent(
-                    key, 1, 3, "completed", report_text=complete_report()
-                )
-            )
-        return "ok", {
-            key: complete_report()
-            for key in ("analyst_alpha", "analyst_beta", "analyst_gamma")
-        }
-
-    monkeypatch.setattr(pipeline_module, "run_crew", seed_run)
-    run_end_to_end(str(pdf_path), output_dir=str(result_dir))
+    run_end_to_end(str(pdf_path), output_dir=str(result_dir), roster_path=narrow)
     result_dir.joinpath("run_status.json").write_text(
         json.dumps(
             {
@@ -1429,11 +1581,7 @@ def test_batch_topology_expansion_reenters_pipeline(tmp_path: Path, monkeypatch)
                 "status": "completed",
                 "masking_enabled": False,
                 "strict_scoring": False,
-                "enabled_analysts": [
-                    "analyst_alpha",
-                    "analyst_beta",
-                    "analyst_gamma",
-                ],
+                "enabled_analysts": list(THREE),
             }
         ),
         encoding="utf-8",
@@ -1442,21 +1590,18 @@ def test_batch_topology_expansion_reenters_pipeline(tmp_path: Path, monkeypatch)
 
     def expanded_run(pdf_path, *, output_dir, **kwargs):
         calls.append(Path(pdf_path).name)
-        write_complete_reports(Path(output_dir))
-        Path(output_dir, "analyst-delta_report.md").write_text(
-            complete_report(), encoding="utf-8"
-        )
+        write_complete_artifacts(Path(output_dir), (*THREE, "analyst_delta"))
         return "ok"
 
     monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", expanded_run)
 
-    run_batch_folder(
-        input_dir=str(input_dir),
-        output_dir=str(output_dir),
-        use_analyst_delta=True,
+    summary_path = run_batch_folder(
+        input_dir=str(input_dir), output_dir=str(output_dir), roster_path=wide
     )
 
     assert calls == ["case-a.pdf"]
+    headers = [cell.value for cell in load_workbook(summary_path)["Batch Summary"][1]]
+    assert headers[1:5] == [_MODELS[key] for key in (*THREE, "analyst_delta")]
 
 
 def test_run_batch_folder_force_rerun_ignores_completed_status(
@@ -1534,17 +1679,9 @@ def test_is_pdf_run_complete_requires_status_and_parseable_reports(tmp_path: Pat
         pdf_path=pdf_path,
         pdf_output_dir=result_dir,
         prompt_path=None,
-        enabled_analyst_configs=[
-            {"key": "analyst_alpha"},
-            {"key": "analyst_beta"},
-            {"key": "analyst_gamma"},
-        ],
+        roster_path=write_roster(tmp_path),
         enable_score_masking=True,
         strict_scoring=False,
-        use_analyst_delta=False,
-        use_analyst_epsilon=False,
-        use_analyst_zeta=False,
-        use_analyst_eta=False,
     )
 
 
@@ -1553,12 +1690,7 @@ def test_completed_status_delegates_all_compatibility_arguments(tmp_path, monkey
     pdf_path.write_bytes(b"%PDF-1.4")
     result_dir = tmp_path / "case-a"
     result_dir.mkdir()
-    enabled_analyst_configs = [
-        {"key": "analyst_alpha"},
-        {"key": "analyst_beta"},
-        {"key": "analyst_gamma"},
-        {"key": "analyst_delta"},
-    ]
+    roster_path = write_roster(tmp_path, (*THREE, "analyst_delta"))
     result_dir.joinpath("run_status.json").write_text(
         json.dumps(
             {
@@ -1592,45 +1724,24 @@ def test_completed_status_delegates_all_compatibility_arguments(tmp_path, monkey
         "pdf_path": pdf_path,
         "pdf_output_dir": result_dir,
         "prompt_path": str(tmp_path / "prompt.md"),
-        "enabled_analyst_configs": enabled_analyst_configs,
+        "roster_path": roster_path,
         "enable_score_masking": True,
         "strict_scoring": True,
-        "use_analyst_delta": True,
-        "use_analyst_epsilon": False,
-        "use_analyst_zeta": False,
-        "use_analyst_eta": False,
     }
 
     assert _is_pdf_run_complete(**settings) is True
     assert _is_pdf_run_complete(**settings) is False
-    assert captured_calls == [
-        (
-            str(pdf_path),
-            str(result_dir),
-            str(tmp_path / "prompt.md"),
-            {
-                "enable_score_masking": True,
-                "strict_scoring": True,
-                "use_analyst_delta": True,
-                "use_analyst_epsilon": False,
-                "use_analyst_zeta": False,
-                "use_analyst_eta": False,
-            },
-        ),
-        (
-            str(pdf_path),
-            str(result_dir),
-            str(tmp_path / "prompt.md"),
-            {
-                "enable_score_masking": True,
-                "strict_scoring": True,
-                "use_analyst_delta": True,
-                "use_analyst_epsilon": False,
-                "use_analyst_zeta": False,
-                "use_analyst_eta": False,
-            },
-        ),
-    ]
+    forwarded = (
+        str(pdf_path),
+        str(result_dir),
+        str(tmp_path / "prompt.md"),
+        {
+            "roster_path": roster_path,
+            "enable_score_masking": True,
+            "strict_scoring": True,
+        },
+    )
+    assert captured_calls == [forwarded, forwarded]
 
 
 def test_run_batch_folder_stops_on_error_and_marks_failed(tmp_path: Path, monkeypatch):
@@ -1732,7 +1843,6 @@ def test_batch_validation_diagnostics_never_persist_caller_text(
             analyst_key="analyst_alpha",
             attempts=3,
             failure_kind="validation",
-            last_error=f"{secret}: {clinical_text}",
             validation_diagnostic=SafeValidationDiagnostic(
                 (("rucam_scores.time_to_onset", "invalid_integer"),)
             ),
@@ -1862,6 +1972,7 @@ def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(
         run_batch_folder(
             input_dir=str(input_dir),
             output_dir=str(output_dir),
+            roster_path=write_roster(tmp_path),
         )
         assert False, "expected RuntimeError"
     except RuntimeError as exc:
@@ -1921,3 +2032,141 @@ def test_run_batch_folder_reruns_failed_pdf_on_resume(tmp_path: Path, monkeypatc
     assert calls == ["case-a.pdf"]
     status = json.loads((result_dir / "run_status.json").read_text(encoding="utf-8"))
     assert status["status"] == "completed"
+
+
+# -- the roster is what selects the analysts --------------------------------
+
+
+def _fake_pipeline_writing(monkeypatch, keys, total_score: int = 7):
+    """Stand in for the pipeline, writing one valid report pair per key."""
+
+    def fake_run_end_to_end(pdf_path, prompt_path=None, output_dir=None, **kwargs):
+        write_complete_artifacts(Path(output_dir), keys, total_score)
+        return "ok"
+
+    monkeypatch.setattr("dili_rucam_agents.batch.run_end_to_end", fake_run_end_to_end)
+
+
+def test_default_run_scores_one_analyst(tmp_path: Path, monkeypatch):
+    """No --analysts means config/analysts.json: one column, one analyst key."""
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "case-a.pdf").write_bytes(b"%PDF-1.4")
+    default_keys = [config.key for config in load_roster().analysts]
+    assert default_keys == ["analyst_alpha"]  # the shipped default
+    _fake_pipeline_writing(monkeypatch, default_keys)
+
+    summary_path = run_batch_folder(
+        input_dir=str(input_dir), output_dir=str(tmp_path / "output")
+    )
+
+    sheet = load_workbook(summary_path)["Batch Summary"]
+    headers = [cell.value for cell in sheet[1]]
+    assert headers == [
+        "pdf_filename",
+        "gpt-5.5",
+        "masked_rucam_score",
+        "masked_rucam_category",
+    ]
+    assert [cell.value for cell in sheet[2]][:2] == ["case-a.pdf", 7]
+
+
+def test_analysts_flag_selects_the_study_roster(tmp_path: Path, monkeypatch):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "case-a.pdf").write_bytes(b"%PDF-1.4")
+    study = load_roster(STUDY_ROSTER_PATH)
+    assert len(study.analysts) == 7
+    _fake_pipeline_writing(monkeypatch, [config.key for config in study.analysts])
+
+    summary_path = run_batch_folder(
+        input_dir=str(input_dir),
+        output_dir=str(tmp_path / "output"),
+        roster_path=str(STUDY_ROSTER_PATH),
+    )
+
+    sheet = load_workbook(summary_path)["Batch Summary"]
+    headers = [cell.value for cell in sheet[1]]
+    assert headers[1:-2] == [config.model for config in study.analysts]
+    assert [cell.value for cell in sheet[2]][1:-2] == [7] * 7
+
+
+def test_workbook_columns_follow_the_roster_order(tmp_path: Path, monkeypatch):
+    """Column order is the roster's order, not an order fixed in code."""
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "case-a.pdf").write_bytes(b"%PDF-1.4")
+    reversed_keys = tuple(reversed(THREE))
+    _fake_pipeline_writing(monkeypatch, reversed_keys)
+
+    summary_path = run_batch_folder(
+        input_dir=str(input_dir),
+        output_dir=str(tmp_path / "output"),
+        roster_path=write_roster(tmp_path, reversed_keys),
+    )
+
+    headers = [cell.value for cell in load_workbook(summary_path)["Batch Summary"][1]]
+    assert headers[1:4] == [_MODELS[key] for key in reversed_keys]
+    assert headers[1:4] != [_MODELS[key] for key in THREE]
+
+
+@pytest.mark.parametrize(
+    "flag", ("--analyst-delta", "--analyst-epsilon", "--analyst-zeta", "--analyst-eta")
+)
+def test_removed_analyst_flags_are_rejected_by_the_parser(
+    tmp_path: Path, capsys, flag: str
+):
+    with pytest.raises(SystemExit, match="2"):
+        batch_main([str(tmp_path / "input"), str(tmp_path / "output"), flag])
+
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_both_clis_accept_the_analysts_flag(tmp_path: Path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_batch_folder",
+        lambda **kwargs: captured.update(kwargs) or Path("batch_summary.xlsx"),
+    )
+    batch_main(
+        [
+            str(tmp_path / "input"),
+            str(tmp_path / "output"),
+            "--analysts",
+            str(STUDY_ROSTER_PATH),
+        ]
+    )
+    assert captured["roster_path"] == str(STUDY_ROSTER_PATH)
+
+    pipeline_captured = {}
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_end_to_end",
+        lambda *args, **kwargs: pipeline_captured.update(kwargs) or "ok",
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["pipeline", "case.pdf", "--analysts", str(STUDY_ROSTER_PATH)]
+    )
+    pipeline_module._main()
+    assert pipeline_captured["roster_path"] == str(STUDY_ROSTER_PATH)
+
+
+def test_a_malformed_roster_names_the_file_and_runs_nothing(tmp_path: Path, monkeypatch):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "case-a.pdf").write_bytes(b"%PDF-1.4")
+    roster_path = tmp_path / "broken.json"
+    roster_path.write_text('{"analysts": []}', encoding="utf-8")
+    monkeypatch.setattr(
+        "dili_rucam_agents.batch.run_end_to_end",
+        Mock(side_effect=AssertionError("ran with a malformed roster")),
+    )
+
+    with pytest.raises(RosterError, match="broken.json"):
+        run_batch_folder(
+            input_dir=str(input_dir),
+            output_dir=str(tmp_path / "output"),
+            roster_path=str(roster_path),
+        )

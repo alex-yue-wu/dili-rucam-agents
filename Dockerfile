@@ -22,6 +22,9 @@ COPY scripts /app/scripts
 # The RUCAM item 6 cascade reads this workbook from the repository root. Without
 # it the DILIrank tier cannot resolve any drug and every item 6 falls back to 0.
 COPY dilirank_v2 /app/dilirank_v2
+# DEFAULT_ROSTER_PATH resolves relative to the source tree, so a container run
+# without --analysts cannot find the default roster unless config ships too.
+COPY config /app/config
 
 RUN uv sync --frozen --no-dev
 
