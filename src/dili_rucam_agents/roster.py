@@ -78,7 +78,9 @@ def load_roster(path: Path | str | None = None) -> AnalystRoster:
     resolved = Path(path) if path is not None else DEFAULT_ROSTER_PATH
     try:
         raw = resolved.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
+        # A file that is not UTF-8 raises UnicodeDecodeError, which is a
+        # ValueError and not an OSError: unwrapped it escaped without the path.
         raise RosterError(f"cannot read analyst roster {resolved}: {exc}") from exc
     try:
         data = json.loads(raw)

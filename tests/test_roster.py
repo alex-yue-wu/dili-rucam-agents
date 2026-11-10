@@ -87,6 +87,14 @@ def test_missing_file_names_the_path():
         load_roster("nope.json")
 
 
+def test_a_file_that_is_not_utf_8_names_the_path(tmp_path):
+    """UnicodeDecodeError is a ValueError, not an OSError, so it needs wrapping."""
+    path = tmp_path / "latin1.json"
+    path.write_bytes(b'{"analysts": [{"label": "Analyst \xe9"}]}')
+    with pytest.raises(RosterError, match="latin1.json"):
+        load_roster(path)
+
+
 def test_malformed_json_names_the_path(tmp_path):
     path = tmp_path / "broken.json"
     path.write_text("{not json", encoding="utf-8")
@@ -102,16 +110,26 @@ def test_shipped_default_roster_has_exactly_one_analyst():
 
 
 def test_shipped_study_roster_reproduces_todays_seven_models():
+    """provider is the one roster field with no predecessor to copy from.
+
+    key, label, model and max_output_tokens all came across from the retired
+    crew config; provider replaced routing by model-name sniffing, so a typo in
+    it reaches a paid run with nothing to catch it on the way.
+    """
     roster = load_roster(STUDY)
-    assert [(a.key, a.model) for a in roster.analysts] == [
-        ("analyst_alpha", "gpt-5.5"),
-        ("analyst_beta", "gemini-3.1-pro-preview"),
-        ("analyst_gamma", "moonshotai/kimi-k2.5"),
-        ("analyst_delta", "deepseek-v4-pro"),
-        ("analyst_epsilon", "qwen/qwen3.5-plus-02-15"),
-        ("analyst_zeta", "claude-opus-4-7"),
-        ("analyst_eta", "z-ai/glm-5"),
+    assert [(a.key, a.provider, a.model) for a in roster.analysts] == [
+        ("analyst_alpha", Provider.openai, "gpt-5.5"),
+        ("analyst_beta", Provider.google, "gemini-3.1-pro-preview"),
+        ("analyst_gamma", Provider.openrouter, "moonshotai/kimi-k2.5"),
+        ("analyst_delta", Provider.deepseek, "deepseek-v4-pro"),
+        ("analyst_epsilon", Provider.openrouter, "qwen/qwen3.5-plus-02-15"),
+        ("analyst_zeta", Provider.anthropic, "claude-opus-4-7"),
+        ("analyst_eta", Provider.openrouter, "z-ai/glm-5"),
     ]
+    assert (roster.ground_truth.provider, roster.ground_truth.model) == (
+        Provider.openai,
+        "gpt-5.5",
+    )
 
 
 def test_shipped_smoke_roster_covers_every_provider():
