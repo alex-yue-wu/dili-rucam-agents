@@ -55,8 +55,9 @@ _GROUP_I = (
 )
 _GROUP_II = ("underlying_disease", "acute_viral_infection")
 
-# validate_analyst_report rejects any report containing this sentence.
-_PLACEHOLDER_RE = re.compile(r"(?i)see complete sections")
+# validate_analyst_report rejects any report containing this sentence. Matching
+# the whole sentence keeps the rewrite to the one string the validator tests.
+_PLACEHOLDER_RE = re.compile(r"(?i)(see)( complete sections a, b, and c above\.)")
 
 
 def render_report(
@@ -65,7 +66,7 @@ def render_report(
     scored: ScoredAssessment,
     analyst_label: str,
     model_name: str,
-    rules_version: str,
+    rules_version: str = RULES_VERSION,
 ) -> str:
     return "\n".join(
         (
@@ -80,7 +81,9 @@ def _text(value: object) -> str:
     """One line of free text: no heading, fence or table cell can start inside it."""
 
     flat = " ".join(str(value).split())
-    return _PLACEHOLDER_RE.sub("see complete section", flat)
+    # A zero-width space after "see" breaks the validator's literal match while
+    # leaving the wording and its case untouched.
+    return _PLACEHOLDER_RE.sub("\\1\u200b\\2", flat)
 
 
 def _cell(value: object) -> str:

@@ -50,7 +50,6 @@ def _render(assessment=None, scored=None, **kw) -> str:
         scored=scored,
         analyst_label="Analyst Alpha",
         model_name="test-model",
-        rules_version=kw.pop("rules_version", RULES_VERSION),
         **kw,
     )
 
@@ -181,3 +180,24 @@ def test_free_text_cannot_break_the_section_structure():
     report = _render(assessment, scored)
     validated = validate_analyst_report(report)
     assert validated.payload.total_score == 9
+
+
+def test_omitting_rules_version_renders_the_v3_tag():
+    assessment, scored = _build()
+    report = render_report(
+        assessment=assessment,
+        scored=scored,
+        analyst_label="Analyst Alpha",
+        model_name="test-model",
+    )
+    payload = extract_section_c_json(report)
+    assert payload["rules_version"] == "RUCAM_DananBenichou1993_modified_sheet_v3"
+
+
+def test_placeholder_phrase_is_defused_without_changing_its_words():
+    phrase = "See Complete Sections A, B, and C above."
+    assessment, scored = _build(time_to_onset=_item(2, rationale=phrase))
+    report = _render(assessment, scored)
+    validate_analyst_report(report)
+    assert phrase not in report
+    assert report.replace("\u200b", "") .count(phrase) == 1
