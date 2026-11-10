@@ -229,11 +229,13 @@ def test_no_analyst_sees_another_analysts_output():
 
 
 def test_api_keys_are_checked_before_any_call(monkeypatch):
-    monkeypatch.delenv(api_key_env(Provider.anthropic))
+    # analyst_0 is anthropic, analyst_1 is openai. The missing key is the
+    # *second* analyst's, so a per-analyst check would let analyst_0 run first.
+    monkeypatch.delenv(api_key_env(Provider.openai))
     provider = FakeProvider(_reply(), _reply())
-    with pytest.raises(MissingApiKeyError, match="ANTHROPIC_API_KEY"):
+    with pytest.raises(MissingApiKeyError, match="OPENAI_API_KEY"):
         _run(provider, _roster(2))
-    # analyst_0 (openai) is first and would have succeeded: nothing was called.
+    # analyst_0 would have succeeded: nothing was called.
     assert provider.calls == []
 
 
@@ -260,3 +262,61 @@ def test_rejected_attempts_persist_as_invalid_artifacts(tmp_path: Path):
 def test_no_audit_files_without_an_output_dir_or_a_rejection(tmp_path: Path):
     _run(FakeProvider(_reply()), output_dir=tmp_path)
     assert not (tmp_path / "attempts").exists()
+
+
+def test_truncated_text_persists_without_colliding_with_a_validation_failure(tmp_path: Path):
+    cut = ModelResponse(text='{"injury_pattern": "hepatocell', truncated=True)
+    provider = FakeProvider(cut, '{"nonsense": 1}', _reply())
+    _run(provider, output_dir=tmp_path)
+
+    names = sorted(p.name for p in (tmp_path / "attempts").iterdir())
+    # Both are runner attempt 1: the truncation did not advance the number.
+    assert names == [
+        "analyst_0.1.invalid.json",
+        "analyst_0.1.truncated1.invalid.txt",
+    ]
+    assert (tmp_path / "attempts" / "analyst_0.1.truncated1.invalid.txt").read_text() == cut.text
+    assert json.loads((tmp_path / "attempts" / "analyst_0.1.invalid.json").read_text()) == {"nonsense": 1}
+
+
+def test_a_supplied_contract_is_the_one_rendered():
+    roster = _roster(2)
+    supplied = build_analyst_instruction_contract(
+        analyst_label="Analyst 1",
+        prompt_text="SUPPLIED-PROMPT",
+        model_name="model-1",
+        bundle_input_name=BUNDLE_NAME,
+    )
+    provider = FakeProvider(_reply("a"), _reply("b"))
+    _run(provider, roster, instruction_contracts={"analyst_1": supplied})
+
+    assert "SUPPLIED-PROMPT" not in provider.calls[0][1][0]["content"]
+    assert PROMPT in provider.calls[0][1][0]["content"]  # built for the absent key
+    sent = provider.calls[1][1][0]["content"]
+    assert "SUPPLIED-PROMPT" in sent and PROMPT not in sent
+    assert sent.startswith(
+        supplied.render(**{BUNDLE_NAME: BUNDLE, RETRY_REQUIREMENT_PLACEHOLDER: ""})
+    )
+
+
+def test_first_analyst_failing_stops_the_roster_and_keeps_finished_work():
+    provider = FakeProvider(StatusError(401, "bad key"))
+    with pytest.raises(AnalystExecutionError) as caught:
+        _run(provider, _roster(2))
+    assert caught.value.analyst_key == "analyst_0"
+    assert len(provider.calls) == 1  # analyst_1 was never called
+    assert caught.value.outcome is not None and caught.value.outcome.reports == {}
+
+
+def test_a_later_failure_keeps_earlier_reports_on_the_error_and_on_report():
+    provider = FakeProvider(_reply("kept"), StatusError(401, "bad key"))
+    reported: list[str] = []
+    with pytest.raises(AnalystExecutionError) as caught:
+        _run(provider, _roster(2), on_report=lambda key, *_: reported.append(key))
+
+    assert caught.value.analyst_key == "analyst_1"
+    assert reported == ["analyst_0"]  # delivered before the raise
+    partial = caught.value.outcome
+    assert list(partial.reports) == ["analyst_0"]
+    assert "kept" in partial.reports["analyst_0"]
+    assert list(partial.assessments) == ["analyst_0"]

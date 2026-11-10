@@ -23,6 +23,7 @@ from typing import Literal
 
 from dili_rucam_agents.checkpoints import atomic_write_text
 from dili_rucam_agents.contracts import (
+    AnalystInstructionContract,
     RETRY_REQUIREMENT_PLACEHOLDER,
     build_analyst_instruction_contract,
 )
@@ -101,6 +102,9 @@ class AnalystExecutionError(RuntimeError):
         self.counters = counters
         self.execution_diagnostic = execution_diagnostic
         self.validation_diagnostic = validation_diagnostic
+        #: Filled in by ``run_analysts``: every report finished before this
+        #: failure, so a caller without ``on_report`` still keeps paid work.
+        self.outcome: AnalystRunOutcome | None = None
         if execution_diagnostic is not None:
             self.last_error = render_execution_diagnostic(execution_diagnostic)
         else:
@@ -125,6 +129,7 @@ def run_analysts(
     on_report: Callable[[str, str, dict], None] | None = None,
     on_attempt: Callable[[AnalystAttemptEvent], None] | None = None,
     output_dir: Path | None = None,
+    instruction_contracts: Mapping[str, AnalystInstructionContract] | None = None,
 ) -> AnalystRunOutcome:
     """Run every roster analyst that has no valid completed report yet.
 
@@ -134,7 +139,10 @@ def run_analysts(
     ``<key>.<n>.invalid.json`` (a JSON object parsed but broke the schema) or
     ``.invalid.txt`` (nothing parsed). The first failure raises
     ``AnalystExecutionError``; analysts already finished stay with the caller
-    through ``on_report``.
+    through ``on_report`` and ``AnalystExecutionError.outcome``.
+    ``instruction_contracts`` supplies the contract sent for a key (so a caller
+    that fingerprints the contract sends the very one it hashed); the others
+    are built here.
     """
 
     # Before any call, so a missing key costs nothing.
@@ -154,20 +162,25 @@ def run_analysts(
 
     pending = [c for c in roster.analysts if c.key not in outcome.reports]
     if pending:
-        asyncio.run(
-            _run_pending(
-                pending=pending,
-                outcome=outcome,
-                case_bundle_json=case_bundle_json,
-                prompt_text=prompt_text,
-                bundle_input_name=bundle_input_name,
-                provider=provider,
-                max_retries=max_retries,
-                on_report=on_report,
-                on_attempt=on_attempt,
-                output_dir=output_dir,
+        try:
+            asyncio.run(
+                _run_pending(
+                    pending=pending,
+                    outcome=outcome,
+                    case_bundle_json=case_bundle_json,
+                    prompt_text=prompt_text,
+                    bundle_input_name=bundle_input_name,
+                    provider=provider,
+                    max_retries=max_retries,
+                    on_report=on_report,
+                    on_attempt=on_attempt,
+                    output_dir=output_dir,
+                    instruction_contracts=instruction_contracts or {},
+                )
             )
-        )
+        except AnalystExecutionError as exc:
+            exc.outcome = outcome
+            raise
     # Roster order, whether the report was supplied or scored now.
     outcome.reports = {c.key: outcome.reports[c.key] for c in roster.analysts}
     return outcome
@@ -190,10 +203,11 @@ async def _run_one(
     on_report: Callable[[str, str, dict], None] | None,
     on_attempt: Callable[[AnalystAttemptEvent], None] | None,
     output_dir: Path | None,
+    instruction_contracts: Mapping[str, AnalystInstructionContract],
 ) -> None:
     key = config.key
     max_attempts = max_retries + 1
-    contract = build_analyst_instruction_contract(
+    contract = instruction_contracts.get(key) or build_analyst_instruction_contract(
         analyst_label=config.label,
         prompt_text=prompt_text,
         model_name=config.model,
@@ -218,11 +232,26 @@ async def _run_one(
             )
 
     current = 1  # the runner attempt in flight
+    truncations = 0
 
     def on_runner_attempt(attempt: Attempt) -> None:
-        nonlocal current
+        nonlocal current, truncations
+        if attempt.outcome == "truncated":
+            # Not counted as a runner attempt, so it can share a number with a
+            # later validation failure: the stem says which it was. The cut-off
+            # text shows how far the model got before the budget ran out.
+            truncations += 1
+            if output_dir is not None and attempt.raw_text is not None:
+                _persist_invalid_attempt(
+                    output_dir,
+                    key,
+                    f"{attempt.number}.truncated{truncations}",
+                    attempt.raw_text,
+                    force_text=True,
+                )
+            return  # the event comes from the error
         if attempt.outcome != "validation_failed":
-            return  # truncation surfaces as the error; success after the run
+            return  # success: reported after the run
         if output_dir is not None and attempt.raw_text is not None:
             _persist_invalid_attempt(output_dir, key, attempt.number, attempt.raw_text)
         emit(attempt.number, "validation_failed", validation_diagnostic=_INVALID)
@@ -283,9 +312,11 @@ async def _run_one(
         on_report(key, report_text, sidecar)
 
 
-def _persist_invalid_attempt(output_dir: Path, key: str, number: int, raw: str) -> None:
+def _persist_invalid_attempt(
+    output_dir: Path, key: str, number: int | str, raw: str, *, force_text: bool = False
+) -> None:
     """Keep a rejected reply: as JSON when an object parsed, as text otherwise."""
-    parsed = _parse_object(raw)
+    parsed = None if force_text else _parse_object(raw)
     stem = output_dir / "attempts" / f"{key}.{number}.invalid"
     if parsed is not None:
         atomic_write_text(
