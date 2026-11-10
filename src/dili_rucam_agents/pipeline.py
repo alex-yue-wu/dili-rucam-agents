@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+from functools import partial
 import hashlib
 import json
 from pathlib import Path
@@ -301,15 +302,11 @@ def run_end_to_end(
         hepatotoxicity_settings=evidence_settings,
     )
 
-    def handle_attempt(event: AnalystAttemptEvent) -> None:
-        assert checkpoint_context is not None  # only wired when there is one
-        _handle_attempt_event(checkpoint_context, event)
-
-    def persist_report(analyst_key: str, report_text: str, assessment: dict) -> None:
-        assert checkpoint_context is not None
-        _persist_completed_analyst(
-            checkpoint_context, analyst_key, report_text, assessment
-        )
+    # Both callbacks persist through the store, so neither exists without one.
+    on_attempt = on_report = None
+    if checkpoint_context is not None:
+        on_attempt = partial(_handle_attempt_event, checkpoint_context)
+        on_report = partial(_persist_completed_analyst, checkpoint_context)
 
     outcome = run_analysts(
         case_bundle_json=masked_case_bundle_json or raw_case_bundle_json,
@@ -319,8 +316,8 @@ def run_end_to_end(
         provider=_build_provider(),
         max_retries=max_restarts,
         completed_reports=completed_reports,
-        on_report=persist_report if checkpoint_context else None,
-        on_attempt=handle_attempt if checkpoint_context else None,
+        on_report=on_report,
+        on_attempt=on_attempt,
         output_dir=resolved_output_dir,
         instruction_contracts=instruction_contracts,
     )

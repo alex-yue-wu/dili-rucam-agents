@@ -217,6 +217,13 @@ def _run_pdf_analysis(
     max_restarts: int,
     run_context: PdfRunContext = PdfRunContext(),
 ) -> PdfRunResult:
+    """Score one PDF, or reuse a completed run.
+
+    ``analysts`` and ``roster_path`` describe the same roster: the caller reads
+    and validates the file once for the whole batch and passes the entries,
+    while the path is what the pipeline and the completion check are given, so
+    one edit mid-batch cannot change the topology from one PDF to the next.
+    """
     pdf_output_dir.mkdir(parents=True, exist_ok=True)
     row = _initialize_summary_row(pdf_path, analysts)
     if not force_rerun and _is_pdf_run_complete(
