@@ -5,8 +5,8 @@ Current redesign work is tracked in [docs/exec-plans/active/agent-redesign.md](/
 # Production Agent Specification
 
 **Project:** Multi-Analyst RUCAM Causality Assessment  
-**Default topology:** 3 analyst agents  
-**Optional topology:** +1 score masking agent, +4 analyst agents  
+**Default topology:** one analyst, declared in `config/analysts.json`  
+**Optional topology:** any analyst roster file, selected with `--analysts <path>`  
 **Domain:** Drug-Induced Liver Injury (DILI), RUCAM  
 **Input:** Clinical case report PDF (2–5 pages, 1–3 columns, tables, figures)  
 **Python Package Manager:** uv
@@ -38,9 +38,7 @@ PDF
           ↓
      item 6 evidence cascade (deterministic, no LLM)
           ↓
-     3 default analysts
-          ↓
-     up to 4 optional analysts
+     analysts declared in the roster file (default: one)
           ↓
      independent reports + JSON
 ```
@@ -48,10 +46,10 @@ PDF
 ### Repository Layout
 
 ```text
+config/
 dilirank_v2/
 docs/
 src/dili_rucam_agents/
-  crew/
   ingestion/
   hepatotoxicity/
   masking.py
@@ -124,42 +122,34 @@ rungs that require a labelling quote or a citation in the case text.
 
 ## 6. RUCAM Analyst Agents
 
-### Default analysts
+### Declared roster
 
-- Analyst Alpha
-- Analyst Beta
-- Analyst Gamma
+Analysts come from a roster file, never from environment variables and never
+from a fixed tuple in code. `--analysts <path>` selects a roster; omitting it
+uses `config/analysts.json`. Three roster files ship:
 
-### Optional analysts
+- `config/analysts.json` - **one** analyst. This is the default, so a caller who
+  passes no roster gets one analyst.
+- `config/analysts.study.json` - seven analysts, the condition the measured
+  retry baseline was taken in.
+- `config/analysts.smoke.json` - five analysts, one per provider adapter, for the
+  cheapest run that touches every transport.
 
-- Analyst Delta
-- Analyst Epsilon
-- Analyst Zeta
-- Analyst Eta
+Each entry declares a `key`, a `label`, a `provider`, a `model` and a
+`max_output_tokens` budget (default 32000). The provider is declared
+explicitly and is one of `openai`, `anthropic`, `google`, `openrouter` or
+`deepseek`; it is never inferred from the model string. The model name is
+passed to the vendor SDK as written. API keys come from the environment
+(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
+`DEEPSEEK_API_KEY`); the CLIs read a `.env` file from the directory the command
+was run in, and values already exported win. The first call to a provider whose key is
+missing fails, naming the variable.
 
-### Default model lineup
+### Per-analyst contract
 
-- `ANALYST_ALPHA_MODEL`: `gpt-5.5`
-- `ANALYST_BETA_MODEL`: `gemini-3.1-pro-preview`
-- `ANALYST_GAMMA_MODEL`: `moonshotai/kimi-k2.5`
-- `ANALYST_DELTA_MODEL`: `deepseek-v4-pro`
-- `ANALYST_EPSILON_MODEL`: `qwen/qwen3.5-plus-02-15`
-- `ANALYST_ZETA_MODEL`: `claude-opus-4-7`
-- `ANALYST_ETA_MODEL`: `z-ai/glm-5`
-
-### Analyst max-token controls
-
-- `ANALYST_ALPHA_MAX_TOKENS`
-- `ANALYST_BETA_MAX_TOKENS`
-- `ANALYST_GAMMA_MAX_TOKENS`
-- `ANALYST_DELTA_MAX_TOKENS`
-- `ANALYST_EPSILON_MAX_TOKENS`
-- `ANALYST_ZETA_MAX_TOKENS`
-- `ANALYST_ETA_MAX_TOKENS`
-- shared fallback: `ANALYST_MAX_TOKENS`
-- global fallback: `LLM_MAX_TOKENS`
-- default when none is set: 32000; a restart after a truncated report doubles the
-  budget up to a ceiling of 64000
+The model returns one JSON object; Python renders Sections A, B and C. The
+model supplies neither `total_score` nor `category`: code computes both from
+the seven item scores.
 
 Each analyst must:
 
@@ -168,13 +158,35 @@ Each analyst must:
 3. Determine injury pattern.
 4. Apply the correct RUCAM scoring table.
 5. Score all 7 RUCAM items.
-6. Produce Sections A, B, and C exactly as specified by the production prompt.
+6. Return the assessment as a single JSON object.
+
+Each analyst writes two artifacts, `<key>_report.md` and
+`<key>_assessment.json` (the key with `_` written as `-`). A checkpoint counts
+complete only when both are present and valid. `CHECKPOINT_SCHEMA_VERSION` is 4;
+a version-3 manifest is discarded rather than migrated, so every manifest
+written before that version is invalidated.
+
+### Retry budgets
+
+Four budgets are separate and are never pooled:
+
+- validation retries, for a reply that parsed but broke the schema (default 2);
+- transient transport retries, for provider errors worth retrying (3, with
+  backoff);
+- one truncation escalation, which widens the output budget up to a ceiling of
+  64000;
+- structured-output mode downgrades along a `json_schema` -> `json_object` ->
+  `text` ladder that starts at the highest mode each provider actually supports
+  (`deepseek` starts at `json_object`).
+
+The manifest records `validation_retries`, `transient_retries`,
+`truncation_escalations` and `mode_downgrades` per analyst, plus the final mode.
 
 ## 7. Required Output Format
 
 ### SECTION A
 
-Human-readable report with case summary, timeline, injury pattern, and scoring rationale.
+Human-readable report with case summary, timeline, injury pattern, and scoring rationale, rendered by Python from the model's JSON object.
 
 ### SECTION B
 
@@ -182,15 +194,17 @@ RUCAM scoring table.
 
 ### SECTION C
 
-Strict JSON with injury pattern, R-ratio, itemized scores, total score, and category.
+Strict JSON with injury pattern, R-ratio, itemized scores, total score, and category. `total_score` and `category` are computed by code from the seven items, not supplied by the model.
 
 ## 8. Engineering Standards
 
 - Temperature remains 0 for all configured models when supported; models that reject explicit temperature use the provider-required default.
-- The analyst output budget must leave room for the whole report on a reasoning
-  model, where it also covers hidden reasoning tokens. A cut-off report is
-  reported as a truncation, not as a missing section, and the restart that
-  follows it runs with a wider budget.
+- The analyst output budget (`max_output_tokens` in the roster) must leave room
+  for the whole report on a reasoning model, where it also covers hidden
+  reasoning tokens. A cut-off reply is reported as a truncation, not as a missing
+  section, and the one escalation that follows it runs with a wider budget.
+- `rules_version` is `RUCAM_DananBenichou1993_modified_sheet_v3`, and the frozen
+  rules core in both prompts is unchanged by the roster refactor.
 - Latency from a dose of the suspect drug is numbered from 1: the calendar day of
   the dose is Day 1, so an onset on the day of the dose lands on a printed rung
   of item 1 instead of falling off the sheet as day 0. Elapsed-day durations that
@@ -201,8 +215,8 @@ Strict JSON with injury pattern, R-ratio, itemized scores, total score, and cate
 - The DILIrank tier stays offline. The DailyMed and PubMed tiers are consulted
   only for explicitly supplied drug names, are cached on disk, and are bounded by
   an as-of date.
-- Optional agents are activated only by explicit configuration.
-- Persist one report per enabled analyst when an output directory is supplied.
+- The analyst set is whatever the declared roster lists; a larger roster is activated only by passing `--analysts`.
+- Persist `<key>_report.md` and `<key>_assessment.json` per analyst when an output directory is supplied.
 - When masking is enabled, persist a markdown artifact for the masked case bundle with a stable section layout.
 
 ## 9. Definition Of Done
@@ -213,7 +227,8 @@ A run is valid if:
 - the optional masking step preserves schema and redacts targeted RUCAM content when enabled
 - `hepatotoxicity_evidence` resolves every drug it can and records the deciding
   source for each score
-- the 3 default analysts complete Sections A, B, and C
-- any enabled optional analysts complete Sections A, B, and C
+- every analyst in the declared roster completes Sections A, B, and C and has a
+  valid `<key>_report.md` and `<key>_assessment.json`; a one-analyst roster is a
+  valid run
 - final JSON validates against schema
 - no invented data appears in outputs

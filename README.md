@@ -1,6 +1,6 @@
 # DILI RUCAM Agents
 
-Production-grade CrewAI implementation for multi-analyst RUCAM causality assessment of drug-induced liver injury (DILI) case report PDFs.
+Production-grade implementation, calling the vendor SDKs directly, for multi-analyst RUCAM causality assessment of drug-induced liver injury (DILI) case report PDFs.
 
 ## Purpose
 
@@ -10,7 +10,7 @@ Core guarantees:
 
 - Deterministic, auditable PDF ingestion
 - Optional deterministic score masking to suppress prior RUCAM conclusions in the source text
-- Independent multi-analyst RUCAM scoring
+- Independent RUCAM scoring by the analysts declared in a roster file
 - Strict structured JSON outputs suitable for automation
 
 This system is decision-support only, not a medical diagnosis tool.
@@ -34,15 +34,8 @@ PDF
      ├─ DailyMed label sections (cached)
      └─ PubMed case reports (cached, date-bounded)
           ↓
- ┌───────────────────────────┐
- │ Analyst Alpha             │
- ├───────────────────────────┤
- │ Analyst Beta              │
- ├───────────────────────────┤
- │ Analyst Gamma             │
- └───────────────────────────┘
-          ↓
- optional Analyst Delta / Epsilon / Zeta / Eta
+ analysts declared in the roster file
+ (default config/analysts.json: one analyst)
           ↓
  Independent RUCAM reports + JSON
 ```
@@ -56,10 +49,11 @@ PDF
 - `src/dili_rucam_agents/hepatotoxicity/` - deterministic RUCAM item 6 evidence cascade.
 - `dilirank_v2/DILIrank_v2.xlsx` - pinned FDA DILIrank v2 workbook used by that cascade.
 - `src/dili_rucam_agents/prompts/` - production RUCAM prompt.
-- `src/dili_rucam_agents/crew/` - CrewAI agents, tasks, and crew builder.
+- `config/` - analyst roster files: `analysts.json` (default, one analyst), `analysts.study.json` (seven) and `analysts.smoke.json` (five, one per provider adapter).
+- `src/dili_rucam_agents/roster.py`, `providers.py`, `runner.py`, `analysts.py` - roster loading, the vendor-SDK adapters, the retrying call loop, and per-analyst execution.
 - `src/dili_rucam_agents/pipeline.py` - CLI/SDK entry point.
 - `src/dili_rucam_agents/validators/` - schema enforcement for SECTION C JSON.
-- `tests/` - ingestion, masking, routing, and topology tests.
+- `tests/` - ingestion, masking, roster, provider, runner, checkpoint and docs-sync tests.
 
 ## Quickstart
 
@@ -70,22 +64,20 @@ export GEMINI_API_KEY=...
 export ANTHROPIC_API_KEY=...
 export DEEPSEEK_API_KEY=...
 export OPENROUTER_API_KEY=...
+# or put them in a .env file in the directory you run from
 
-# default: 3 analysts; up to two restarts after an initial attempt
+# default roster (config/analysts.json): one analyst; up to two restarts
 uv run python -m dili_rucam_agents.pipeline \
     examples/3568943.pdf \
     --output-dir results/3568943 \
     --analyst-restarts 2
 
-# enable score masking and all 4 optional analysts, and persist reports
+# the seven-analyst study roster, with score masking, persisting reports
 uv run python -m dili_rucam_agents.pipeline \
     examples/3568943.pdf \
     --output-dir examples/latest_reports \
     --mask-scores \
-    --analyst-delta \
-    --analyst-epsilon \
-    --analyst-zeta \
-    --analyst-eta
+    --analysts config/analysts.study.json
 
 # batch mode over every PDF in a folder
 uv run python scripts/run_batch.py \
@@ -103,6 +95,12 @@ uv run python scripts/run_batch.py \
     --mask-scores \
     --analyst-restarts 2
 ```
+
+Both CLIs read a `.env` file from the directory the command was run in (searching
+upward); keys already exported take precedence. `--analysts <path>` selects the
+roster; omitting it uses `config/analysts.json`, which declares **one** analyst.
+This is a deliberate change from the former default of three, so a run that passes
+no roster now produces one analyst's report.
 
 ## Docker
 
@@ -149,30 +147,26 @@ docker run --rm \
 
 ## Configuration
 
-Environment variables let you pin each model deterministically:
+Analysts are declared in a roster file, not in environment variables. Each entry
+in `config/analysts.json` names a `key`, a `label`, an explicit `provider`
+(`openai`, `anthropic`, `google`, `openrouter` or `deepseek`; never inferred from the
+model string), a `model` and a `max_output_tokens` budget (default `32000`). The
+model name is sent to the vendor SDK as written. The roster file also holds the
+`ground_truth` scorer used with `--mask-scores`.
 
-| Variable | Purpose | Default Fallback |
-| --- | --- | --- |
-| `INGESTION_MODEL` | Override the ingestion helper model. | `OPENAI_MODEL` or `gpt-5.4-mini` |
-| `MASKING_MODEL` | Reserved for the masking step configuration path. | `OPENAI_MODEL` or `gpt-5.4-mini` |
-| `ANALYST_ALPHA_MODEL` | Analyst Alpha model override. Falls back to `ANALYST_MODEL` then `OPENAI_MODEL`. | `gpt-5.5` |
-| `ANALYST_BETA_MODEL` | Analyst Beta model override. Falls back to `ANALYST_MODEL`, `GEMINI_MODEL`, `OPENAI_MODEL`. | `gemini-3.1-pro-preview` |
-| `ANALYST_GAMMA_MODEL` | Analyst Gamma model override. Falls back to `ANALYST_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`. | `moonshotai/kimi-k2.5` |
-| `ANALYST_DELTA_MODEL` | Optional Analyst Delta model override. | `deepseek-v4-pro` |
-| `ANALYST_EPSILON_MODEL` | Optional Analyst Epsilon model override. | `qwen/qwen3.5-plus-02-15` |
-| `ANALYST_ZETA_MODEL` | Optional Analyst Zeta model override. | `claude-opus-4-7` |
-| `ANALYST_ETA_MODEL` | Optional Analyst Eta model override. | `z-ai/glm-5` |
-| `ANALYST_ALPHA_MAX_TOKENS` | Analyst Alpha max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
-| `ANALYST_BETA_MAX_TOKENS` | Analyst Beta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
-| `ANALYST_GAMMA_MAX_TOKENS` | Analyst Gamma max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
-| `ANALYST_DELTA_MAX_TOKENS` | Analyst Delta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
-| `ANALYST_EPSILON_MAX_TOKENS` | Analyst Epsilon max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
-| `ANALYST_ZETA_MAX_TOKENS` | Analyst Zeta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
-| `ANALYST_ETA_MAX_TOKENS` | Analyst Eta max completion/output tokens. Falls back to `ANALYST_MAX_TOKENS`, then `LLM_MAX_TOKENS`. | `32000` |
-| `ANALYST_MAX_TOKENS` | Shared fallback max completion/output tokens for all analysts. | unset |
-| `LLM_MAX_TOKENS` | Global fallback max completion/output tokens. | unset |
-| `ANALYST_MODEL` | Shared fallback for analysts without their own override. |  |
-| `OPENAI_MODEL`, `GEMINI_MODEL`, `ANTHROPIC_MODEL` | Legacy provider-specific fallbacks. |  |
+API keys are the only analyst configuration read from the environment:
+
+| Variable | Provider |
+| --- | --- |
+| `OPENAI_API_KEY` | `openai` |
+| `ANTHROPIC_API_KEY` | `anthropic` |
+| `GEMINI_API_KEY` | `google` |
+| `OPENROUTER_API_KEY` | `openrouter` |
+| `DEEPSEEK_API_KEY` | `deepseek` |
+
+The first call to a provider whose key is missing fails, naming the variable. The former
+`ANALYST_*_MODEL` and `*_MAX_TOKENS` variables no longer exist; change the roster
+file instead.
 
 ## Docling Fallback
 
@@ -200,13 +194,12 @@ When `--output-dir` is supplied, the pipeline writes artifacts for the enabled w
   one row per resolved drug, and the provenance behind each score (DILIrank row,
   DailyMed SPL ids, or the PubMed query and PMIDs).
 
-- `analyst-alpha_report.md`
-- `analyst-beta_report.md`
-- `analyst-gamma_report.md`
-- `analyst-delta_report.md`
-- `analyst-epsilon_report.md`
-- `analyst-zeta_report.md`
-- `analyst-eta_report.md`
+- `<key>_report.md` and `<key>_assessment.json` for every analyst in the roster,
+  with the key's underscores written as hyphens (for example
+  `analyst-alpha_report.md` and `analyst-alpha_assessment.json`). The model returns
+  one JSON object; Python renders Sections A, B and C from it and computes
+  `total_score` and `category` from the seven item scores. A checkpoint counts
+  complete only when both files are present and valid.
 
 - Once analyst execution starts, `analyst_checkpoints.json` records the
   per-analyst checkpoint state, compatible fingerprint, completed-report filename,
@@ -346,7 +339,7 @@ arguments as a regular batch, `INPUT_DIR` and `OUTPUT_DIR`, and adds `--repeats 
 `--repeats` defaults to `5`, must be an integer `>= 1`, and is rejected without
 `--reproducibility`. `--continue-on-failure` is reproducibility-only and is
 described below. Every other batch flag (`--prompt-path`, `--mask-scores`,
-`--strict-scoring`, the optional-analyst flags, `--debug`, `--force-rerun`, and
+`--strict-scoring`, `--analysts`, `--debug`, `--force-rerun`, and
 `--analyst-restarts`) behaves exactly as it does in a regular batch.
 
 Each PDF gets one output directory named after its stem, holding one isolated
@@ -416,20 +409,26 @@ or `2`; its value counts restarts after the initial attempt, so the default perm
 three total attempts per analyst in one invocation. The single-PDF and batch CLIs
 both accept this option.
 
-A rejected attempt that stops partway through the report is reported as
-`report_truncated` rather than as a missing section, and each truncated attempt
-doubles that analyst's output-token budget for the next attempt, up to a ceiling
-of 64,000. On a reasoning model the configured budget covers the hidden reasoning
-tokens as well as the visible report, so repeating a truncated attempt under the
-same budget only moves the cut point; the default budget is 32,000 tokens against
-a finished report of roughly 1,600-3,800. A cap changes a completion only when it
-binds, so widening it cannot alter a report that already fits. The widening is
-transient: the analyst checkpoint is fingerprinted against the configured budget,
-not the escalated one, so a restart does not invalidate a sibling checkpoint.
-Changing the configured budget does invalidate that analyst's checkpoints, which
-is deliberate - a report produced under a binding cap is not the same output as
-one produced with room to finish. Pin `ANALYST_MAX_TOKENS` to the old value to
-keep existing checkpoints eligible for reuse.
+Four retry budgets are separate and never pooled:
+
+- **validation retries** (default 2) for a reply that parsed but broke the schema;
+- **transient transport retries** (3, with backoff) for provider errors;
+- **one truncation escalation**: a reply cut off by the output budget is reported
+  as `report_truncated`, and the one retry that follows runs with a wider budget up
+  to a ceiling of 64,000 tokens. On a reasoning model the budget covers hidden
+  reasoning tokens as well as the visible report, so repeating a truncated attempt
+  under the same budget only moves the cut point;
+- **structured-output mode downgrades** along a `json_schema` -> `json_object` ->
+  `text` ladder that starts at the highest mode each provider actually supports
+  (`deepseek` has no native `json_schema` and starts at `json_object`).
+
+Each analyst's entry in `analyst_checkpoints.json` records `validation_retries`,
+`transient_retries`, `truncation_escalations` and `mode_downgrades`, plus the final
+mode. The escalation is transient: the checkpoint is fingerprinted against the
+configured `max_output_tokens`, not the escalated one. Changing the configured
+budget does invalidate that analyst's checkpoints, which is deliberate, because a
+report produced under a binding cap is not the same output as one produced with
+room to finish.
 
 Validated analyst reports are checkpointed independently in each PDF result
 directory. Re-running a single PDF with the same `--output-dir` or re-running a
@@ -437,15 +436,15 @@ batch reuses compatible completed analyst reports. A batch skips a PDF only when
 its completed status and every enabled analyst checkpoint remain compatible and
 validate; a failed or incomplete PDF resumes at the first analyst without a
 compatible validated report. Compatible successful analysts are skipped before the
-failed analyst is retried. A completed run from a larger analyst topology may be
-reused by a smaller topology without rewriting the checkpoint manifest; expanding
-the topology still runs any missing or incompatible current analyst.
+failed analyst is retried. A completed run from a larger roster may be
+reused by a smaller roster without rewriting the checkpoint manifest; expanding
+the roster still runs any missing or incompatible current analyst.
 
 PDF content, the effective versioned analyst instruction contract, masking mode,
 strict-scoring mode, resolved model, or effective max-output-token changes
 invalidate only the affected analyst checkpoint. The instruction contract covers
-the production prompt, task wrapper and expected output, and analyst
-role/goal/backstory. Runtime case-bundle content and transient retry diagnostics
+the production prompt and the task wrapper; the analyst's
+model and `max_output_tokens` are fingerprinted alongside it. Runtime case-bundle content and transient retry diagnostics
 are not part of that instruction hash (the source PDF hash is tracked separately).
 Old output directories without `analyst_checkpoints.json` are handled as legacy
 checkpoint candidates during a normal resume. A manifestless completed batch is
@@ -455,11 +454,11 @@ current versioned manifest, provided any existing `run_status.json` matches the 
 filename, masking mode, and strict-scoring mode. A later compatible batch may then
 skip normally. Invalid or incompatible legacy reports are run again.
 
-Current checkpoint manifests use schema v3. Schema-v2 manifests predate the
-structured diagnostic boundary and can contain arbitrary validation-error text, so
-they are strictly incompatible: read-only completion does not skip or rewrite
-them, and a normal resume reruns analysts before replacing the file with a clean v3
-manifest. No schema-v2 diagnostic or attempt history is migrated.
+Current checkpoint manifests use schema v4. A schema-v3 manifest is discarded
+rather than migrated, so every manifest written before this version is
+invalidated: read-only completion does not skip it, and a normal resume reruns the
+analysts and replaces the file with a clean v4 manifest. No earlier diagnostic or
+attempt history is carried over.
 
 `--force-rerun` is a batch CLI control that bypasses every analyst checkpoint,
 including legacy-output adoption, for that invocation. Invalid model outputs are
@@ -476,12 +475,54 @@ does not authorize checkpoint adoption or a public `completed_reports` entry.
 Malformed historical output is resumable only after it can be canonicalized into a
 complete strict report without losing content.
 
-## Tests
+## Acceptance Gate (live, paid, run by you)
 
-Run the regression-oriented test suite with:
+The test suite is offline. Whether the analyst tier meets its retry baseline can
+only be measured against the real providers, so it is a live, paid procedure that
+you run yourself, in two stages.
+
+**Stage 1: smoke.** Five calls over `config/analysts.smoke.json`, one per provider
+adapter, on one PDF with one repeat. It is the cheapest run that touches every
+transport.
 
 ```bash
-uv run pytest tests/test_ingestion.py tests/test_bundle_schema.py tests/test_rucam_json_validator.py tests/test_agents.py tests/test_masking.py tests/test_crew_topology.py
+uv run python scripts/run_batch.py --analysts config/analysts.smoke.json <one-pdf-dir> <out>
 ```
 
-This covers deterministic ingestion, JSON validation, provider routing, score masking behavior, and the new crew topology.
+Read `validation_retries`, `transient_retries`, `truncation_escalations` and
+`mode_downgrades` from each analyst's entry in `<out>/**/analyst_checkpoints.json`.
+A non-zero `truncation_escalations` means the 32000-token default is too small for
+the enlarged schema: raise `max_output_tokens` in the roster before paying for
+stage 2.
+
+**Stage 2: the gate.** `config/analysts.study.json` (seven analysts) over the two
+study PDFs with five repeats is 70 analyst runs, the condition the retry baseline
+was measured in.
+
+```bash
+uv run python scripts/run_batch.py --analysts config/analysts.study.json --reproducibility --repeats 5 <study-pdf-dir> <out>
+```
+
+Read the same four counter columns. The gate passes at fewer than 5 validation
+retries across the 70 analyst runs, with none above 1 in any single run.
+
+## Baseline shift in `masked_rucam_score`
+
+The ground-truth prompt interpolates the configured model's name. The former code
+passed the routed string (`anthropic/claude-opus-4-7`); the current code passes the
+bare roster name (`claude-opus-4-7`). That one line of that prompt therefore differs
+between old and new runs for every non-OpenAI provider. This is by design, not a
+regression: the routing table is gone and the bare name is correct going forward.
+Anyone comparing `masked_rucam_score` across this change should expect it.
+
+## Tests
+
+Run the suite with:
+
+```bash
+uv run pytest
+```
+
+It covers deterministic ingestion, masking, the roster, the provider adapters, the
+retrying runner, checkpoints, rendering, and that these docs still describe the
+declared-roster tier. None of it calls a live API.
