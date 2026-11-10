@@ -705,6 +705,16 @@ deferred to this task by Task 2's review:
 
 Add `COPY config /app/config` to the `Dockerfile` beside the existing `COPY dilirank_v2 /app/dilirank_v2`. `DEFAULT_ROSTER_PATH` resolves relative to the source tree, exactly as `default_dilirank_path()` does, so without this a container run with no `--analysts` cannot find the default roster. Commit 70c572c is the same bug for the DILIrank workbook.
 
+- [ ] **Step 3b: Remove the transitional xfail markers**
+
+Task 8 marked 16 tests in `tests/test_batch.py` `xfail(strict=True)` because they
+drive the old CrewAI path through `pipeline.py` — legacy adoption, topology
+expansion and contraction, the v2 manifest replacement, and
+`run_end_to_end`'s checkpoint behaviour. Once this task rewrites that path they
+will XPASS, and a strict xfail turns XPASS into a failure, so the suite stays
+red until the markers come off. Rewrite each test against the roster-driven
+path and delete its marker; do not delete a test to make the marker go away.
+
 - [ ] **Step 4: Verify removal and run the whole suite**
 
 Run: `grep -rn "crewai\|litellm\|kickoff\|use_analyst_\|ANALYST_.*_MODEL\|ANALYST_.*_MAX_TOKENS" src/ pyproject.toml; uv run pytest -q`
