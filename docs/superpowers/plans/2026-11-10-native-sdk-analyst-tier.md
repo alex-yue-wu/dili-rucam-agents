@@ -755,6 +755,17 @@ code rather than inferred:
   `AnalystExecutionError` carrying a null diagnostic. The CLI is safe because
   argparse constrains `--analyst-restarts` to `range(0, 3)`.
 
+Task 10's review added two more:
+
+- Delete the duplicate `build_ground_truth_score_finder_prompt`. It now exists in
+  both `crew/tasks.py:205` and `ground_truth.py:54`; removing the `crew/` copy is
+  part of deleting the package, and leaving two copies would let the ground-truth
+  prompt drift between them.
+- `ground_truth.run_ground_truth_score_finder` calls `asyncio.run` internally
+  (`ground_truth.py:95`), which raises `RuntimeError` if invoked from inside a
+  running event loop. Fine for the current synchronous call site; if the wiring
+  puts it on an async path, call the coroutine directly instead.
+
 - [ ] **Step 4: Verify removal and run the whole suite**
 
 Run: `grep -rn "crewai\|litellm\|kickoff\|use_analyst_\|ANALYST_.*_MODEL\|ANALYST_.*_MAX_TOKENS" src/ pyproject.toml; uv run pytest -q`
