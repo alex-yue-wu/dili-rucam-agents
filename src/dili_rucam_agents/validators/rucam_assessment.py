@@ -144,15 +144,14 @@ class ItemFiveCauses(_Strict):
 
 class RRatioBasis(_Strict):
     alt: float | None = Field(ge=0)
-    alp: float | None = Field(ge=0)
+    alp: float | None = Field(gt=0)  # ALP 0 would make R infinite
     alt_uln: float = Field(gt=0)
     alp_uln: float = Field(gt=0)
 
 
-# The prompt has R rounded to 2 dp from lab values that carry their own
-# rounding, so accept 0.01 absolute or 1% relative, whichever is wider.
+# The prompt rounds R to 2 dp (error <= 0.005). A flat 0.01 absorbs that without
+# letting a stated R straddle the 2 or 5 boundary that picks the scoring table.
 R_RATIO_ABS_TOL = 0.01
-R_RATIO_REL_TOL = 0.01
 
 _ITEMS = (
     "time_to_onset",
@@ -194,12 +193,11 @@ class RucamAssessment(_Strict):
             self.r_ratio is None
             or basis.alt is None
             or basis.alp is None
-            or basis.alp == 0
         ):
             return self
         computed = (basis.alt / basis.alt_uln) / (basis.alp / basis.alp_uln)
         if not math.isclose(
-            self.r_ratio, computed, rel_tol=R_RATIO_REL_TOL, abs_tol=R_RATIO_ABS_TOL
+            self.r_ratio, computed, rel_tol=0.0, abs_tol=R_RATIO_ABS_TOL
         ):
             raise ValueError(
                 f"r_ratio {self.r_ratio} disagrees with r_ratio_basis "

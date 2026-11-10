@@ -287,11 +287,32 @@ def test_r_ratio_must_agree_with_its_basis():
         RucamAssessment.model_validate(_assessment(r_ratio=8.0))
 
 
-def test_r_ratio_cross_check_skipped_when_basis_incomplete():
+def test_r_ratio_cross_check_skipped_when_a_value_is_not_reported():
     basis = {"alt": 500.0, "alp": None, "alt_uln": 40.0, "alp_uln": 120.0}
     RucamAssessment.model_validate(_assessment(r_ratio=3.0, r_ratio_basis=basis))
+    basis = {"alt": None, "alp": 120.0, "alt_uln": 40.0, "alp_uln": 120.0}
+    RucamAssessment.model_validate(_assessment(r_ratio=3.0, r_ratio_basis=basis))
+    RucamAssessment.model_validate(_assessment(r_ratio=None))
+
+
+def test_alp_of_zero_is_a_contradiction_not_a_skip():
     zero = {"alt": 500.0, "alp": 0.0, "alt_uln": 40.0, "alp_uln": 120.0}
-    RucamAssessment.model_validate(_assessment(r_ratio=3.0, r_ratio_basis=zero))
+    with pytest.raises(ValidationError):
+        RucamAssessment.model_validate(_assessment(r_ratio=3.0, r_ratio_basis=zero))
+
+
+@pytest.mark.parametrize(
+    ("stated", "alt"),
+    [(5.00, 496.0), (2.00, 202.0)],  # basis computes 4.96 and 2.02
+)
+def test_r_ratio_tolerance_cannot_straddle_a_pattern_boundary(stated, alt):
+    basis = {"alt": alt, "alp": 100.0, "alt_uln": 100.0, "alp_uln": 100.0}
+    with pytest.raises(ValidationError, match="r_ratio"):
+        RucamAssessment.model_validate(_assessment(r_ratio=stated, r_ratio_basis=basis))
+    # two-decimal rounding of the true value is still accepted
+    RucamAssessment.model_validate(
+        _assessment(r_ratio=round(alt / 100, 2), r_ratio_basis=basis)
+    )
 
 
 def test_onset_day_has_no_day_zero():
