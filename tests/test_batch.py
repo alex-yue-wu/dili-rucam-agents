@@ -26,7 +26,10 @@ from dili_rucam_agents.batch import (
 )
 from dili_rucam_agents.checkpoints import CHECKPOINT_SCHEMA_VERSION
 from dili_rucam_agents.contracts import load_rucam_prompt
-from dili_rucam_agents.diagnostics import SafeValidationDiagnostic
+from dili_rucam_agents.diagnostics import (
+    SafeExecutionDiagnostic,
+    SafeValidationDiagnostic,
+)
 from dili_rucam_agents.pipeline import is_end_to_end_complete, run_end_to_end
 from dili_rucam_agents.providers import MissingApiKeyError, ModelResponse, api_key_env
 from dili_rucam_agents.roster import (
@@ -1991,6 +1994,73 @@ def test_batch_validation_sink_never_executes_hostile_issues_hooks():
 
     assert issues.invoked == []
     assert secret not in str(exc_info.value)
+
+
+def test_batch_diagnostic_keeps_the_failure_kind_and_the_provider_status():
+    """The console line is where an operator reads why a batch stopped.
+
+    A terminal 404 -- the shape of a model name the key cannot see -- printed as
+    `(execution): Execution error [type=RunnerError]`. The kind was hardcoded,
+    and the detail was rebuilt from `__cause__`, which is the runner's own
+    wrapper, so the provider exception and its status code were both lost. Only
+    the checkpoint manifest held either, and the first live smoke run on
+    2026-11-11 cost a traceback read to find a one-word config error.
+    """
+    counters = runner_module.RetryCounters(
+        0, 0, 0, 0, runner_module.StructuredMode.json_schema
+    )
+    runner_error = runner_module.RunnerError(
+        kind="terminal",
+        attempts=1,
+        counters=counters,
+        execution_diagnostic=SafeExecutionDiagnostic("GeminiAPIError", status_code=404),
+    )
+    try:
+        raise AnalystExecutionError(
+            analyst_key="analyst_beta",
+            attempts=1,
+            failure_kind="terminal",
+            counters=counters,
+            execution_diagnostic=runner_error.execution_diagnostic,
+        ) from runner_error
+    except AnalystExecutionError as exc:
+        diagnostic = _safe_batch_failure_diagnostic(exc)
+
+    assert diagnostic == (
+        "analyst_beta failed after 1 attempts (terminal): "
+        "Execution error [type=GeminiAPIError; status_code=404]"
+    )
+
+
+def test_batch_diagnostic_reports_a_truncation_as_a_truncation():
+    """Truncation carries a validation diagnostic, not an execution one.
+
+    It fell into the same hardcoded `(execution)` branch, where rebuilding from
+    `__cause__` yielded `type=RunnerError` and dropped the one sentence that
+    tells the operator the reply was cut off.
+    """
+    counters = runner_module.RetryCounters(
+        0, 0, 1, 0, runner_module.StructuredMode.json_schema
+    )
+    runner_error = runner_module.RunnerError(
+        kind="truncation", attempts=2, counters=counters
+    )
+    try:
+        raise AnalystExecutionError(
+            analyst_key="analyst_beta",
+            attempts=2,
+            failure_kind="truncation",
+            counters=counters,
+            validation_diagnostic=SafeValidationDiagnostic(
+                (("report", "report_truncated"),)
+            ),
+        ) from runner_error
+    except AnalystExecutionError as exc:
+        diagnostic = _safe_batch_failure_diagnostic(exc)
+
+    assert diagnostic.startswith("analyst_beta failed after 2 attempts (truncation): ")
+    assert "Report stops partway through" in diagnostic
+    assert "RunnerError" not in diagnostic
 
 
 def test_run_batch_folder_identifies_analyst_report_when_section_c_is_missing(

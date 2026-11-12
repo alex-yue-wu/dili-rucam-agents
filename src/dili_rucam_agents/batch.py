@@ -16,6 +16,7 @@ from dili_rucam_agents.analysts import AnalystExecutionError
 from dili_rucam_agents.diagnostics import (
     SafeValidationDiagnostic,
     format_execution_error,
+    render_execution_diagnostic,
     render_validation_diagnostic,
     validate_validation_diagnostic,
 )
@@ -371,17 +372,20 @@ def _safe_batch_failure_diagnostic(exc: Exception) -> str:
         return f"{exc.report_filename}: {render_validation_diagnostic(exc.diagnostic)}"
     if not isinstance(exc, AnalystExecutionError):
         return format_execution_error(exc)
-    if exc.failure_kind == "validation":
-        return (
-            f"{exc.analyst_key} failed after {exc.attempts} attempts "
-            f"(validation): "
-            f"{render_validation_diagnostic(exc.validation_diagnostic)}"
-        )
-    cause = exc.__cause__
-    execution_error = cause if isinstance(cause, Exception) else exc
+    # The kind is reported as it was classified, and the detail is re-rendered
+    # from this error's own structured diagnostic. Reading `__cause__` instead
+    # described the runner's wrapper rather than the failure: a terminal 404
+    # printed `(execution): Execution error [type=RunnerError]`, losing both the
+    # provider exception and the status code that name the cause. Rendering
+    # re-validates, so a diagnostic forged after construction still raises here
+    # rather than reaching the console.
+    if exc.failure_kind in ("execution", "terminal"):
+        detail = render_execution_diagnostic(exc.execution_diagnostic)
+    else:
+        detail = render_validation_diagnostic(exc.validation_diagnostic)
     return (
         f"{exc.analyst_key} failed after {exc.attempts} attempts "
-        f"(execution): {format_execution_error(execution_error)}"
+        f"({exc.failure_kind}): {detail}"
     )
 
 
