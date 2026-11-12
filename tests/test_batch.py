@@ -2341,6 +2341,13 @@ def test_the_clis_look_for_dotenv_from_the_invocation_directory(
 ):
     """Not from this package's own directory, which is where the default looks."""
 
+    # This is the one test about the real lookup, so it opts out of the
+    # suite-wide `no_dotenv` fixture. Safe: it writes its own .env and chdirs
+    # into it, so the search stops there and never reaches a real one.
+    import dotenv
+
+    monkeypatch.setattr("dili_rucam_agents.batch.find_dotenv", dotenv.find_dotenv)
+
     (tmp_path / ".env").write_text("DILI_PROBE_VAR=from-dotenv\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DILI_PROBE_VAR", raising=False)

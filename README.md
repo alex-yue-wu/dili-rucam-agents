@@ -178,7 +178,25 @@ Checking a model name against a vendor's catalogue is not evidence that it can
 be called. `gemini-2.5-pro` is returned by `models.list()`, resolves through
 `models.get()` with `generateContent` among its supported actions, and refuses
 every call as "no longer available to new users"; `gemini-3.1-pro-preview` is
-absent from the same listing and works. Verify a new model by calling it.
+absent from the same listing and works. Verify a new model by calling it:
+
+```bash
+uv run python scripts/verify_roster.py --analysts config/analysts.study.json
+```
+
+That calls every entry once -- the provider's own starting mode, the declared
+`api_version`, the real assessment schema -- and prints a line per entry,
+exiting non-zero if any failed. One bad name never hides the entries after it,
+so a single run names every one of them. A failure prints the vendor's own
+message, which the batch sinks deliberately do not carry, and that message is
+usually the whole diagnosis. It writes nothing.
+
+The probe caps output at 2000 tokens, so a reasoning model is expected to report
+`truncated at the probe's own cap`: reachability is the question, not the report.
+A pass is not a promise about a later run -- availability is per key and per day
+-- so run it again after rotating a key, and before a run you intend to compare
+against an earlier one. Add `--no-ground-truth` to skip the scorer that only
+`--mask-scores` calls.
 
 API keys are the only analyst configuration read from the environment:
 

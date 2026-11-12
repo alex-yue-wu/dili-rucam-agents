@@ -64,6 +64,7 @@ src/dili_rucam_agents/
   rendering.py       Sections A, B and C, written from the returned object
   ground_truth.py    the published RUCAM score, read in one free-text call
   checkpoints.py     the resume manifest, its fingerprints and its counters
+  verify.py          the roster pre-flight: one real call per declared model
   diagnostics.py     the safe-diagnostic boundary: no provider text escapes
 tests/
 README.md
