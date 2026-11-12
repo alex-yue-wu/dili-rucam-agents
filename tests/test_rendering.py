@@ -36,8 +36,12 @@ _SCORES = {
 
 
 def _build(**overrides):
+    """``overrides`` replace raw fixture fields before validation."""
     data = _assessment(
-        item_5_causes=_causes(3),
+        # All six Group I and both Group II ruled out: the checklist that makes
+        # the stated item-5 score of +2 the rung the sheet actually gives, now
+        # that code derives item 5 rather than accepting it.
+        item_5_causes=_causes(8),
         **{name: _item(score) for name, score in _SCORES.items()},
     )
     data.update(overrides)
@@ -110,9 +114,9 @@ def test_section_a_prints_the_g1_checklist_and_the_g1_line():
     section_a = report.split("## SECTION B")[0]
     for name in GROUP_I + GROUP_II:
         assert name in section_a
-    assert section_a.count("ruled_out") == 3
-    assert "g1 = 3" in section_a
-    assert "g1 = 3" not in report.split("## SECTION B")[1]
+    assert section_a.count("ruled_out") == 8
+    assert "g1 = 6" in section_a
+    assert "g1 = 6" not in report.split("## SECTION B")[1]
 
 
 def test_section_a_prints_the_eleven_line_pre_flight_check():
@@ -275,11 +279,13 @@ def test_pre_flight_claims_that_disagree_are_shown_beside_the_computed_values():
     scored = score_assessment(assessment)
     report = _render(assessment, scored)
     section_a = report.split("## SECTION B")[0]
-    assert "Total sum: 12 (as stated) / 9 (computed)" in section_a
-    assert "Category match: Probable (as stated) / Highly probable (computed)" in section_a
+    assert "Total sum: 12 (as stated) / 5 (computed)" in section_a
+    assert "Category match: Probable (as stated) / Possible (computed)" in section_a
     assert "g1 count: 5 (as stated) / 3 (computed)" in section_a
+    # g1 = 3 is the -2 rung, so the stated +2 is shown beside the derived score.
+    assert "Other causes excluded (+2 as stated / -2 computed" in section_a
     validate_analyst_report(report)
-    assert extract_section_c_json(report)["total_score"] == 9
+    assert extract_section_c_json(report)["total_score"] == 5
 
 
 def test_pre_flight_claims_that_agree_are_left_alone():
@@ -289,8 +295,8 @@ def test_pre_flight_claims_that_agree_are_left_alone():
     )
     data["pre_flight"] = {
         **data["pre_flight"],
-        "total_sum": "2+3+1-1+2+2+0 = 9",
-        "category_match": "Highly probable (9)",
+        "total_sum": "2+3+1-1-2+2+0 = 5",
+        "category_match": "Possible (5)",
         "g1_count": "3 of 6",
     }
     assessment = RucamAssessment.model_validate(data)
@@ -318,3 +324,38 @@ def test_hostile_text_keeps_the_table_and_fence_structure():
     assert fence_lines == ["```json", "```"]
     assert report.count("\n## SECTION") == 2  # B and C; A opens the report
     validate_analyst_report(report)
+
+
+def test_sections_b_and_c_carry_the_derived_item_five_score():
+    """Section C's items must sum to its total, and the total is derived.
+
+    Printing the model's claim in `rucam_scores` while `total_score` came from
+    the derived one left Section C contradicting itself, which the legacy
+    report validator rejects as `score_sum_mismatch`.
+    """
+    assessment, scored = _build(item_5_causes=_causes(3))
+
+    report = _render(assessment, scored)
+    section_b = report.split("## SECTION B")[1].split("## SECTION C")[0]
+    payload = extract_section_c_json(report)
+
+    assert payload["rucam_scores"]["other_causes_excluded"] == -2
+    assert sum(payload["rucam_scores"].values()) == payload["total_score"] == 5
+    assert "| Other causes excluded | -2 |" in section_b
+    validate_analyst_report(report)
+
+
+def test_an_agreeing_item_five_score_is_printed_without_annotation():
+    """Only a disagreement annotates; the fixture's checklist supports +2.
+
+    Scoped to the item's own line: this fixture's pre-flight answers are
+    placeholder strings that never match the computed values, so those lines
+    carry annotations of their own for unrelated reasons.
+    """
+    assessment, scored = _build()
+
+    section_a = _render(assessment, scored).split("## SECTION B")[0]
+    rationale = section_a.split("### Scoring rationale")[1]
+
+    assert "Other causes excluded (+2, reported)" in rationale
+    assert "as stated" not in rationale

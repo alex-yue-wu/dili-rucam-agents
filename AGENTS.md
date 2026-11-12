@@ -176,6 +176,18 @@ The model returns one JSON object; Python renders Sections A, B and C. The
 model supplies neither `total_score` nor `category`: code computes both from
 the seven item scores.
 
+**Item 5's score is derived too**, from the Group I / Group II checklist the
+same reply carries, because steps 2-5 of its printed procedure are arithmetic
+over that checklist and nothing else: `g1 = 6` with both Group II categories
+ruled out is +2, `g1 = 6` alone is +1, 5 or 4 is 0, and 3 or fewer is -2. The
+judgement stays the model's -- it decides each cause's status. Step 1's -3 rung
+needs a cause to be *a highly probable explanation* of the injury, which the
+eight statuses cannot express, so a claimed -3 stands wherever some cause is
+documented `present` and falls through to the arithmetic when none is. A
+derived score that differs from the stated one is printed beside it in Section
+A, the way an R-ratio disagreement is; Sections B and C carry the derived one,
+since Section C's items must sum to its total.
+
 Each analyst must:
 
 1. Extract clinical facts strictly from `case_bundle_json`.
@@ -223,7 +235,7 @@ RUCAM scoring table.
 
 ### SECTION C
 
-Strict JSON with injury pattern, R-ratio, itemized scores, total score, and category. `total_score` and `category` are computed by code from the seven items, not supplied by the model.
+Strict JSON with injury pattern, R-ratio, itemized scores, total score, and category. `total_score` and `category` are computed by code from the seven items, not supplied by the model, and item 5's score is itself derived from the Group I / Group II checklist.
 
 ## 8. Engineering Standards
 

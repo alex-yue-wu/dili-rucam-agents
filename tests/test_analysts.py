@@ -57,7 +57,8 @@ def _roster(n: int = 1) -> AnalystRoster:
 
 def _reply(marker: str = "because", **overrides) -> str:
     items = {name: _item(score, rationale=marker) for name, score in _SCORES.items()}
-    data = _assessment(item_5_causes=_causes(3), **items)
+    # _causes(8) supports _SCORES' item-5 score of +2; see test_rendering.
+    data = _assessment(item_5_causes=_causes(8), **items)
     data.update(overrides)
     return json.dumps(data)
 

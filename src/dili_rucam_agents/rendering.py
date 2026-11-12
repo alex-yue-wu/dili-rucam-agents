@@ -15,6 +15,7 @@ from dili_rucam_agents.validators.rucam_assessment import (
     ItemScore,
     RucamAssessment,
     ScoredAssessment,
+    item_scores,
     r_ratio_disagreement,
 )
 
@@ -161,11 +162,16 @@ def _section_a(
     lines += ["", "Group II:"]
     lines += [f"- {name}: {getattr(causes, name).value}" for name in _GROUP_II]
     lines += ["", f"g1 = {causes.g1}", "", "### Scoring rationale", ""]
+    scores = item_scores(assessment)
     for field, label in _ITEM_LABELS:
         item: ItemScore = getattr(assessment, field)
+        score = _signed(scores[field])
+        if scores[field] != item.score:
+            # Item 5's rung is derived from the checklist above; keep the
+            # model's claim as diagnostic data, the way the R-ratio does.
+            score = f"{_signed(item.score)} as stated / {score} computed"
         lines.append(
-            f"- {label} ({_signed(item.score)}, {item.data_status.value}): "
-            f"{_text(item.rationale)}"
+            f"- {label} ({score}, {item.data_status.value}): {_text(item.rationale)}"
         )
     lines += [
         "",
@@ -192,9 +198,10 @@ def _section_b(assessment: RucamAssessment, scored: ScoredAssessment) -> str:
         "| RUCAM Item | Score | Evidence |",
         "| --- | --- | --- |",
     ]
+    scores = item_scores(assessment)
     for field, label in _ITEM_LABELS:
         item: ItemScore = getattr(assessment, field)
-        lines.append(f"| {label} | {_signed(item.score)} | {_evidence_cell(item)} |")
+        lines.append(f"| {label} | {_signed(scores[field])} | {_evidence_cell(item)} |")
     lines.append(
         f"| **Total** | **{scored.total_score}** | "
         f"**Category: {scored.category}** |"
@@ -228,7 +235,7 @@ def _section_c(
             None if assessment.r_ratio is None else round(assessment.r_ratio, 2)
         ),
         "rucam_scores": {
-            field: getattr(assessment, field).score for field, _ in _ITEM_LABELS
+            field: item_scores(assessment)[field] for field, _ in _ITEM_LABELS
         },
         "total_score": scored.total_score,
         "category": scored.category,

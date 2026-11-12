@@ -7,6 +7,9 @@ from dili_rucam_agents.validators.rucam_assessment import (
     CauseStatus,
     computed_r_ratio,
     EvidenceRef,
+    has_cause_documented_present,
+    item_five_rung,
+    item_scores,
     ItemFiveCauses,
     ItemScore,
     PreFlight,
@@ -75,7 +78,11 @@ def _assessment(**overrides) -> dict:
         "onset_day": 10,
         "onset_anchor_dose": "first dose of amoxicillin",
         "pre_flight": _pre_flight(),
-        "item_5_causes": _causes(),
+        # Five Group I causes ruled out is the item-5 rung of 0, which is what
+        # every item defaults to here. Code derives item 5 from this checklist,
+        # so an all-`not_documented` default would have scored -2 and left the
+        # fixture describing an assessment the sheet does not allow.
+        "item_5_causes": _causes(5),
         **{item: _item(0) for item in ITEMS},
     }
     data.update(overrides)
@@ -136,6 +143,9 @@ def test_assessment_carries_no_total_and_no_category():
 def test_score_assessment_sums_the_seven_items_and_derives_the_category():
     assessment = RucamAssessment.model_validate(
         _assessment(
+            # +2 is item 5's rung only with all six Group I and both Group II
+            # ruled out, and code derives it from this checklist.
+            item_5_causes=_causes(8),
             time_to_onset=_item(2),
             course=_item(3),
             risk_factors=_item(1),
@@ -152,7 +162,14 @@ def test_score_assessment_sums_the_seven_items_and_derives_the_category():
 
 def test_score_assessment_negative_total_is_excluded():
     assessment = RucamAssessment.model_validate(
-        _assessment(concomitant_drugs=_item(-3), other_causes_excluded=_item(-3))
+        _assessment(
+            # A claimed -3 stands only where a cause is documented present:
+            # step 1 of the procedure needs one, and whether it is a highly
+            # probable explanation is the judgement the checklist cannot hold.
+            item_5_causes=_causes(hypotension_or_ischaemia="present"),
+            concomitant_drugs=_item(-3),
+            other_causes_excluded=_item(-3),
+        )
     )
     scored = score_assessment(assessment)
     assert scored.total_score == -6
@@ -366,3 +383,103 @@ def test_onset_day_has_no_day_zero():
         RucamAssessment.model_validate(_assessment(onset_day=0))
     RucamAssessment.model_validate(_assessment(onset_day=1))
     RucamAssessment.model_validate(_assessment(onset_day=None))
+
+
+@pytest.mark.parametrize(
+    "ruled_out, group_ii, expected",
+    [
+        (6, True, 2),  # g1 = 6 and both Group II -> +2
+        (6, False, 1),  # g1 = 6 alone -> +1
+        (5, False, 0),
+        (4, False, 0),
+        (3, False, -2),
+        (0, False, -2),
+    ],
+)
+def test_item_five_rung_follows_the_printed_procedure(ruled_out, group_ii, expected):
+    flags = {name: "not_documented" for name in GROUP_I + GROUP_II}
+    for name in GROUP_I[:ruled_out]:
+        flags[name] = "ruled_out"
+    if group_ii:
+        for name in GROUP_II:
+            flags[name] = "ruled_out"
+    causes = ItemFiveCauses.model_validate(_causes(**flags))
+
+    assert item_five_rung(causes) == expected
+
+
+def test_a_stated_item_five_score_never_beats_its_own_checklist():
+    """The regression this exists for, from the run of 2026-11-12.
+
+    One analyst of five marked `underlying_disease` as `not_documented` -- so
+    `g1 = 6` without Group II, which the sheet scores +1 -- and then claimed
+    +2. Every check passed, because 2 is a legal item-5 score and nothing
+    compared it with the checklist beside it. Its total read 8 where the sheet
+    gives 7.
+    """
+    assessment = RucamAssessment.model_validate(
+        _assessment(
+            item_5_causes=_causes(
+                6, underlying_disease="not_documented", acute_viral_infection="ruled_out"
+            ),
+            other_causes_excluded=_item(2),
+        )
+    )
+
+    assert item_scores(assessment)["other_causes_excluded"] == 1
+    assert score_assessment(assessment).total_score == 1
+
+
+def test_the_other_six_items_are_left_as_the_model_scored_them():
+    """Only item 5 is derived: the rest are judgements, not arithmetic."""
+    assessment = RucamAssessment.model_validate(
+        _assessment(
+            item_5_causes=_causes(8),
+            time_to_onset=_item(2),
+            course=_item(3),
+            risk_factors=_item(1),
+            concomitant_drugs=_item(-1),
+            other_causes_excluded=_item(2),
+            known_hepatotoxicity=_item(2),
+            rechallenge=_item(0),
+        )
+    )
+
+    scores = item_scores(assessment)
+
+    assert scores == {
+        "time_to_onset": 2,
+        "course": 3,
+        "risk_factors": 1,
+        "concomitant_drugs": -1,
+        "other_causes_excluded": 2,
+        "known_hepatotoxicity": 2,
+        "rechallenge": 0,
+    }
+
+
+def test_minus_three_stands_where_a_cause_is_documented_present():
+    """Step 1 asks whether a present cause is a highly probable explanation.
+
+    The eight statuses cannot answer that, so the model keeps the call. What
+    the checklist does answer is the precondition: some cause must be present.
+    """
+    assessment = RucamAssessment.model_validate(
+        _assessment(
+            item_5_causes=_causes(5, hypotension_or_ischaemia="present"),
+            other_causes_excluded=_item(-3),
+        )
+    )
+
+    assert has_cause_documented_present(assessment.item_5_causes) is True
+    assert item_scores(assessment)["other_causes_excluded"] == -3
+
+
+def test_minus_three_falls_through_when_no_cause_is_present():
+    """-3 with nothing documented present is unreachable on the sheet."""
+    assessment = RucamAssessment.model_validate(
+        _assessment(item_5_causes=_causes(5), other_causes_excluded=_item(-3))
+    )
+
+    assert has_cause_documented_present(assessment.item_5_causes) is False
+    assert item_scores(assessment)["other_causes_excluded"] == 0

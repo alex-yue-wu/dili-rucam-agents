@@ -102,6 +102,19 @@ class CauseStatus(StrEnum):
     PRESENT = "present"
 
 
+#: The six Group I causes, in the order the sheet prints them.
+GROUP_I_CAUSES = (
+    "hepatitis_a",
+    "hepatitis_b",
+    "hepatitis_c",
+    "biliary_obstruction",
+    "alcoholism",
+    "hypotension_or_ischaemia",
+)
+#: The two Group II categories. Not part of g1; they enter the +2 rung only.
+GROUP_II_CAUSES = ("underlying_disease", "acute_viral_infection")
+
+
 class ItemFiveCauses(_Strict):
     # Group I: exactly six causes.
     hepatitis_a: CauseStatus
@@ -125,15 +138,7 @@ class ItemFiveCauses(_Strict):
     @model_validator(mode="after")
     def _g1_matches_flags(self) -> ItemFiveCauses:
         counted = sum(
-            status is CauseStatus.RULED_OUT
-            for status in (
-                self.hepatitis_a,
-                self.hepatitis_b,
-                self.hepatitis_c,
-                self.biliary_obstruction,
-                self.alcoholism,
-                self.hypotension_or_ischaemia,
-            )
+            getattr(self, name) is CauseStatus.RULED_OUT for name in GROUP_I_CAUSES
         )
         if self.g1 != counted:
             raise ValueError(
@@ -198,8 +203,57 @@ class ScoredAssessment(_Strict):
     category: CausalityCategory
 
 
+def item_five_rung(causes: ItemFiveCauses) -> int:
+    """Steps 2-5 of the printed item-5 procedure, which are pure arithmetic.
+
+    `g1 = 6` with both Group II categories ruled out is +2, `g1 = 6` alone is
+    +1, 5 or 4 is 0, and 3 or fewer is -2. Nothing here is a judgement: the
+    judgement is each cause's status, which the model supplies.
+    """
+    if causes.g1 == 6:
+        return 2 if causes.group_ii_ruled_out else 1
+    if causes.g1 in (5, 4):
+        return 0
+    return -2
+
+
+def has_cause_documented_present(causes: ItemFiveCauses) -> bool:
+    """Whether step 1's precondition holds: some cause is documented present."""
+    return any(
+        getattr(causes, name) is CauseStatus.PRESENT
+        for name in GROUP_I_CAUSES + GROUP_II_CAUSES
+    )
+
+
+def item_scores(assessment: RucamAssessment) -> dict[str, int]:
+    """Every item's score as code holds it, which is not always as stated.
+
+    Six are the model's own. Item 5's is derived from the Group I/II checklist
+    the same reply carries, for the reason `total_score` and `category` are
+    computed rather than accepted: steps 2-5 of its printed procedure are
+    arithmetic over that checklist and nothing else, and arithmetic is not the
+    model's to get wrong. A run on 2026-11-12 had one analyst of five mark
+    `underlying_disease` as `not_documented` -- so `g1 = 6` without Group II,
+    which the sheet scores +1 -- and then claim +2, which every legal-set check
+    passed because 2 is a legal item-5 score.
+
+    Step 1's -3 rung is left alone. It needs a cause to be *a highly probable
+    explanation* of the injury, which is a reading the eight statuses cannot
+    hold, so a claimed -3 stands wherever some cause is documented present. It
+    falls through to the arithmetic when none is: that half of step 1 the
+    checklist does answer.
+    """
+    scores = {field: getattr(assessment, field).score for field in _ITEMS}
+    if scores["other_causes_excluded"] == -3 and has_cause_documented_present(
+        assessment.item_5_causes
+    ):
+        return scores
+    scores["other_causes_excluded"] = item_five_rung(assessment.item_5_causes)
+    return scores
+
+
 def score_assessment(assessment: RucamAssessment) -> ScoredAssessment:
-    total = sum(getattr(assessment, item).score for item in _ITEMS)
+    total = sum(item_scores(assessment).values())
     return ScoredAssessment(total_score=total, category=expected_category(total))
 
 
@@ -233,6 +287,8 @@ def r_ratio_disagreement(assessment: RucamAssessment) -> float | None:
 
 
 __all__ = [
+    "GROUP_I_CAUSES",
+    "GROUP_II_CAUSES",
     "R_RATIO_ABS_TOL",
     "CauseStatus",
     "DataStatus",
@@ -244,6 +300,9 @@ __all__ = [
     "RucamAssessment",
     "ScoredAssessment",
     "computed_r_ratio",
+    "has_cause_documented_present",
+    "item_five_rung",
+    "item_scores",
     "r_ratio_disagreement",
     "score_assessment",
 ]

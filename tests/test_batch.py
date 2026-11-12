@@ -134,7 +134,8 @@ def complete_report(total_score: int = 6) -> str:
 def assessment_payload(total_score: int = 6, marker: str = "because") -> dict:
     """A valid RucamAssessment whose seven items sum to ``total_score``."""
     return _assessment(
-        item_5_causes=_causes(3),
+        # Supports the fixture's item-5 score of +2, which code now derives.
+        item_5_causes=_causes(8),
         **{
             name: _item(score, rationale=marker)
             for name, score in rucam_scores(total_score).items()
