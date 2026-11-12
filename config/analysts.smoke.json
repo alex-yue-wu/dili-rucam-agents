@@ -12,7 +12,6 @@
       "label": "Analyst Beta",
       "provider": "google",
       "model": "gemini-3.1-pro-preview",
-      "api_version": "v1alpha",
       "max_output_tokens": 32000
     },
     {

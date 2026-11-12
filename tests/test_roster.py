@@ -179,12 +179,16 @@ def test_shipped_study_roster_reproduces_todays_seven_models():
     crew config; provider replaced routing by model-name sniffing, so a typo in
     it reaches a paid run with nothing to catch it on the way.
 
-    The google slot is unchanged from that config and is pinned here with the
-    API version it needs: `gemini-3.1-pro-preview` 404s on the SDK's default
-    version and answers on `v1alpha`. The detour through `gemini-2.5-pro` on
-    2026-11-11 was mine and was wrong -- that model is listed by
-    `models.list()`, resolves through `models.get()`, and refuses every call as
-    "no longer available to new users".
+    The google slot is unchanged from that config, and declares no
+    `api_version`: it is served on the vendor default. The detour through
+    `gemini-2.5-pro` on 2026-11-11 was mine and was wrong -- that model is
+    listed by `models.list()`, resolves through `models.get()`, and refuses
+    every call as "no longer available to new users".
+
+    `gemini-3.1-pro-preview` did need `api_version="v1alpha"` when measured
+    against the key in use that day; the keys were revoked afterwards and Alex
+    states the default version now serves it, so nothing is declared here. The
+    field is still supported for the next time a preview model moves surface.
     """
     roster = load_roster(STUDY)
     assert [(a.key, a.provider, a.model) for a in roster.analysts] == [
@@ -200,8 +204,7 @@ def test_shipped_study_roster_reproduces_todays_seven_models():
         Provider.openai,
         "gpt-5.5",
     )
-    beta = next(a for a in roster.analysts if a.key == "analyst_beta")
-    assert beta.api_version == "v1alpha"
+    assert all(a.api_version is None for a in roster.analysts)
 
 
 def test_shipped_smoke_roster_covers_every_provider():
