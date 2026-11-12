@@ -90,7 +90,15 @@ Duplicate-key and key-pattern checks go in a `model_validator(mode="after")` on 
 `config/analysts.study.json`: the seven keys and models from `src/dili_rucam_agents/crew/config.py:ANALYST_SPECS` — alpha `gpt-5.5` (openai), beta `gemini-3.1-pro-preview` (google), gamma `moonshotai/kimi-k2.5` (openrouter), delta `deepseek-v4-pro` (deepseek), epsilon `qwen/qwen3.5-plus-02-15` (openrouter), zeta `claude-opus-4-7` (anthropic), eta `z-ai/glm-5` (openrouter).
 `config/analysts.smoke.json`: five entries, one per `Provider`, reusing models from the study roster.
 
-**Amended 2026-11-11, after the plan shipped:** the google slot's `gemini-3.1-pro-preview` is not in the catalogue this project's `GEMINI_API_KEY` can see, and the first live smoke run died on a terminal 404 at `analyst_beta`. Both rosters now read `gemini-2.5-pro`, the only general-purpose pro model the key lists. The other six study models were each checked against their vendor's catalogue in the same pass and all exist, so no other slot moved.
+**Amended 2026-11-11, after the plan shipped:** the google slot's `gemini-3.1-pro-preview` made the first live smoke run die on a terminal 404 at `analyst_beta`. It was changed to `gemini-2.5-pro` on the strength of a `models.list()` check, and the next run died in exactly the same place.
+
+**Corrected the same day, by calling the models instead of listing them.** A catalogue listing is not evidence of callability, in either direction:
+
+- `gemini-2.5-pro` is returned by both `models.list()` and `models.get()`, with `generateContent` among its supported actions, and **every** `generateContent` call to it returns `404 NOT_FOUND`: "This model models/gemini-2.5-pro is no longer available to new users. Please update your code to use models/gemini-3.1-pro-preview". It is uncallable on this key, so that amendment pointed both rosters at a dead model.
+- `gemini-3.1-pro-preview` is **absent** from `models.list()` and still works. Its original 404 was not about the name: the SDK's default API version is `v1`, where the model does not exist ("not found for API version v1"). With `http_options=types.HttpOptions(api_version="v1alpha")` the same call returns 200.
+- `gemini-3.5-flash`, `gemini-3.8-flash` and `gemini-4-argon` answer on the default version; `gemini-4-argon` returned a full structured object against the real `RucamAssessment` schema.
+
+Each line above was established by calling the model through the project's own `google_request`, in all three ladder modes for the two pro candidates. The other five providers' models have **not** been verified this way -- they rest on the same catalogue check that proved worthless here, and `gpt-5.5` is the only one of them with a completed call behind it.
 
 - [ ] **Step 5: Run tests to verify they pass**
 

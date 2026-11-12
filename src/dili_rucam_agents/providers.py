@@ -86,6 +86,9 @@ class ModelSpec(BaseModel):
     max_output_tokens: int = Field(default=32000, gt=0)
     #: Ignored for a model that fixes its own (see `takes_temperature`).
     temperature: float = Field(default=0.0, ge=0, le=1)
+    #: The API surface to call on; google only, SDK default if unset. A preview
+    #: model can be absent from one version and served on another.
+    api_version: str | None = Field(default=None, min_length=1)
 
 
 class ModelResponse(BaseModel):
@@ -125,6 +128,7 @@ def model_spec(config: AnalystConfig | GroundTruthConfig) -> ModelSpec:
         provider=config.provider,
         model=config.model,
         max_output_tokens=config.max_output_tokens,
+        api_version=config.api_version,
     )
 
 
@@ -321,7 +325,7 @@ class SdkProvider:
     """
 
     def __init__(self) -> None:
-        self._clients: dict[Provider, Any] = {}
+        self._clients: dict[tuple[Provider, str | None], Any] = {}
 
     def _key(self, provider: Provider) -> str:
         require_api_keys([provider])
@@ -349,9 +353,9 @@ class SdkProvider:
     ) -> ModelResponse:
         from openai import AsyncOpenAI
 
-        client = self._clients.get(spec.provider)
+        client = self._clients.get((spec.provider, spec.api_version))
         if client is None:
-            client = self._clients[spec.provider] = AsyncOpenAI(
+            client = self._clients[spec.provider, spec.api_version] = AsyncOpenAI(
                 api_key=self._key(spec.provider),
                 base_url=BASE_URLS[spec.provider],
                 max_retries=0,
@@ -378,9 +382,9 @@ class SdkProvider:
     ) -> ModelResponse:
         from anthropic import AsyncAnthropic
 
-        client = self._clients.get(spec.provider)
+        client = self._clients.get((spec.provider, spec.api_version))
         if client is None:
-            client = self._clients[spec.provider] = AsyncAnthropic(
+            client = self._clients[spec.provider, spec.api_version] = AsyncAnthropic(
                 api_key=self._key(spec.provider), max_retries=0, timeout=TIMEOUT_SECONDS
             )
         # Streamed: the SDK refuses a large non-streaming `max_tokens`.
@@ -407,14 +411,17 @@ class SdkProvider:
         from google import genai
         from google.genai import errors, types
 
-        client = self._clients.get(spec.provider)
+        client = self._clients.get((spec.provider, spec.api_version))
         if client is None:
-            client = self._clients[spec.provider] = genai.Client(
+            options: dict[str, Any] = {
+                "timeout": TIMEOUT_SECONDS * 1000,
+                "retry_options": types.HttpRetryOptions(attempts=1),
+            }
+            if spec.api_version:
+                options["api_version"] = spec.api_version
+            client = self._clients[spec.provider, spec.api_version] = genai.Client(
                 api_key=self._key(spec.provider),
-                http_options=types.HttpOptions(
-                    timeout=TIMEOUT_SECONDS * 1000,
-                    retry_options=types.HttpRetryOptions(attempts=1),
-                ),
+                http_options=types.HttpOptions(**options),
             )
         request = google_request(spec, messages, mode, schema)
         try:
@@ -450,7 +457,7 @@ class SdkProvider:
         run for -- the calls are already over by the time it is reached.
         """
         try:
-            for provider, client in self._clients.items():
+            for (provider, _), client in self._clients.items():
                 try:
                     if provider is Provider.google:
                         await client.aio.aclose()

@@ -109,6 +109,69 @@ def test_shipped_default_roster_has_exactly_one_analyst():
     assert roster.ground_truth.provider is Provider.openai
 
 
+def test_google_entry_may_declare_the_api_version_it_is_served_on(tmp_path):
+    """The API surface is part of the condition, so the roster declares it.
+
+    `gemini-3.1-pro-preview` is absent from `models.list()` and 404s on the
+    SDK's default API version, yet answers on `v1alpha`. Pinning that in the
+    adapter would hide which surface a measured score came from; pinning it
+    here keeps it beside the model it belongs to.
+    """
+    path = tmp_path / "analysts.json"
+    path.write_text(
+        json.dumps(
+            {
+                "analysts": [
+                    {
+                        "key": "analyst_beta",
+                        "label": "Analyst Beta",
+                        "provider": "google",
+                        "model": "gemini-3.1-pro-preview",
+                        "api_version": "v1alpha",
+                    }
+                ],
+                "ground_truth": {"provider": "openai", "model": "gpt-5.5"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    roster = load_roster(path)
+
+    assert roster.analysts[0].api_version == "v1alpha"
+    assert roster.ground_truth.api_version is None
+
+
+def test_api_version_is_refused_where_the_sdk_would_ignore_it(tmp_path):
+    """Only the google client takes an API version.
+
+    The OpenAI and Anthropic SDKs have no such argument, so a declared value
+    would be silently dropped -- a field in the experimental condition that
+    does nothing is worse than no field at all.
+    """
+    path = tmp_path / "analysts.json"
+    path.write_text(
+        json.dumps(
+            {
+                "analysts": [
+                    {
+                        "key": "analyst_alpha",
+                        "label": "Analyst Alpha",
+                        "provider": "openai",
+                        "model": "gpt-5.5",
+                        "api_version": "v1alpha",
+                    }
+                ],
+                "ground_truth": {"provider": "openai", "model": "gpt-5.5"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RosterError, match="api_version"):
+        load_roster(path)
+
+
 def test_shipped_study_roster_reproduces_todays_seven_models():
     """provider is the one roster field with no predecessor to copy from.
 
@@ -116,15 +179,17 @@ def test_shipped_study_roster_reproduces_todays_seven_models():
     crew config; provider replaced routing by model-name sniffing, so a typo in
     it reaches a paid run with nothing to catch it on the way.
 
-    One model has deliberately moved since: the google slot read
-    `gemini-3.1-pro-preview`, which is absent from the catalogue the project's
-    key can see and 404s on the first call, so it was changed to `gemini-2.5-pro`
-    on 2026-11-11. That is a change of measured condition, not a typo fix.
+    The google slot is unchanged from that config and is pinned here with the
+    API version it needs: `gemini-3.1-pro-preview` 404s on the SDK's default
+    version and answers on `v1alpha`. The detour through `gemini-2.5-pro` on
+    2026-11-11 was mine and was wrong -- that model is listed by
+    `models.list()`, resolves through `models.get()`, and refuses every call as
+    "no longer available to new users".
     """
     roster = load_roster(STUDY)
     assert [(a.key, a.provider, a.model) for a in roster.analysts] == [
         ("analyst_alpha", Provider.openai, "gpt-5.5"),
-        ("analyst_beta", Provider.google, "gemini-2.5-pro"),
+        ("analyst_beta", Provider.google, "gemini-3.1-pro-preview"),
         ("analyst_gamma", Provider.openrouter, "moonshotai/kimi-k2.5"),
         ("analyst_delta", Provider.deepseek, "deepseek-v4-pro"),
         ("analyst_epsilon", Provider.openrouter, "qwen/qwen3.5-plus-02-15"),
@@ -135,6 +200,8 @@ def test_shipped_study_roster_reproduces_todays_seven_models():
         Provider.openai,
         "gpt-5.5",
     )
+    beta = next(a for a in roster.analysts if a.key == "analyst_beta")
+    assert beta.api_version == "v1alpha"
 
 
 def test_shipped_smoke_roster_covers_every_provider():

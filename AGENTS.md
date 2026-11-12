@@ -144,11 +144,21 @@ uses `config/analysts.json`. Three roster files ship:
 - `config/analysts.smoke.json` - five analysts, one per provider adapter, for the
   cheapest run that touches every transport.
 
-Each entry declares a `key`, a `label`, a `provider`, a `model` and a
-`max_output_tokens` budget (default 32000). The provider is declared
-explicitly and is one of `openai`, `anthropic`, `google`, `openrouter` or
-`deepseek`; it is never inferred from the model string. The model name is
-passed to the vendor SDK as written. API keys come from the environment
+Each entry declares a `key`, a `label`, a `provider`, a `model`, a
+`max_output_tokens` budget (default 32000) and an optional `api_version`. The
+provider is declared explicitly and is one of `openai`, `anthropic`, `google`,
+`openrouter` or `deepseek`; it is never inferred from the model string. The
+model name is passed to the vendor SDK as written.
+
+`api_version` names the API surface the model is served on. Only the google
+client accepts one, so declaring it on any other provider is refused rather than
+ignored; unset, the vendor SDK's own default applies. It exists because a model
+can be absent from one version and served on another:
+`gemini-3.1-pro-preview` returns `404 not found for API version v1` on the
+google SDK's default and answers on `v1alpha`. Clients are cached per
+`(provider, api_version)`, so two google analysts on different surfaces cannot
+be served one another's client. The surface is declared in the roster, beside
+the model, because it is part of the condition a score was measured in. API keys come from the environment
 (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
 `DEEPSEEK_API_KEY`); the CLIs read a `.env` file from the directory the command
 was run in, and values already exported win.

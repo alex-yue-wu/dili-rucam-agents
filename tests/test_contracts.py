@@ -126,3 +126,20 @@ def test_render_keeps_the_real_prompts_braces_literal(strict):
         assert probe in prompt  # the probe is real
         assert probe in text
     assert prompt in text
+
+
+@pytest.mark.parametrize("strict", [True, False])
+def test_rendered_instructions_say_json_for_deepseek(strict):
+    """DeepSeek's json_object mode refuses a prompt that never says "json".
+
+    Verified live on 2026-11-11: the same call that succeeds with "Return a
+    single JSON object" returns `400 - Prompt must contain the word 'json' in
+    some form to use 'response_format' of type 'json_object'` without it. 400 is
+    in TERMINAL_STATUS_CODES, so there is no retry and no mode downgrade behind
+    it -- an edit that took the word out of the prompt would kill every DeepSeek
+    analyst outright, and `json_object` is the highest mode DeepSeek supports,
+    so it is the mode every DeepSeek run starts in.
+    """
+    contract = _build(prompt_text=load_rucam_prompt(strict_scoring=strict))
+    text = contract.render(case_bundle_json='{"bundle": 1}', retry_requirement="")
+    assert "json" in text.lower()

@@ -477,7 +477,7 @@ def test_anthropic_call_streams_and_keeps_only_text_blocks():
     fake = _FakeAnthropic(_anthropic_message(
         [("thinking", "hidden"), ("text", '{"a":'), ("text", " 1}")]))
     sdk = SdkProvider()
-    sdk._clients[Provider.anthropic] = fake
+    sdk._clients[Provider.anthropic, None] = fake
     resp = _complete(sdk, spec(Provider.anthropic, "claude-opus-4-7", 64000))
     assert fake.streamed["max_tokens"] == 64000  # went through messages.stream
     assert not fake.create_called
@@ -488,7 +488,7 @@ def test_anthropic_call_streams_and_keeps_only_text_blocks():
 def test_anthropic_max_tokens_stop_reason_is_a_truncation():
     fake = _FakeAnthropic(_anthropic_message([("text", "cut")], stop_reason="max_tokens"))
     sdk = SdkProvider()
-    sdk._clients[Provider.anthropic] = fake
+    sdk._clients[Provider.anthropic, None] = fake
     assert _complete(sdk, spec(Provider.anthropic)).truncated is True
 
 
@@ -533,7 +533,7 @@ def test_openai_length_finish_reason_is_a_truncation():
     fake = _FakeOpenAI()
     fake.finish_reason = "length"
     sdk = SdkProvider()
-    sdk._clients[Provider.openai] = fake
+    sdk._clients[Provider.openai, None] = fake
     assert _complete(sdk, spec(Provider.openai)).truncated is True
 
 
@@ -579,13 +579,71 @@ def test_google_max_tokens_finish_reason_is_a_truncation_and_client_is_reused():
     from google.genai import types
 
     sdk = SdkProvider()
-    sdk._clients[Provider.google] = _FakeGoogle(types.FinishReason.MAX_TOKENS)
+    sdk._clients[Provider.google, None] = _FakeGoogle(types.FinishReason.MAX_TOKENS)
     first = _complete(sdk, spec(Provider.google, "gemini-2.5-pro"))
     assert first.truncated is True
     assert first.output_tokens == 13
-    sdk._clients[Provider.google].finish_reason = types.FinishReason.STOP
+    sdk._clients[Provider.google, None].finish_reason = types.FinishReason.STOP
     assert _complete(sdk, spec(Provider.google, "gemini-2.5-pro")).truncated is False
-    assert sdk._clients[Provider.google].calls == 2
+    assert sdk._clients[Provider.google, None].calls == 2
+
+
+def test_google_client_is_built_on_the_api_version_the_spec_declares(monkeypatch):
+    """A preview model is reachable only on the surface that serves it.
+
+    `gemini-3.1-pro-preview` returns 404 "not found for API version v1" on the
+    SDK default and 200 on `v1alpha`, so the declared version has to reach
+    `HttpOptions` or the model is simply unreachable.
+    """
+    from google import genai
+
+    captured = {}
+
+    def factory(**kwargs):
+        captured.update(kwargs)
+        return _FakeGoogle(None)
+
+    monkeypatch.setattr(genai, "Client", factory)
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    _complete(
+        SdkProvider(),
+        ModelSpec(
+            provider=Provider.google,
+            model="gemini-3.1-pro-preview",
+            api_version="v1alpha",
+        ),
+    )
+    assert captured["http_options"].api_version == "v1alpha"
+
+
+def test_google_clients_are_not_shared_across_api_versions(monkeypatch):
+    """The cache is keyed by provider and version, not provider alone.
+
+    Keyed by provider alone, the second analyst would be served the first
+    one's client and silently measured on the wrong API surface -- a wrong
+    score rather than an error.
+    """
+    from google import genai
+
+    versions = []
+
+    def factory(**kwargs):
+        versions.append(kwargs["http_options"].api_version)
+        return _FakeGoogle(None)
+
+    monkeypatch.setattr(genai, "Client", factory)
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    sdk = SdkProvider()
+    alpha = ModelSpec(
+        provider=Provider.google, model="gemini-3.1-pro-preview", api_version="v1alpha"
+    )
+    default = ModelSpec(provider=Provider.google, model="gemini-3.5-flash")
+    _complete(sdk, alpha)
+    _complete(sdk, default)
+    _complete(sdk, alpha)
+
+    assert versions == ["v1alpha", None]
+    assert len(sdk._clients) == 2
 
 
 def test_google_client_is_built_with_no_sdk_retries(monkeypatch):
@@ -624,8 +682,8 @@ def test_aclose_closes_every_client_and_empties_the_registry():
     sdk = SdkProvider()
     openai_client = _Closer()
     google_client = _Closer()
-    sdk._clients[Provider.openai] = openai_client
-    sdk._clients[Provider.google] = google_client
+    sdk._clients[Provider.openai, None] = openai_client
+    sdk._clients[Provider.google, None] = google_client
 
     asyncio.run(sdk.aclose())
 
@@ -639,8 +697,8 @@ def test_one_failing_close_neither_stops_the_others_nor_keeps_the_registry():
     refuses = _Closer(fails=True)
     survivor = _Closer()
     # Insertion order puts the failing client first, so a bare loop would stop.
-    sdk._clients[Provider.anthropic] = refuses
-    sdk._clients[Provider.openai] = survivor
+    sdk._clients[Provider.anthropic, None] = refuses
+    sdk._clients[Provider.openai, None] = survivor
 
     asyncio.run(sdk.aclose())
 

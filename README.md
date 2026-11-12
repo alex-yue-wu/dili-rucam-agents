@@ -154,6 +154,29 @@ model string), a `model` and a `max_output_tokens` budget (default `32000`). The
 model name is sent to the vendor SDK as written. The roster file also holds the
 `ground_truth` scorer used with `--mask-scores`.
 
+An entry may also declare `api_version`, the API surface its model is served on.
+Only the google client takes one -- declaring it elsewhere is refused, not
+ignored -- and the study roster uses it because `gemini-3.1-pro-preview` is
+`404 not found for API version v1` on the google SDK's default and answers on
+`v1alpha`:
+
+```json
+{
+  "key": "analyst_beta",
+  "label": "Analyst Beta",
+  "provider": "google",
+  "model": "gemini-3.1-pro-preview",
+  "api_version": "v1alpha",
+  "max_output_tokens": 32000
+}
+```
+
+Checking a model name against a vendor's catalogue is not evidence that it can
+be called. `gemini-2.5-pro` is returned by `models.list()`, resolves through
+`models.get()` with `generateContent` among its supported actions, and refuses
+every call as "no longer available to new users"; `gemini-3.1-pro-preview` is
+absent from the same listing and works. Verify a new model by calling it.
+
 API keys are the only analyst configuration read from the environment:
 
 | Variable | Provider |

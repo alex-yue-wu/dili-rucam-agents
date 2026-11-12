@@ -33,6 +33,21 @@ class Provider(StrEnum):
     deepseek = "deepseek"
 
 
+def _reject_api_version_outside_google(
+    provider: Provider, api_version: str | None
+) -> None:
+    """Only ``genai.Client`` takes an API version; the others have no such argument.
+
+    Left to pass, a declared value would be dropped without a word, and the
+    roster is the record of the condition a score was measured in.
+    """
+    if api_version is not None and provider is not Provider.google:
+        raise ValueError(
+            f"api_version is only used by the google client, and {provider.value} "
+            "would ignore it"
+        )
+
+
 class AnalystConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -41,6 +56,13 @@ class AnalystConfig(BaseModel):
     provider: Provider
     model: str = Field(min_length=1)
     max_output_tokens: int = Field(default=32000, gt=0)
+    #: The API surface this model is served on; google only, SDK default if unset.
+    api_version: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _api_version_is_google_only(self) -> AnalystConfig:
+        _reject_api_version_outside_google(self.provider, self.api_version)
+        return self
 
     @property
     def report_filename(self) -> str:
@@ -53,6 +75,13 @@ class GroundTruthConfig(BaseModel):
     provider: Provider
     model: str = Field(min_length=1)
     max_output_tokens: int = Field(default=8000, gt=0)
+    #: The API surface this model is served on; google only, SDK default if unset.
+    api_version: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _api_version_is_google_only(self) -> GroundTruthConfig:
+        _reject_api_version_outside_google(self.provider, self.api_version)
+        return self
 
 
 class AnalystRoster(BaseModel):
