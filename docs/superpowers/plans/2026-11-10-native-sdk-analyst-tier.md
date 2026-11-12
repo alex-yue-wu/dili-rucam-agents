@@ -90,6 +90,8 @@ Duplicate-key and key-pattern checks go in a `model_validator(mode="after")` on 
 `config/analysts.study.json`: the seven keys and models from `src/dili_rucam_agents/crew/config.py:ANALYST_SPECS` — alpha `gpt-5.5` (openai), beta `gemini-3.1-pro-preview` (google), gamma `moonshotai/kimi-k2.5` (openrouter), delta `deepseek-v4-pro` (deepseek), epsilon `qwen/qwen3.5-plus-02-15` (openrouter), zeta `claude-opus-4-7` (anthropic), eta `z-ai/glm-5` (openrouter).
 `config/analysts.smoke.json`: five entries, one per `Provider`, reusing models from the study roster.
 
+**Amended 2026-11-11, after the plan shipped:** the google slot's `gemini-3.1-pro-preview` is not in the catalogue this project's `GEMINI_API_KEY` can see, and the first live smoke run died on a terminal 404 at `analyst_beta`. Both rosters now read `gemini-2.5-pro`, the only general-purpose pro model the key lists. The other six study models were each checked against their vendor's catalogue in the same pass and all exist, so no other slot moved.
+
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_roster.py -v`

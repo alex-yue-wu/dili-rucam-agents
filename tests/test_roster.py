@@ -115,11 +115,16 @@ def test_shipped_study_roster_reproduces_todays_seven_models():
     key, label, model and max_output_tokens all came across from the retired
     crew config; provider replaced routing by model-name sniffing, so a typo in
     it reaches a paid run with nothing to catch it on the way.
+
+    One model has deliberately moved since: the google slot read
+    `gemini-3.1-pro-preview`, which is absent from the catalogue the project's
+    key can see and 404s on the first call, so it was changed to `gemini-2.5-pro`
+    on 2026-11-11. That is a change of measured condition, not a typo fix.
     """
     roster = load_roster(STUDY)
     assert [(a.key, a.provider, a.model) for a in roster.analysts] == [
         ("analyst_alpha", Provider.openai, "gpt-5.5"),
-        ("analyst_beta", Provider.google, "gemini-3.1-pro-preview"),
+        ("analyst_beta", Provider.google, "gemini-2.5-pro"),
         ("analyst_gamma", Provider.openrouter, "moonshotai/kimi-k2.5"),
         ("analyst_delta", Provider.deepseek, "deepseek-v4-pro"),
         ("analyst_epsilon", Provider.openrouter, "qwen/qwen3.5-plus-02-15"),

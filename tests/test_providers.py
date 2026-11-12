@@ -580,11 +580,11 @@ def test_google_max_tokens_finish_reason_is_a_truncation_and_client_is_reused():
 
     sdk = SdkProvider()
     sdk._clients[Provider.google] = _FakeGoogle(types.FinishReason.MAX_TOKENS)
-    first = _complete(sdk, spec(Provider.google, "gemini-3.1-pro-preview"))
+    first = _complete(sdk, spec(Provider.google, "gemini-2.5-pro"))
     assert first.truncated is True
     assert first.output_tokens == 13
     sdk._clients[Provider.google].finish_reason = types.FinishReason.STOP
-    assert _complete(sdk, spec(Provider.google, "gemini-3.1-pro-preview")).truncated is False
+    assert _complete(sdk, spec(Provider.google, "gemini-2.5-pro")).truncated is False
     assert sdk._clients[Provider.google].calls == 2
 
 
@@ -599,7 +599,7 @@ def test_google_client_is_built_with_no_sdk_retries(monkeypatch):
 
     monkeypatch.setattr(genai, "Client", factory)
     monkeypatch.setenv("GEMINI_API_KEY", "k")
-    _complete(SdkProvider(), spec(Provider.google, "gemini-3.1-pro-preview"))
+    _complete(SdkProvider(), spec(Provider.google, "gemini-2.5-pro"))
     assert captured["http_options"].retry_options.attempts == 1
 
 

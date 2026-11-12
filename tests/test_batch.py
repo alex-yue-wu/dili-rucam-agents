@@ -50,7 +50,7 @@ STUDY_ROSTER_PATH = DEFAULT_ROSTER_PATH.with_name("analysts.study.json")
 
 _MODELS = {
     "analyst_alpha": "gpt-5.5",
-    "analyst_beta": "gemini-3.1-pro-preview",
+    "analyst_beta": "gemini-2.5-pro",
     "analyst_gamma": "moonshotai/kimi-k2.5",
     "analyst_delta": "deepseek-v4-pro",
 }
@@ -592,7 +592,7 @@ def test_run_batch_folder_writes_summary_workbook(tmp_path: Path, monkeypatch):
     assert headers == [
         "pdf_filename",
         "gpt-5.5",
-        "gemini-3.1-pro-preview",
+        "gemini-2.5-pro",
         "moonshotai/kimi-k2.5",
         "masked_rucam_score",
         "masked_rucam_category",
@@ -601,7 +601,7 @@ def test_run_batch_folder_writes_summary_workbook(tmp_path: Path, monkeypatch):
     assert row_map["masked_rucam_score"] == 8
     assert row_map["masked_rucam_category"] == "Probable"
     assert row_map["gpt-5.5"] == 7
-    assert row_map["gemini-3.1-pro-preview"] == 7
+    assert row_map["gemini-2.5-pro"] == 7
     assert row_map["moonshotai/kimi-k2.5"] == 7
     assert not log_path.exists()
 
@@ -909,7 +909,7 @@ def test_missing_ground_truth_key_fails_the_preflight_only_when_masking(
                 ],
                 "ground_truth": {
                     "provider": "google",
-                    "model": "gemini-3.1-pro-preview",
+                    "model": "gemini-2.5-pro",
                 },
             }
         ),
