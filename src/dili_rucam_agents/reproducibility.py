@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from dili_rucam_agents.batch import (
+    resolve_pdf_source_dir,
     PdfRunContext,
     PdfRunFailure,
     _run_pdf_analysis,
@@ -225,7 +226,7 @@ def run_reproducibility_folder(
 ) -> list[Path]:
     repeats = validate_repeats(repeats)
     max_restarts = validate_max_restarts(max_restarts)
-    source_dir = Path(input_dir).expanduser().resolve()
+    source_dir = resolve_pdf_source_dir(input_dir)
     results_dir = Path(output_dir).expanduser().resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
     roster = load_roster(roster_path)

@@ -13,6 +13,7 @@ import dili_rucam_agents.runner as runner_module
 from dili_rucam_agents.analysts import AnalystExecutionError, AnalystRunOutcome
 from dili_rucam_agents.batch import (
     PdfRunFailure,
+    resolve_pdf_source_dir,
     _main as batch_main,
     PdfRunContext,
     _is_pdf_run_complete,
@@ -2375,3 +2376,58 @@ def test_an_exhausted_transient_budget_is_still_persisted_as_execution(
     entry = read_manifest(output_dir)["analysts"]["analyst_alpha"]
     assert entry["failure_kind"] == "execution"
     assert entry["transient_retries"] == 4
+
+
+# A path that is not a directory used to make the whole run a no-op that reported
+# success: "Batch analysis completed", an empty workbook, exit 0. A file and a
+# mistyped path both reach it. An existing empty directory is a separate, and
+# deliberate, case.
+
+
+def test_a_file_where_a_directory_belongs_is_refused_by_name(tmp_path):
+    pdf = tmp_path / "case.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+
+    with pytest.raises(NotADirectoryError, match=re.escape(str(pdf))):
+        resolve_pdf_source_dir(str(pdf))
+
+
+def test_a_mistyped_path_is_refused_by_name(tmp_path):
+    missing = tmp_path / "nope"
+
+    with pytest.raises(NotADirectoryError, match=re.escape(str(missing))):
+        resolve_pdf_source_dir(str(missing))
+
+
+def test_an_existing_but_empty_directory_is_still_accepted(tmp_path):
+    # Deliberate: "process every PDF here, there are none" is a reasonable ask,
+    # and tests/test_reproducibility.py pins the resulting empty result.
+    assert resolve_pdf_source_dir(str(tmp_path)) == tmp_path.resolve()
+
+
+def test_a_directory_holding_a_pdf_resolves(tmp_path):
+    (tmp_path / "case.pdf").write_bytes(b"%PDF-1.4")
+
+    assert resolve_pdf_source_dir(str(tmp_path)) == tmp_path.resolve()
+
+
+def test_run_batch_folder_refuses_a_file_without_writing_a_workbook(tmp_path):
+    pdf = tmp_path / "case.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    out = tmp_path / "out"
+
+    with pytest.raises(NotADirectoryError, match=re.escape(str(pdf))):
+        run_batch_folder(input_dir=str(pdf), output_dir=str(out))
+
+    # The old behaviour's tell was a summary workbook that said nothing happened.
+    assert not (out / "batch_summary.xlsx").exists()
+
+
+def test_run_reproducibility_folder_refuses_a_file_too(tmp_path):
+    from dili_rucam_agents.reproducibility import run_reproducibility_folder
+
+    pdf = tmp_path / "case.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+
+    with pytest.raises(NotADirectoryError, match=re.escape(str(pdf))):
+        run_reproducibility_folder(input_dir=str(pdf), output_dir=str(tmp_path / "out"))

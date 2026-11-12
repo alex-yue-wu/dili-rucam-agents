@@ -76,6 +76,30 @@ class _AnalystReportFileValidationError(ValueError):
         )
 
 
+def resolve_pdf_source_dir(input_dir: str) -> Path:
+    """Resolve the PDF input directory, refusing a path that is not one.
+
+    `Path.glob` on a file yields nothing, so passing a PDF where a directory
+    belongs used to print "Batch analysis completed", write an empty workbook
+    and exit 0 — a successful-looking run that scored nothing and cost nothing.
+    A mistyped path behaves the same way, because it is not a directory either.
+    Both are refused by name here, since the next thing a caller does with a
+    "successful" run is believe it.
+
+    An *existing but empty* directory is deliberately still fine and returns no
+    summaries: `test_reproducibility_empty_input_returns_no_summaries` pins that,
+    and "process every PDF here, there are none" is a reasonable thing for a
+    batch tool to be asked.
+    """
+
+    source_dir = Path(input_dir).expanduser().resolve()
+    if not source_dir.is_dir():
+        raise NotADirectoryError(
+            f"input_dir must be a directory holding *.pdf files, not {source_dir}"
+        )
+    return source_dir
+
+
 def run_batch_folder(
     *,
     input_dir: str,
@@ -89,7 +113,7 @@ def run_batch_folder(
     max_restarts: int = 2,
 ) -> Path:
     max_restarts = validate_max_restarts(max_restarts)
-    source_dir = Path(input_dir).expanduser().resolve()
+    source_dir = resolve_pdf_source_dir(input_dir)
     results_dir = Path(output_dir).expanduser().resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
 
