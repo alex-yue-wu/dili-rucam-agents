@@ -156,12 +156,11 @@ model name is sent to the vendor SDK as written. The roster file also holds the
 
 An entry may also declare `api_version`, the API surface its model is served on.
 Only the google client takes one -- declaring it elsewhere is refused, not
-ignored -- and no shipped roster declares one, so every entry is served on its
-vendor default. The field exists because a model can be absent from one API
-version and served on another: on 2026-11-11 `gemini-3.1-pro-preview` was
-`404 not found for API version v1` on the google SDK's default and answered on
-`v1alpha`, under a key revoked afterwards. If a preview model stops resolving,
-this is the first thing to try:
+ignored. Both shipped multi-provider rosters declare it on the google entry,
+because `gemini-3.1-pro-preview` is `404 not found for API version v1` on the
+google SDK's default and answers on `v1alpha`. That held on 2026-11-11 and
+again on 2026-11-12 under a rotated key, so it is a property of the model, not
+of a key. If a preview model stops resolving, this is the first thing to try:
 
 ```json
 {

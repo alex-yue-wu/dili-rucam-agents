@@ -153,12 +153,13 @@ model name is passed to the vendor SDK as written.
 
 `api_version` names the API surface the model is served on. Only the google
 client accepts one, so declaring it on any other provider is refused rather than
-ignored; unset, the vendor SDK's own default applies. **No shipped roster
-declares one** - every entry is served on its vendor default. The field exists
-because a model can be absent from one API version and served on another: on
-2026-11-11 `gemini-3.1-pro-preview` returned `404 not found for API version v1`
-on the google SDK's default and answered on `v1alpha`, under a key that was
-revoked afterwards. Clients are cached per `(provider, api_version)`, so two
+ignored; unset, the vendor SDK's own default applies. It is not cosmetic: a
+model can be absent from one API version and served on another, so the study
+and smoke rosters both declare `api_version: "v1alpha"` on the google entry
+because `gemini-3.1-pro-preview` is `404 not found for API version v1` on the
+google SDK's default. Measured 2026-11-11, and again by the roster pre-flight
+on 2026-11-12 under a rotated key: the same 404 both times, so it belongs to
+the model rather than to a key. Clients are cached per `(provider, api_version)`, so two
 google analysts on different surfaces cannot be served one another's client.
 The surface belongs in the roster rather than the adapter because it is part of
 the condition a score was measured in. API keys come from the environment
